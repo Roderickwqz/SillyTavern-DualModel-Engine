@@ -65,7 +65,7 @@
 - 角色扮演和对话。
 - 场景、动作和事件描写。
 - 遵守注入的硬状态。
-- 在需要规则裁决时调用 `ResolveD20Check`。
+- 在需要规则裁决时调用 `DualModelResolveD20Check`。
 - 根据工具返回值继续生成，而不是自行决定骰点结果。
 
 默认使用 SillyTavern 当前主连接。扩展设置显示该连接，但首个完整版本不在后台静默切换用户的主连接。
@@ -129,7 +129,7 @@ dice-engine
   -> generates unbiased dice values and deterministic D20 calculations
 
 tool-registry
-  -> registers ResolveD20Check with SillyTavern Function Calling
+  -> registers DualModelResolveD20Check and DualModelApplyD20Damage with SillyTavern Function Calling
 
 preset-manager
   -> imports, validates, binds and exports declarative custom rules
@@ -150,7 +150,7 @@ rules/*
 目标宿主接口如下：
 
 - `ConnectionManagerRequestService.sendRequest`：以指定 Profile 请求 Recorder，不切换 Narrator 当前连接。
-- `ToolManager.registerFunctionTool`：注册 `ResolveD20Check`。
+- `ToolManager.registerFunctionTool`：注册带扩展命名空间的 `DualModelResolveD20Check`。
 - `eventSource` 与 `event_types`：监听生成、消息、swipe、编辑、删除和聊天切换。
 - `setExtensionPrompt`：注入有预算的当前状态和规则提示。
 - `getContext()`、`chatMetadata`、消息 `extra/swipe_info` 与保存函数：持久化聊天级和分支级数据。
@@ -284,7 +284,11 @@ Recorder 不返回完整替换状态，而返回带版本和原因的操作：
   "dualModelEngine": {
     "schemaVersion": 1,
     "stateVersion": 18,
+    "headRevision": 42,
+    "preset": { "id": "narrative", "version": 1 },
+    "initialSnapshot": {},
     "activeSnapshot": {},
+    "activeRef": { "messageId": "msg-assistant-0182", "swipeId": 0, "branchId": "branch-0182-0" },
     "configOverrides": {},
     "taskStatus": {
       "state": "idle",
@@ -295,37 +299,44 @@ Recorder 不返回完整替换状态，而返回带版本和原因的操作：
 }
 ```
 
-每个 AI 消息的每个 swipe 在 `swipe_info[swipeId].extra.dualModelEngine` 保存：
+每个 AI 消息的每个 swipe 在 `swipe_info[swipeId].extra.dualModelEngine` 保存消息身份与嵌套分支。SillyTavern 会在创建和切换 swipe 时复制 `extra`，所以命名空间必须使用固定的 `{ messageId, branch }` 形状：
 
 ```json
 {
-  "branchId": "branch-0182-0",
-  "baseStateVersion": 17,
-  "baseSnapshot": {},
-  "segments": [
-    {
-      "requestId": "req-0182",
-      "userMessageId": "msg-user-0181",
-      "assistantTextHash": "sha256:...",
-      "checks": [],
-      "patch": {},
-      "postSnapshot": {}
-    }
-  ],
-  "status": "committed"
+  "messageId": "msg-assistant-0182",
+  "branch": {
+    "branchId": "branch-0182-0",
+    "baseStateVersion": 17,
+    "baseSnapshot": {},
+    "segments": [
+      {
+        "requestId": "req-0182",
+        "userMessageId": "msg-user-0181",
+        "assistantTextHash": "sha256:...",
+        "checks": [],
+        "patch": {},
+        "postSnapshot": {}
+      }
+    ],
+    "status": "committed"
+  }
 }
 ```
 
-扩展为相关消息分配自己的 UUID 并保存在消息 `extra` 中。数组下标只用于访问当前 SillyTavern 内存对象，不作为持久身份，因为删除历史消息后下标会变化。文本哈希用于发现消息内容被宿主或其他扩展改写，不用于身份认证。
+扩展为相关消息分配自己的 UUID，并把同一 `messageId` 同步到消息当前 `extra` 及已有 swipe 的插件命名空间；每个 swipe 的 `branch` 独立。数组下标只用于访问当前 SillyTavern 内存对象，不作为持久身份，因为删除历史消息后下标会变化。文本哈希用于发现消息内容被宿主或其他扩展改写，不用于身份认证。
+
+聊天信封的 `activeRef` 指向产生当前活动快照的稳定消息/swipe/branch，初始状态为 `null`。每次加载聊天都验证该引用；若重新生成取消、跨聊天切换或页面刷新使它指向已删除消息，则在同一聊天任务队列中恢复最后一个仍存在的有效分支，找不到时恢复 `initialSnapshot`。
 
 `segments` 的第一个元素代表初次生成，后续元素代表同一 swipe 上的 `continue`。每个 segment 只处理新增文本和新增工具记录，最终 `postSnapshot` 是该分支当前有效状态。
 
+每次生成同时捕获 `baseStateVersion` 与 `expectedHeadRevision`：前者是 Recorder 读取、分支从中派生的快照版本；后者来自聊天信封中只增不减的 `headRevision`，只用于 compare-and-swap。`stateVersion` 可以在切换旧分支时回退，也可能在不同分支出现相同值，因此不能充当 CAS 令牌。每次提交、恢复、手动状态事务或预设重置都推进 `headRevision`；即使状态从 v18 切到 v10 再回到 v18，旧任务也会因 revision 不同而被丢弃。准备新 swipe 不临时改写聊天信封，取消生成因此无需保存或反向恢复中间状态。
+
 ### 7.6 数据版本与迁移
 
-- `schemaVersion` 表示扩展持久化格式版本，`stateVersion` 表示剧情状态提交版本，两者不得混用。
+- `schemaVersion` 表示扩展持久化格式版本，`stateVersion` 表示当前分支的剧情快照版本，`headRevision` 表示只增不减的活动头修订号，三者不得混用。
 - 每次加载聊天先运行纯函数迁移；迁移前深拷贝原数据，失败时保留原始数据并进入只读诊断模式。
 - 导入的规则预设带独立 `presetVersion`，不允许通过修改规则预设静默重解释既有快照。
-- 规则预设变更只影响下一次提交；需要重解释历史时必须由用户显式触发“从快照重算”。
+- 全局或角色的默认预设变更只影响新聊天；已有聊天的预设变更必须走显式导出/确认/重置事务，不能用新 Schema 重解释旧快照。
 
 ## 8. 每轮执行流程
 
@@ -337,11 +348,12 @@ Recorder 不返回完整替换状态，而返回带版本和原因的操作：
 4. Orchestrator 为本次生成捕获 chat、message、swipe、base state version 和 request identity。
 5. Prompt Injector 将压缩后的 Canonical State、Open Threads、规则说明和必要审计摘要注入 Narrator。
 6. Narrator 生成回复并按需调用规则工具。
-7. 回复完成后立即向用户显示。
-8. Recorder 后台读取旧状态、本轮玩家消息、工具结果和最终回复；`continue` 只传新增文本。
-9. Validator 校验 Recorder Patch。
-10. State Store 通过 compare-and-swap 提交新版本，并附着到当前消息、swipe 和 segment。
-11. 下一轮使用新版本。
+7. Function Calling 的递归生成保持同一 generation transaction；工具中间消息不触发 Recorder。只在最外层 `GENERATION_ENDED` 后定位最终助手回复，`GENERATION_STOPPED` 则丢弃本轮 pending rule effects。
+8. 最终回复完成后立即向用户显示。
+9. Recorder 后台读取旧状态、本轮玩家消息、工具结果和最终回复；`continue` 只传新增文本。
+10. Validator 校验 Recorder Patch。
+11. State Store 通过 compare-and-swap 提交新版本，并附着到当前消息、swipe 和 segment。
+12. 下一轮使用新版本。
 
 ### 8.2 状态注入预算
 
@@ -363,7 +375,7 @@ Canonical State 必须有固定预算，避免状态本身无限增长。注入�
 当 `cli-proxy` 和 Narrator 支持 OpenAI 风格工具调用时：
 
 ```text
-Narrator 请求 ResolveD20Check
+Narrator 请求 DualModelResolveD20Check
   -> 扩展校验请求
   -> Rule Engine 读取角色数据并掷骰
   -> 返回结构化结果
@@ -438,6 +450,12 @@ Narrator 请求 ResolveD20Check
 - 自然 1、自然 20、优势/劣势抵消、临时 HP、伤害下限和最大 HP 均由规则预设与代码共同约束。
 - 工具返回值同时写入 Narrator 工具结果、分支审计和 Recorder 输入；三处使用同一不可变记录。
 
+### 9.6 伤害、HP 与状态效果
+
+轻量 D20 启用第二个代码权威工具 `DualModelApplyD20Damage`。它只接受目标、受规则预设限制的伤害表达式、伤害类型和理由；骰点、临时 HP 吸收、当前 HP 下限和最终数值全部由 Rule Engine 计算。工具调用先产生不可变的 pending rule effect，Narrator 完成回复后才随当前分支 segment 一起提交；生成取消或分支失效时不提交该效果。
+
+提交顺序固定为：从 base snapshot 应用 pending rule effects，再应用 Recorder 对非规则锁定字段的 Patch，最后验证完整状态并一次保存。HP、临时 HP 和由代码维护的状态效果路径对 Recorder 锁定，避免模型重复扣血或覆盖代码结果。手动模式在状态面板提供同一 Rule Engine 的伤害入口，不实现另一套计算逻辑。
+
 ## 10. 自定义规则预设
 
 自定义规则是声明式 JSON 数据，不是插件脚本。预设包含：
@@ -449,18 +467,18 @@ Narrator 请求 ResolveD20Check
 - 状态面板卡片和字段编辑器配置。
 - 可选 D20 能力值、技能到能力映射、熟练路径、HP 路径和自然骰策略。
 
-首个完整版本不提供任意公式语言。自定义预设可以重新命名和映射内置轻量 D20 原语，但不能导入 JavaScript、正则替换代码或动态网络地址。这样既能覆盖不同剧本的状态结构，又不会把规则预设变成代码执行入口。
+首个完整版本不提供任意公式语言。自定义预设可以重新命名和映射内置轻量 D20 原语，但不能导入 JavaScript、正则替换代码或动态网络地址。启用自定义 D20 映射时，其 actor 数据子树自动成为 Recorder 的规则锁定区，只能由共用 Rule Engine 或用户显式状态编辑更新。这样既能覆盖不同剧本的状态结构，又不会把规则预设变成代码执行入口。
 
 导入流程固定为：解析 JSON、校验预设 Schema、编译状态 Schema、验证初始状态、检查路径交叉冲突、显示变更摘要、用户确认后保存。导出时只包含声明式预设和可选初始状态，不导出 API 凭证、聊天历史或审计记录。
 
-预设保存于扩展全局设置，角色卡只保存默认预设 ID 和初始状态模板，聊天保存绑定时的预设 ID 与版本。删除仍被角色或聊天引用的预设时必须阻止删除，或要求用户先选择替代预设。
+预设保存于扩展全局设置，角色卡只保存新聊天的默认预设 ID 和初始状态模板，聊天在首次初始化时固定保存绑定的预设 ID 与版本。此后修改全局或角色默认值不改变已有聊天，避免旧分支快照被另一套 Schema 解释。已有聊天若要更换预设，必须由用户在聊天设置中发起显式重置：先提供原始数据导出，显示将清除的本插件状态/分支摘要，经确认后以新预设初始状态重建；只移除 `dualModelEngine` 命名空间，不碰消息正文或其他扩展数据，保存失败时完整恢复内存。删除仍被角色或聊天引用的预设时必须阻止删除，或要求用户先选择替代预设。
 
 ## 11. 与官方 D&D Dice 的关系
 
 官方 D&D Dice 是可选辅助扩展，不是依赖项。
 
 - 官方菜单和 `/roll` 继续用于手动娱乐掷骰。
-- 本扩展的 `ResolveD20Check` 是正式剧情判定的唯一权威来源。
+- 本扩展的 `DualModelResolveD20Check` 是正式剧情判定的唯一权威来源。
 - 两者共存时，建议关闭官方 D&D Dice 的 Function Tool，避免 Narrator 选择只返回骰点、但不绑定状态的通用工具。
 - 本扩展不能依赖官方扩展未公开的内部函数。
 
@@ -508,6 +526,7 @@ Narrator 请求 ResolveD20Check
 - JSON 解析或 Schema 失败：把具体校验错误反馈给 Recorder 自动修复一次；再次失败后记录错误并提示用户。
 - 纯剧情模式状态失败：Narrator 回复仍然保留，下一轮提示状态过期。
 - D20 工具失败：停止该次判定，不允许 Narrator 自行编造结果。
+- 伤害工具失败：不改变 HP，不允许 Recorder 根据剧情文本补写同一伤害。
 - Connection Profile 不存在：禁用自动状态更新并显示明确错误。
 - 用户修改锁定字段：仅通过状态编辑器显式操作。
 - 扩展关闭：停止注入和后台任务，不删除已经保存的聊天数据。
@@ -559,6 +578,7 @@ Narrator 请求 ResolveD20Check
 
 - 最近状态变更。
 - 最近正式检定。
+- 最近伤害、HP 和状态效果记录。
 - 当前后台任务状态。
 - 当前状态版本。
 - 可选的地点、HP、关系和任务简要状态栏。
@@ -667,7 +687,7 @@ SillyTavern-DualModel-Engine/
 
 ### 阶段 3：轻量 D20
 
-完成 `ResolveD20Check`、规则计算、判定策略、审计记录和官方 D&D Dice 共存策略。
+完成 `DualModelResolveD20Check`、规则计算、判定策略、审计记录和官方 D&D Dice 共存策略。
 
 ### 阶段 4：自定义规则
 
@@ -691,6 +711,7 @@ SillyTavern-DualModel-Engine/
 12. 扩展检测到群组聊天时保持禁用并清楚说明当前版本不支持，而不是写入错误格式的数据。
 13. 预设、聊天数据和分支记录经过版本迁移后仍可读取；迁移失败时原数据可导出。
 14. Git URL 安装使用仓库内已构建的 `dist`，用户不需要 npm 或额外服务。
+15. `DualModelApplyD20Damage` 的伤害骰、临时 HP 吸收和最终 HP 与剧情工具结果、状态快照及审计记录一致；取消生成不会提交 pending rule effect。
 
 ## 21. 后续开发入口
 
