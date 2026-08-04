@@ -7216,13 +7216,14 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
         const message = context.chat[index];
         if (message?.is_user || message?.is_system) continue;
         const all = options.includeAllFromStart || index > startIndex;
-        const selected = index === startIndex && options.startSwipeId !== void 0 ? options.startSwipeId : message.swipe_id ?? 0;
+        const currentSwipeId = message.swipe_id ?? 0;
+        const selected = index === startIndex && options.startSwipeId !== void 0 ? options.startSwipeId : currentSwipeId;
         for (let swipeId = 0; swipeId < (message.swipe_info?.length ?? 0); swipeId += 1) {
           const branch = getBranch(message, swipeId);
           if (!branch || !all && options.includeStartSelectedOnly && swipeId !== selected) continue;
           if (!messagesBefore.has(message)) messagesBefore.set(message, { extra: clone2(message.extra), swipes: clone2(message.swipe_info) });
           branch.status = "stale";
-          if (swipeId === selected) message.extra[NAMESPACE] = clone2(message.swipe_info[swipeId].extra[NAMESPACE]);
+          if (swipeId === currentSwipeId) message.extra[NAMESPACE] = clone2(message.swipe_info[swipeId].extra[NAMESPACE]);
         }
       }
       envelope.activeSnapshot = clone2(boundary.snapshot);

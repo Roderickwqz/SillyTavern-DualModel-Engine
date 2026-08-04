@@ -94,11 +94,14 @@ it('invalidates only the selected edited assistant branch and every descendant b
 
 it('invalidates a captured non-selected assistant swipe while leaving the current selection committed', async () => {
     const prior = assistant('prior', [branch('prior', 1)]); const edited = assistant('edited', [branch('edited-0', 2), branch('edited-1', 2)], 1); const descendant = assistant('descendant', [branch('descendant', 3)]);
-    const { store, context } = setup({ chat: [prior, edited, descendant] });
+    const { store, context, saveChat } = setup({ chat: [prior, edited, descendant] });
     await expect(store.invalidateFrom(1, { includeStartSelectedOnly: true, startSwipeId: 0 })).resolves.toMatchObject({ ok: true });
     expect(edited.swipe_info.map(swipe => swipe.extra.dualModelEngine.branch.status)).toEqual(['stale', 'committed']);
+    expect(edited.extra.dualModelEngine.branch).toEqual(edited.swipe_info[1].extra.dualModelEngine.branch);
+    expect(edited.extra.dualModelEngine.branch.status).toBe('committed');
     expect(descendant.swipe_info[0].extra.dualModelEngine.branch.status).toBe('stale');
     expect(context.chatMetadata.dualModelEngine.activeRef).toEqual({ messageId: 'prior', swipeId: 0, branchId: 'prior' });
+    expect(saveChat).toHaveBeenCalledOnce();
 });
 
 it('invalidates every assistant branch from a deleted user boundary and rolls all state back on save failure', async () => {

@@ -254,13 +254,14 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
             for (let index = Math.max(0, startIndex); index < context.chat.length; index += 1) {
                 const message = context.chat[index]; if (message?.is_user || message?.is_system) continue;
                 const all = options.includeAllFromStart || index > startIndex;
-                const selected = index === startIndex && options.startSwipeId !== undefined ? options.startSwipeId : (message.swipe_id ?? 0);
+                const currentSwipeId = message.swipe_id ?? 0;
+                const selected = index === startIndex && options.startSwipeId !== undefined ? options.startSwipeId : currentSwipeId;
                 for (let swipeId = 0; swipeId < (message.swipe_info?.length ?? 0); swipeId += 1) {
                     const branch = getBranch(message, swipeId);
                     if (!branch || (!all && options.includeStartSelectedOnly && swipeId !== selected)) continue;
                     if (!messagesBefore.has(message)) messagesBefore.set(message, { extra: clone(message.extra), swipes: clone(message.swipe_info) });
                     branch.status = 'stale';
-                    if (swipeId === selected) message.extra[NAMESPACE] = clone(message.swipe_info[swipeId].extra[NAMESPACE]);
+                    if (swipeId === currentSwipeId) message.extra[NAMESPACE] = clone(message.swipe_info[swipeId].extra[NAMESPACE]);
                 }
             }
             envelope.activeSnapshot = clone(boundary.snapshot); envelope.stateVersion = boundary.snapshot.version; envelope.activeRef = clone(boundary.activeRef);
