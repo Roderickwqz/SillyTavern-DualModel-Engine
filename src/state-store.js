@@ -96,7 +96,11 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         const existingBranch = getBranch(input.message, input.swipeId);
         if (input.isContinue && existingBranch?.branchId !== input.branchId) return 'branch-conflict';
         if (envelope.headRevision !== input.expectedHeadRevision) return 'head-conflict';
-        if (envelope.stateVersion !== input.baseStateVersion) return 'state-conflict';
+        if (envelope.stateVersion !== input.baseStateVersion) {
+            if (!input.allowBaseVersionMismatch || !input.baseBranchId
+                || envelope.activeRef?.branchId !== input.baseBranchId
+                || envelope.activeRef?.messageId !== input.baseMessageId) return 'state-conflict';
+        }
         if (input.nextState?.version !== input.baseStateVersion + 1) return 'invalid-next-version';
         if (envelope.lastCommittedRequestId === input.requestId) return 'duplicate-request';
         return null;

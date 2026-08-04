@@ -6736,7 +6736,7 @@ function createOrchestrator(deps) {
     const applied = deps.applyPatch({ state: captured.baseSnapshot, patch: response.patch, policy: captured.preset, validateState: (state) => deps.validator.validateState(captured.effectiveConfig.rulePresetId, state) });
     if (!applied.ok) throw new Error(JSON.stringify(applied.errors));
     applied.value.version = captured.baseVersion + 1;
-    return deps.store.commitSegment({ chatId: captured.chatId, message, messageId: captured.assistantMessageId, branchId: captured.branchId, swipeId: captured.swipeId, expectedHeadRevision: captured.expectedHeadRevision, baseStateVersion: captured.baseVersion, baseSnapshot: captured.baseSnapshot, requestId: captured.requestId, userMessageId: captured.userMessageId, patch: response.patch, checks: clone(captured.checks), assistantText, nextState: applied.value, isContinue: captured.type === "continue", signal });
+    return deps.store.commitSegment({ chatId: captured.chatId, message, messageId: captured.assistantMessageId, branchId: captured.branchId, swipeId: captured.swipeId, expectedHeadRevision: captured.expectedHeadRevision, baseStateVersion: captured.baseVersion, baseSnapshot: captured.baseSnapshot, requestId: captured.requestId, userMessageId: captured.userMessageId, patch: response.patch, checks: clone(captured.checks), assistantText, nextState: applied.value, isContinue: captured.type === "continue", allowBaseVersionMismatch: ["swipe", "regenerate"].includes(captured.type), baseBranchId: captured.baseBranchId, baseMessageId: captured.targetMessageId, signal });
   }
   async function replayTurn({ messageIndex, swipeId, baseSnapshot, signal }) {
     const current = context();
@@ -7066,7 +7066,9 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     const existingBranch = getBranch(input.message, input.swipeId);
     if (input.isContinue && existingBranch?.branchId !== input.branchId) return "branch-conflict";
     if (envelope.headRevision !== input.expectedHeadRevision) return "head-conflict";
-    if (envelope.stateVersion !== input.baseStateVersion) return "state-conflict";
+    if (envelope.stateVersion !== input.baseStateVersion) {
+      if (!input.allowBaseVersionMismatch || !input.baseBranchId || envelope.activeRef?.branchId !== input.baseBranchId || envelope.activeRef?.messageId !== input.baseMessageId) return "state-conflict";
+    }
     if (input.nextState?.version !== input.baseStateVersion + 1) return "invalid-next-version";
     if (envelope.lastCommittedRequestId === input.requestId) return "duplicate-request";
     return null;
