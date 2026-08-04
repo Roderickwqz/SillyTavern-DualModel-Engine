@@ -64,8 +64,10 @@ function normalizeValidation(validation) {
         return { ok: true, errors: [] };
     }
 
+    if (validation.errors.length === 0 || Array.from({ length: validation.errors.length }, (_, index) => !Object.hasOwn(validation.errors, index)).some(Boolean)) {
+        throw new Error('Invalid state validator result');
+    }
     const errors = validation.errors.map((error) => ({ message: errorMessage(error?.message ?? error) }));
-    if (errors.length === 0) throw new Error('Invalid state validator result');
     return { ok: false, errors };
 }
 

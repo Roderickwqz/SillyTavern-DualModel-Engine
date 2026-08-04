@@ -186,3 +186,12 @@ it('returns an Error-shaped result even for an unstringifiable thrown value', ()
 
     expect(result).toEqual({ ok: false, errors: [{ message: 'Unable to stringify error' }] });
 });
+
+it('rejects sparse validator error arrays without returning holes', () => {
+    const result = applyValidatedPatch({
+        state: {}, patch: { operations: [] }, policy: { allowedPaths: [], lockedPaths: [] },
+        validateState: () => ({ ok: false, errors: new Array(1) }),
+    });
+
+    expect(result).toEqual({ ok: false, errors: [{ message: 'Invalid state validator result' }] });
+});
