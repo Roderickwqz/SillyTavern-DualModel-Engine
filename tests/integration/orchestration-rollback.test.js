@@ -51,6 +51,15 @@ it('C8 ignores a Recorder result that arrives after GENERATION_STOPPED', async (
     expect(replacement.swipe_info[0].extra.dualModelEngine.branch).toBeUndefined(); expect(subject.context.chatMetadata.dualModelEngine.activeSnapshot.version).toBe(1);
 });
 
+it('C10 rethrows a Recorder AbortError through real orchestrator replay', async () => {
+    const subject = host(); const target = subject.context.chat.at(-1); const baseSnapshot = target.swipe_info[0].extra.dualModelEngine.branch.baseSnapshot;
+    const controller = new AbortController(); const replay = subject.orchestrator.replayTurn({ messageIndex: 2, swipeId: 0, baseSnapshot, signal: controller.signal });
+    await vi.waitFor(() => expect(subject.recorder).toHaveBeenCalledOnce());
+    controller.abort(new DOMException('cancelled', 'AbortError'));
+    subject.reject(controller.signal.reason);
+    await expect(replay).rejects.toMatchObject({ name: 'AbortError' });
+});
+
 it('C9 awaits orphan repair before injecting the repaired envelope and records a rejected repair', async () => {
     const context = { chatId: 'chat-a', chat: [], chatMetadata: { dualModelEngine: { stateVersion: 2, headRevision: 3, preset: { id: 'narrative' }, activeSnapshot: { version: 2 } } } }; const refresh = vi.fn(async () => {}); const diagnostics = [];
     const deps = { adapter: { getContext: () => context, events: {}, on: vi.fn(), off: vi.fn() }, store: { loadEnvelope: () => context.chatMetadata.dualModelEngine }, queue: { getStatus: () => ({ state: 'idle' }), waitForIdle: async () => {} }, rollbackManager: { repairOrphanedHead: async () => { context.chatMetadata.dualModelEngine.activeSnapshot = { version: 1 }; } }, getConfig: () => ({ enabled: true, rulePresetId: 'narrative', injectionBudget: 1 }), getPreset: () => ({ injection: [] }), promptInjector: { refresh, clear: vi.fn() }, recordDiagnostic: item => diagnostics.push(item) };

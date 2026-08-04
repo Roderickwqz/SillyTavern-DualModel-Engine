@@ -92,6 +92,15 @@ it('invalidates only the selected edited assistant branch and every descendant b
     expect(saveChat).toHaveBeenCalledOnce();
 });
 
+it('invalidates a captured non-selected assistant swipe while leaving the current selection committed', async () => {
+    const prior = assistant('prior', [branch('prior', 1)]); const edited = assistant('edited', [branch('edited-0', 2), branch('edited-1', 2)], 1); const descendant = assistant('descendant', [branch('descendant', 3)]);
+    const { store, context } = setup({ chat: [prior, edited, descendant] });
+    await expect(store.invalidateFrom(1, { includeStartSelectedOnly: true, startSwipeId: 0 })).resolves.toMatchObject({ ok: true });
+    expect(edited.swipe_info.map(swipe => swipe.extra.dualModelEngine.branch.status)).toEqual(['stale', 'committed']);
+    expect(descendant.swipe_info[0].extra.dualModelEngine.branch.status).toBe('stale');
+    expect(context.chatMetadata.dualModelEngine.activeRef).toEqual({ messageId: 'prior', swipeId: 0, branchId: 'prior' });
+});
+
 it('invalidates every assistant branch from a deleted user boundary and rolls all state back on save failure', async () => {
     const first = assistant('m1', [branch('a', 2), branch('b', 2)], 1); const second = assistant('m2', [branch('c', 3)]);
     const rejected = setup({ chat: [{ is_user: true }, first, second], saveChat: vi.fn().mockRejectedValue(new Error('disk')) }); const before = structuredClone(rejected.context);
@@ -116,6 +125,9 @@ it('rejects malformed invalidation inputs without mutation or saves', async () =
 it('rejects invalid invalidation options without changing persisted state', async () => {
     const { store, context, saveChat } = setup({ chat: [assistant('m1', [branch('a', 2)])] }); const before = structuredClone(context);
     await expect(store.invalidateFrom(0, { includeAllFromStart: 'yes' })).resolves.toEqual({ ok: false, reason: 'invalid-options' });
+    await expect(store.invalidateFrom(0, { startSwipeId: -1 })).resolves.toEqual({ ok: false, reason: 'invalid-options' });
+    await expect(store.invalidateFrom(0, { startSwipeId: 0.5 })).resolves.toEqual({ ok: false, reason: 'invalid-options' });
+    await expect(store.invalidateFrom(0, { startSwipeId: '0' })).resolves.toEqual({ ok: false, reason: 'invalid-options' });
     expect(context).toEqual(before); expect(saveChat).not.toHaveBeenCalled();
 });
 

@@ -82,12 +82,16 @@ export function createRollbackManager({ adapter, store, queue, confirm = async (
     async function invalidateAndRecalculate(startIndex, options, signal) {
         const invalidated = await store.invalidateFrom(startIndex, options); if (!invalidated?.ok) return invalidated;
         let accepted;
-        try { accepted = await confirm({ action: 'recalculate', startIndex, count: buildRecalculationPlan(startIndex).length, restoredVersion: invalidated.snapshot.version }); }
-        catch (error) { return { ok: false, reason: 'confirmation-failed', error }; }
+        try { accepted = await confirm({ action: 'recalculate', startIndex, count: buildRecalculationPlan(startIndex).length, restoredVersion: invalidated.snapshot.version, signal }); }
+        catch (error) {
+            if (error?.name === 'AbortError') throw error;
+            return { ok: false, reason: 'confirmation-failed', error };
+        }
+        signal.throwIfAborted();
         if (!accepted) return { ok: false, reason: 'recalculation-required' };
         return recalculateNow(startIndex, signal);
     }
-    function invalidateForEdit(messageIndex) { const { message, messageId } = stableAt(messageIndex); const start = message?.is_user ? messageIndex + 1 : messageIndex; return serialize('invalidate-edit', signal => { const current = context().chat[messageIndex]; if (!message || current !== message || current.extra?.dualModelEngine?.messageId !== messageId) return { ok: false, reason: 'stale-message' }; return invalidateAndRecalculate(start, { includeStartSelectedOnly: !message.is_user }, signal); }); }
+    function invalidateForEdit(messageIndex) { const { message, messageId } = stableAt(messageIndex); const start = message?.is_user ? messageIndex + 1 : messageIndex; const startSwipeId = message?.swipe_id ?? 0; return serialize('invalidate-edit', signal => { const current = context().chat[messageIndex]; if (!message || current !== message || current.extra?.dualModelEngine?.messageId !== messageId) return { ok: false, reason: 'stale-message' }; return invalidateAndRecalculate(start, { includeStartSelectedOnly: !message.is_user, ...(!message.is_user ? { startSwipeId } : {}) }, signal); }); }
     function invalidateForDelete(messageIndex) { const { message, messageId } = stableAt(messageIndex); const length = context().chat.length; return serialize('invalidate-delete', signal => { if (context().chat.length !== length || (message && (context().chat[messageIndex] !== message || message.extra?.dualModelEngine?.messageId !== messageId))) return { ok: false, reason: 'stale-delete-boundary' }; return invalidateAndRecalculate(messageIndex, { includeAllFromStart: true }, signal); }); }
     async function repairOrphanedHead() { const audit = await store.auditActiveRef(); if (audit?.ok) return { ok: true, repaired: false }; if (audit?.reason === 'assistant-text-mismatch' && audit.messageIndex >= 0) return serialize('repair-edited-head', () => store.invalidateFrom(audit.messageIndex, { includeStartSelectedOnly: true })); return recoverAfterDelete(); }
     function bind() {

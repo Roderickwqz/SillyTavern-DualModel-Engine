@@ -88,7 +88,7 @@ export function createOrchestrator(deps) {
             if (!applied.ok) return { ok: false, reason: 'invalid-state' }; applied.value.version = baseSnapshot.version + 1;
             const committed = await deps.store.commitSegment({ chatId: current.chatId, message: latestMessage, messageId: capturedMessageId, branchId: branch.branchId, swipeId, expectedHeadRevision: envelope.headRevision, baseStateVersion: baseSnapshot.version, baseSnapshot, requestId: deps.makeId?.() ?? crypto.randomUUID(), userMessageId: capturedUserId, patch: response.patch, checks, assistantText: capturedText, nextState: applied.value, isContinue: false, signal });
             return committed.ok ? { ok: true, snapshot: clone(applied.value), stateVersion: applied.value.version } : committed;
-        } catch (error) { return { ok: false, reason: 'replay-failed', error }; }
+        } catch (error) { if (error?.name === 'AbortError') throw error; return { ok: false, reason: 'replay-failed', error }; }
     }
     async function afterGeneration() {
         if (!generation) return { ignored: true, reason: 'no-matching-generation' };

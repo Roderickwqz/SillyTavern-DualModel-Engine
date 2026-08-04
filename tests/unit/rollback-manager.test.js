@@ -9,7 +9,7 @@ it('restores the selected swipe final segment and invalidates only descendants',
     await manager.restoreSwipe(1, 1);
     await manager.invalidateForEdit(1);
     expect(store.restoreBranch).toHaveBeenCalledWith(message, 1);
-    expect(store.invalidateFrom).toHaveBeenCalledWith(1, { includeStartSelectedOnly: true });
+    expect(store.invalidateFrom).toHaveBeenCalledWith(1, { includeStartSelectedOnly: true, startSwipeId: 1 });
 });
 
 it('records a blank host-cloned swipe source and follows rapid 0 to 1 to 0 selection', async () => {

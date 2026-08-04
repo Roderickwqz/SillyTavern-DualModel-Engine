@@ -245,7 +245,8 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         const context = adapter.getContext?.(); const envelope = context?.chatMetadata?.[NAMESPACE];
         if (!validEnvelope(envelope) || !Array.isArray(context?.chat) || !Number.isInteger(startIndex) || startIndex < 0 || startIndex > context.chat.length) return result('invalid-context');
         if (!isPlainObject(options) || (options.includeAllFromStart !== undefined && typeof options.includeAllFromStart !== 'boolean')
-            || (options.includeStartSelectedOnly !== undefined && typeof options.includeStartSelectedOnly !== 'boolean')) return result('invalid-options');
+            || (options.includeStartSelectedOnly !== undefined && typeof options.includeStartSelectedOnly !== 'boolean')
+            || (options.startSwipeId !== undefined && (!Number.isInteger(options.startSwipeId) || options.startSwipeId < 0))) return result('invalid-options');
         const metadataBefore = clone(envelope); const messagesBefore = new Map();
         const boundary = findLastValidSnapshot(startIndex - 1);
         if (!boundary) return result('invalid-envelope');
@@ -253,7 +254,7 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
             for (let index = Math.max(0, startIndex); index < context.chat.length; index += 1) {
                 const message = context.chat[index]; if (message?.is_user || message?.is_system) continue;
                 const all = options.includeAllFromStart || index > startIndex;
-                const selected = message.swipe_id ?? 0;
+                const selected = index === startIndex && options.startSwipeId !== undefined ? options.startSwipeId : (message.swipe_id ?? 0);
                 for (let swipeId = 0; swipeId < (message.swipe_info?.length ?? 0); swipeId += 1) {
                     const branch = getBranch(message, swipeId);
                     if (!branch || (!all && options.includeStartSelectedOnly && swipeId !== selected)) continue;

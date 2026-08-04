@@ -6771,6 +6771,7 @@ function createOrchestrator(deps) {
       const committed = await deps.store.commitSegment({ chatId: current.chatId, message: latestMessage, messageId: capturedMessageId, branchId: branch.branchId, swipeId, expectedHeadRevision: envelope.headRevision, baseStateVersion: baseSnapshot.version, baseSnapshot, requestId: deps.makeId?.() ?? crypto.randomUUID(), userMessageId: capturedUserId, patch: response.patch, checks, assistantText: capturedText, nextState: applied.value, isContinue: false, signal });
       return committed.ok ? { ok: true, snapshot: clone(applied.value), stateVersion: applied.value.version } : committed;
     } catch (error) {
+      if (error?.name === "AbortError") throw error;
       return { ok: false, reason: "replay-failed", error };
     }
   }
@@ -7205,7 +7206,7 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     const context = adapter.getContext?.();
     const envelope = context?.chatMetadata?.[NAMESPACE];
     if (!validEnvelope(envelope) || !Array.isArray(context?.chat) || !Number.isInteger(startIndex) || startIndex < 0 || startIndex > context.chat.length) return result("invalid-context");
-    if (!isPlainObject(options) || options.includeAllFromStart !== void 0 && typeof options.includeAllFromStart !== "boolean" || options.includeStartSelectedOnly !== void 0 && typeof options.includeStartSelectedOnly !== "boolean") return result("invalid-options");
+    if (!isPlainObject(options) || options.includeAllFromStart !== void 0 && typeof options.includeAllFromStart !== "boolean" || options.includeStartSelectedOnly !== void 0 && typeof options.includeStartSelectedOnly !== "boolean" || options.startSwipeId !== void 0 && (!Number.isInteger(options.startSwipeId) || options.startSwipeId < 0)) return result("invalid-options");
     const metadataBefore = clone2(envelope);
     const messagesBefore = /* @__PURE__ */ new Map();
     const boundary = findLastValidSnapshot(startIndex - 1);
@@ -7215,7 +7216,7 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
         const message = context.chat[index];
         if (message?.is_user || message?.is_system) continue;
         const all = options.includeAllFromStart || index > startIndex;
-        const selected = message.swipe_id ?? 0;
+        const selected = index === startIndex && options.startSwipeId !== void 0 ? options.startSwipeId : message.swipe_id ?? 0;
         for (let swipeId = 0; swipeId < (message.swipe_info?.length ?? 0); swipeId += 1) {
           const branch = getBranch(message, swipeId);
           if (!branch || !all && options.includeStartSelectedOnly && swipeId !== selected) continue;
@@ -7952,20 +7953,23 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
     if (!invalidated?.ok) return invalidated;
     let accepted;
     try {
-      accepted = await confirm({ action: "recalculate", startIndex, count: buildRecalculationPlan(startIndex).length, restoredVersion: invalidated.snapshot.version });
+      accepted = await confirm({ action: "recalculate", startIndex, count: buildRecalculationPlan(startIndex).length, restoredVersion: invalidated.snapshot.version, signal });
     } catch (error) {
+      if (error?.name === "AbortError") throw error;
       return { ok: false, reason: "confirmation-failed", error };
     }
+    signal.throwIfAborted();
     if (!accepted) return { ok: false, reason: "recalculation-required" };
     return recalculateNow(startIndex, signal);
   }
   function invalidateForEdit(messageIndex) {
     const { message, messageId } = stableAt(messageIndex);
     const start = message?.is_user ? messageIndex + 1 : messageIndex;
+    const startSwipeId = message?.swipe_id ?? 0;
     return serialize("invalidate-edit", (signal) => {
       const current = context().chat[messageIndex];
       if (!message || current !== message || current.extra?.dualModelEngine?.messageId !== messageId) return { ok: false, reason: "stale-message" };
-      return invalidateAndRecalculate(start, { includeStartSelectedOnly: !message.is_user }, signal);
+      return invalidateAndRecalculate(start, { includeStartSelectedOnly: !message.is_user, ...!message.is_user ? { startSwipeId } : {} }, signal);
     });
   }
   function invalidateForDelete(messageIndex) {

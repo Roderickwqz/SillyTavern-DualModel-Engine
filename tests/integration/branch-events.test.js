@@ -270,7 +270,7 @@ it('C11 rejects an edited event whose captured message was replaced before its q
 
 it('C10 stops a cancelled recalculation after an abort-ignoring replay resolves and does not start its successor', async () => {
     let resolveReplay; const calls = [];
-    const queue = createChatTaskQueue(); const chat = [assistant('first', [branch('first', 1)])];
+    const queue = createChatTaskQueue(); const chat = [assistant('first', [branch('first', 1)]), assistant('second', [branch('second', 2)])];
     const manager = createRollbackManager({
         adapter: { getContext: () => ({ chatId: 'chat-a', chat }) }, queue,
         store: { findLastValidSnapshot: () => ({ snapshot: { version: 0 } }) },
@@ -284,7 +284,22 @@ it('C10 stops a cancelled recalculation after an abort-ignoring replay resolves 
     expect(calls).toHaveLength(1);
 });
 
-it('C11 queued swipe restoration cannot revive a branch made stale by an earlier edit', async () => {
+it('C10 rethrows confirmation cancellation after exposing the queue signal to the dialog', async () => {
+    let rejectConfirm; let receivedSignal;
+    const message = assistant('target', [branch('target', 1)]); const queue = createChatTaskQueue();
+    const manager = createRollbackManager({
+        adapter: { getContext: () => ({ chatId: 'chat-a', chat: [message], chatMetadata: { dualModelEngine: { headRevision: 0 } } }) }, queue,
+        store: { invalidateFrom: async () => ({ ok: true, snapshot: { version: 0 } }) },
+        confirm: ({ signal }) => { receivedSignal = signal; return new Promise((_, reject) => { rejectConfirm = reject; }); },
+    });
+    const result = manager.invalidateForEdit(0);
+    await vi.waitFor(() => expect(receivedSignal).toBeTruthy());
+    queue.cancelChat('chat-a', 'dialog cancelled');
+    rejectConfirm(receivedSignal.reason);
+    await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+});
+
+it('C11 queued swipe restoration keeps the originally edited branch stale while restoring a newly selected branch', async () => {
     const message = assistant('target', [branch('zero', 1), branch('one', 2)], 0);
     const host = eventHost({ chat: [message], confirm: async () => false });
     const blocker = host.queue.enqueue('chat-a', 'blocker', async () => {});
@@ -293,9 +308,10 @@ it('C11 queued swipe restoration cannot revive a branch made stale by an earlier
     const restore = host.emit('swiped', 0);
     await blocker;
     await edit;
-    await expect(restore).resolves.toEqual({ ok: false, reason: 'stale-branch' });
-    expect(message.swipe_info[1].extra.dualModelEngine.branch.status).toBe('stale');
-    expect(host.context.chatMetadata.dualModelEngine.activeRef).toBeNull();
+    await expect(restore).resolves.toMatchObject({ ok: true, snapshot: { version: 2 } });
+    expect(message.swipe_info[0].extra.dualModelEngine.branch.status).toBe('stale');
+    expect(message.swipe_info[1].extra.dualModelEngine.branch.status).toBe('committed');
+    expect(host.context.chatMetadata.dualModelEngine.activeRef).toEqual({ messageId: 'target', swipeId: 1, branchId: 'one' });
 });
 
 it('C12 refreshes selected swipes on CHAT_CHANGED and rolls back partial bind registrations when adapter.on throws', () => {
