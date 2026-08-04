@@ -6674,7 +6674,12 @@ function createOrchestrator(deps) {
     const prepared = ["swipe", "regenerate"].includes(type) ? deps.rollbackManager?.prepareSwipeGeneration?.(current.chat.length - 1, type) ?? deps.prepareSwipeGeneration?.({ type, target, envelope }) : null;
     if (prepared?.ok === false) return null;
     const branch = type === "continue" ? existing?.branchId : null;
-    return { type, chatId: current.chatId, expectedHeadRevision: prepared?.expectedHeadRevision ?? envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (["swipe", "regenerate"].includes(type) ? existing?.branchId ?? null : null), baseSwipeId: prepared?.baseSwipeId ?? (["swipe", "regenerate"].includes(type) ? target?.swipe_id ?? 0 : null), reusableChecks: clone(prepared?.reusableChecks ?? []), pendingRuleRecords: [], pendingRuleEffects: [], ruleReplayMode: ["swipe", "regenerate"].includes(type) ? "reuse-only" : null, effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === "continue" ? target?.mes ?? "" : null, playerText: previousUser?.mes ?? "", userMessageId: previousUser ? messageId(previousUser) : null };
+    const abortController = new AbortController();
+    let cancel;
+    const cancelled = new Promise((resolve) => {
+      cancel = resolve;
+    });
+    return { type, chatId: current.chatId, expectedHeadRevision: prepared?.expectedHeadRevision ?? envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (["swipe", "regenerate"].includes(type) ? existing?.branchId ?? null : null), baseSwipeId: prepared?.baseSwipeId ?? (["swipe", "regenerate"].includes(type) ? target?.swipe_id ?? 0 : null), reusableChecks: clone(prepared?.reusableChecks ?? []), pendingRuleRecords: [], pendingRuleEffects: [], ruleReplayMode: ["swipe", "regenerate"].includes(type) ? "reuse-only" : null, effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === "continue" ? target?.mes ?? "" : null, playerText: previousUser?.mes ?? "", userMessageId: previousUser ? messageId(previousUser) : null, abortController, cancelled, cancel };
   }
   async function beforeGeneration(type) {
     if (!supported.has(type)) return { ignored: true, reason: "unsupported-generation-type" };
@@ -6781,10 +6786,12 @@ function createOrchestrator(deps) {
   }
   async function afterGeneration() {
     if (!generation) return { ignored: true, reason: "no-matching-generation" };
-    const located = locate(context(), generation);
     const captured = generation;
-    generation = null;
-    await captured.ruleToolTail?.catch(() => void 0);
+    captured.generationEnding = true;
+    const located = locate(context(), captured);
+    const toolOutcome = await Promise.race([captured.ruleToolTail?.catch(() => void 0) ?? Promise.resolve(), captured.cancelled.then(() => "cancelled")]);
+    if (toolOutcome === "cancelled" || captured.closed) return { ok: false, reason: "generation-cancelled" };
+    if (generation === captured) generation = null;
     if (captured.ruleToolFailed) {
       captured.pendingRuleRecords.length = 0;
       captured.pendingRuleEffects.length = 0;
@@ -6865,6 +6872,9 @@ function createOrchestrator(deps) {
     const stopped = generation;
     generation = null;
     if (stopped) {
+      stopped.closed = true;
+      stopped.abortController?.abort(reason);
+      stopped.cancel?.(reason);
       stopped.pendingRuleRecords.length = 0;
       stopped.pendingRuleEffects.length = 0;
     }
@@ -8316,6 +8326,11 @@ function activeIdentity(getActiveGeneration, expected) {
 function staleGeneration() {
   return new Error("active generation changed");
 }
+function closedGeneration() {
+  const error = new Error("active generation is closing");
+  error.code = "generation-closed";
+  return error;
+}
 function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateCheck, validateDamage, resolveCheck, resolveDamage, ledger }) {
   const names = ["DualModelResolveD20Check", "DualModelApplyD20Damage"];
   const enabled = () => {
@@ -8329,15 +8344,17 @@ function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateC
     generation.pendingRuleEffects.length = 0;
   };
   const enqueue = (generation, work) => {
+    if (generation.generationEnding || generation.closed) return Promise.reject(closedGeneration());
     generation.ruleToolTail ??= Promise.resolve();
     const run = generation.ruleToolTail.catch(() => void 0).then(async () => {
       if (!activeIdentity(getActiveGeneration, generation)) throw staleGeneration();
+      if (generation.closed) throw closedGeneration();
       if (!authorized(generation)) throw new Error("Rule tool is not authorized for this generation");
       return work();
     });
-    generation.ruleToolTail = run;
+    generation.ruleToolTail = run.catch(() => void 0);
     return run.catch((error) => {
-      discard(generation);
+      if (error?.code !== "generation-closed") discard(generation);
       throw error;
     });
   };
@@ -8376,7 +8393,7 @@ function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateC
         }
         if (generation.ruleReplayMode === "reuse-only") throw new Error("Ordinary regeneration cannot create or reroll a formal check; use explicit reroll");
         const result2 = await resolveCheck(input, structuredClone(generation.pendingRuleEffects.at(-1)?.nextState ?? generation.baseSnapshot));
-        if (!activeIdentity(getActiveGeneration, generation)) throw staleGeneration();
+        if (!activeIdentity(getActiveGeneration, generation) || generation.closed) throw generation.closed ? closedGeneration() : staleGeneration();
         const record = ledger.createRecord({ kind: "check", branchId: generation.branchId, signature: key.slice(6), request: structuredClone(input), result: structuredClone(result2) });
         generation.pendingRuleRecords.push(record);
         return record;
@@ -8402,7 +8419,7 @@ function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateC
       return enqueue(generation, async () => {
         const state = structuredClone(generation.pendingRuleEffects.at(-1)?.nextState ?? generation.baseSnapshot);
         const resolved = await resolveDamage(input, state);
-        if (!activeIdentity(getActiveGeneration, generation)) throw staleGeneration();
+        if (!activeIdentity(getActiveGeneration, generation) || generation.closed) throw generation.closed ? closedGeneration() : staleGeneration();
         const record = ledger.createRecord({ kind: "damage", branchId: generation.branchId, request: structuredClone(input), result: structuredClone(resolved.audit) });
         generation.pendingRuleRecords.push(record);
         generation.pendingRuleEffects.push({ record, nextState: structuredClone(resolved.state) });
@@ -8609,6 +8626,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
     throw error;
   }
   const stopOrchestrator = orchestrator.stop.bind(orchestrator);
+  let orchestratorStopped = false;
   orchestrator.stop = () => {
     let first;
     if (canRegisterTools) try {
@@ -8616,8 +8634,9 @@ async function bootstrap({ adapter, dependencies } = {}) {
     } catch (error) {
       first = error;
     }
-    try {
+    if (!orchestratorStopped) try {
       stopOrchestrator();
+      orchestratorStopped = true;
     } catch (error) {
       first ??= error;
     }

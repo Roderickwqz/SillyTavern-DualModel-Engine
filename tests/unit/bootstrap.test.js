@@ -91,4 +91,25 @@ describe('bootstrap', () => {
         await expect(Promise.resolve(listeners.get('swiped')(0))).resolves.toEqual({ ok: false, reason: 'read-only' });
         expect(restoreBranch).not.toHaveBeenCalled();
     });
+
+    it('preserves bootstrap failure identity while unregistering the real partially registered tools and stopping listeners', async () => {
+        const error = new Error('second registration'); const listeners = new Map(); const adapter = { events: { CHAT_CHANGED: 'chat', GENERATION_AFTER_COMMANDS: 'before', GENERATION_ENDED: 'ended', GENERATION_STOPPED: 'stopped' }, getContext: () => ({ chatId: 'a', groupId: null, chat: [], chatMetadata: { dualModelEngine: { stateVersion: 0, headRevision: 0, activeSnapshot: { version: 0 }, preset: { id: 'narrative' } } } }), getSettings: () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'narrative' }), listProfiles: () => [{ id: 'recorder' }], on: (name, fn) => listeners.set(name, fn), off: vi.fn((name, fn) => { if (listeners.get(name) === fn) listeners.delete(name); }), registerTool: vi.fn(definition => { if (definition.name.endsWith('Damage')) throw error; }), unregisterTool: vi.fn(), saveChat: vi.fn() };
+        await expect(bootstrap({ adapter, dependencies: { promptInjector: { refresh: vi.fn(), clear: vi.fn() } } })).rejects.toBe(error);
+        expect(adapter.unregisterTool).toHaveBeenCalledWith('DualModelResolveD20Check'); expect(adapter.unregisterTool).not.toHaveBeenCalledWith('DualModelApplyD20Damage'); expect(adapter.off).toHaveBeenCalledTimes(4); expect(listeners).toEqual(new Map());
+    });
+
+    it.each(['bind', 'initialize'])('continues best-effort cleanup and preserves the %s failure object', async stage => {
+        const error = new Error(stage); const listeners = new Map(); const registry = { register: vi.fn(), unregister: vi.fn(() => { throw new Error('unregister'); }) }; const rollbackManager = { bind: vi.fn(() => { if (stage === 'bind') throw error; }), destroy: vi.fn(() => { throw new Error('destroy'); }) };
+        const store = { loadEnvelope: () => { if (stage === 'initialize') throw error; return { stateVersion: 0, headRevision: 0, activeSnapshot: { version: 0 }, preset: { id: 'narrative' } }; }, listRuleRecords: () => [] };
+        const adapter = { events: { CHAT_CHANGED: 'chat', GENERATION_AFTER_COMMANDS: 'before', GENERATION_ENDED: 'ended', GENERATION_STOPPED: 'stopped' }, getContext: () => ({ chatId: 'a', groupId: null, chat: [], chatMetadata: { dualModelEngine: store.loadEnvelope() } }), getSettings: () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'narrative' }), listProfiles: () => [{ id: 'recorder' }], on: (name, fn) => listeners.set(name, fn), off: vi.fn((name, fn) => { if (listeners.get(name) === fn) listeners.delete(name); }), registerTool: vi.fn(), saveChat: vi.fn() };
+        await expect(bootstrap({ adapter, dependencies: { store, toolRegistry: registry, rollbackManager, promptInjector: { refresh: vi.fn(), clear: vi.fn() } } })).rejects.toBe(error);
+        expect(registry.register).toHaveBeenCalledOnce(); expect(registry.unregister).toHaveBeenCalledOnce(); expect(rollbackManager.destroy).toHaveBeenCalledOnce(); expect(adapter.off).toHaveBeenCalledTimes(4); expect(listeners).toEqual(new Map());
+    });
+
+    it('retries only a failed tool unregistration while keeping bootstrap stop cleanup idempotent', async () => {
+        const failure = new Error('damage unregister'); const registry = { register: vi.fn(), unregister: vi.fn().mockImplementationOnce(() => { throw failure; }) }; const rollbackManager = { bind: vi.fn(), destroy: vi.fn() }; const adapter = { events: { CHAT_CHANGED: 'chat', GENERATION_AFTER_COMMANDS: 'before', GENERATION_ENDED: 'ended', GENERATION_STOPPED: 'stopped' }, getContext: () => ({ chatId: 'a', groupId: null, chat: [], chatMetadata: {} }), getSettings: () => ({ enabled: false }), listProfiles: () => [], on: vi.fn(), off: vi.fn(), registerTool: vi.fn() };
+        const result = await bootstrap({ adapter, dependencies: { toolRegistry: registry, rollbackManager, promptInjector: { refresh: vi.fn(), clear: vi.fn() } } });
+        expect(() => result.orchestrator.stop()).toThrow(failure); expect(adapter.off).toHaveBeenCalledTimes(4); expect(rollbackManager.destroy).toHaveBeenCalledOnce();
+        expect(() => result.orchestrator.stop()).not.toThrow(); expect(registry.unregister).toHaveBeenCalledTimes(2); expect(adapter.off).toHaveBeenCalledTimes(4); expect(rollbackManager.destroy).toHaveBeenCalledOnce();
+    });
 });

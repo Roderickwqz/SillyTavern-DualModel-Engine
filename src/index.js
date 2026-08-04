@@ -76,8 +76,8 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         }
         throw error;
     }
-    const stopOrchestrator = orchestrator.stop.bind(orchestrator);
-    orchestrator.stop = () => { let first; if (canRegisterTools) try { toolRegistry.unregister(); } catch (error) { first = error; } try { stopOrchestrator(); } catch (error) { first ??= error; } if (first) throw first; };
+    const stopOrchestrator = orchestrator.stop.bind(orchestrator); let orchestratorStopped = false;
+    orchestrator.stop = () => { let first; if (canRegisterTools) try { toolRegistry.unregister(); } catch (error) { first = error; } if (!orchestratorStopped) try { stopOrchestrator(); orchestratorStopped = true; } catch (error) { first ??= error; } if (first) throw first; };
 
     return {
         name: 'dualModelEngine',
