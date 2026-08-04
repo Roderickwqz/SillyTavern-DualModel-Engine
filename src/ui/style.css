@@ -1,0 +1,2 @@
+.dualmodel-panel { display: grid; gap: 0.75rem; }
+.dualmodel-error { color: var(--warning-color, #d97706); }
