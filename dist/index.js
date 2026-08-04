@@ -6783,6 +6783,29 @@ function createOrchestrator(deps) {
     if (previous) deps.queue.cancelChat(previous, "chat-changed");
     return initializeChat();
   }, beforeGeneration: (type, _options, dryRun) => dryRun ? void 0 : beforeGeneration(type), generationEnded: afterGeneration, generationStopped: () => generationStopped() };
+  function cleanup() {
+    let first;
+    while (unbind.length) {
+      try {
+        unbind.pop()();
+      } catch (error) {
+        first ??= error;
+      }
+    }
+    started = false;
+    generationStopped("orchestrator-stopped");
+    try {
+      if (activeChatId) deps.queue.cancelChat(activeChatId, "orchestrator-stopped");
+    } catch (error) {
+      first ??= error;
+    }
+    try {
+      deps.promptInjector.clear();
+    } catch (error) {
+      first ??= error;
+    }
+    return first;
+  }
   function start() {
     if (started) return;
     started = true;
@@ -6792,17 +6815,13 @@ function createOrchestrator(deps) {
         unbind.push(() => deps.adapter.off(name, fn));
       }
     } catch (error) {
-      while (unbind.length) unbind.pop()();
-      started = false;
+      cleanup();
       throw error;
     }
   }
   function stop() {
-    while (unbind.length) unbind.pop()();
-    started = false;
-    generationStopped("orchestrator-stopped");
-    if (activeChatId) deps.queue.cancelChat(activeChatId, "orchestrator-stopped");
-    deps.promptInjector.clear();
+    const error = cleanup();
+    if (error) throw error;
   }
   return { start, stop, initializeChat, beforeGeneration, afterGeneration, getStatus: () => ({ activeChatId, generation: Boolean(generation), queue: activeChatId ? deps.queue.getStatus(activeChatId) : { state: "idle", requestId: null } }) };
 }
@@ -7723,7 +7742,10 @@ async function bootstrap({ adapter, dependencies } = {}) {
   try {
     await orchestrator.initializeChat();
   } catch (error) {
-    orchestrator.stop();
+    try {
+      orchestrator.stop();
+    } catch {
+    }
     throw error;
   }
   return {

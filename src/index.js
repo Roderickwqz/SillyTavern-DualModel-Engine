@@ -34,7 +34,9 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     try {
         await orchestrator.initializeChat();
     } catch (error) {
-        orchestrator.stop();
+        try { orchestrator.stop(); } catch {
+            // Initialization failure remains the observable root cause.
+        }
         throw error;
     }
 
