@@ -96,6 +96,15 @@ it('commits a current-branch state mutation atomically and rolls it back on save
     await expect(failing.store.commitCurrentBranchMutation({ chatId: 'chat-a', expectedHeadRevision: 7, baseVersion: 2, activeRef: failing.context.chatMetadata.dualModelEngine.activeRef, nextState: { version: 3, value: 9 }, patch: { operations: [] }, source: 'user-editor' })).resolves.toMatchObject({ ok: false, reason: 'save-failed' }); expect(failing.context).toEqual(before);
 });
 
+it('restores its old mutation when save replaces the active context', async () => {
+    const branch = { branchId: 'b1', status: 'committed', segments: [{ checks: [], postSnapshot: { version: 2, value: 2 } }] };
+    const initial = setup({ current: message(branch), metadata: envelope({ activeRef: { messageId: 'm1', swipeId: 0, branchId: 'b1' } }) }); const before = structuredClone(initial.context);
+    const replacement = structuredClone(initial.context); let active = initial.context;
+    const store = createStateStore({ adapter: { getContext: () => active, saveChat: async () => { active = replacement; } }, makeId: () => 'x', hashText: async () => 'hash' });
+    await expect(store.commitCurrentBranchMutation({ chatId: 'chat-a', expectedHeadRevision: 7, baseVersion: 2, activeRef: initial.context.chatMetadata.dualModelEngine.activeRef, nextState: { version: 3, value: 9 }, patch: { operations: [] } })).resolves.toEqual({ ok: false, reason: 'stale-chat' });
+    expect(initial.context).toEqual(before); expect(replacement).toEqual(before);
+});
+
 it('does not mutate after a delayed hash when its commit signal is aborted', async () => {
     let resolveHash; const hashText = vi.fn(() => new Promise(resolve => { resolveHash = resolve; })); const { context, current, saveChat } = setup(); const store = createStateStore({ adapter: { getContext: () => context, saveChat }, makeId: () => 'generated', hashText }); const controller = new AbortController(); const before = structuredClone(context);
     const pending = store.commitSegment(commitInput(current, { signal: controller.signal })); await vi.waitFor(() => expect(hashText).toHaveBeenCalledOnce()); controller.abort(); resolveHash('hash:answer');

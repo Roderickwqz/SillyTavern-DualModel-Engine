@@ -7314,7 +7314,12 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
       envelope.headRevision += 1;
       await adapter.saveChat();
       const after = adapter.getContext?.();
-      if (after?.chatId !== chatId || after.chat !== capturedChat || after.chatMetadata !== capturedMetadata || after.chatMetadata?.[NAMESPACE] !== envelope || after.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId) !== message || message.swipe_info?.[activeRef.swipeId] !== capturedSwipe || capturedSwipe?.extra?.[NAMESPACE]?.branch !== capturedBranch) return result("stale-chat");
+      if (after?.chatId !== chatId || after.chat !== capturedChat || after.chatMetadata !== capturedMetadata || after.chatMetadata?.[NAMESPACE] !== envelope || after.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId) !== message || message.swipe_info?.[activeRef.swipeId] !== capturedSwipe || capturedSwipe?.extra?.[NAMESPACE]?.branch !== capturedBranch) {
+        if (capturedMetadata[NAMESPACE] === envelope) capturedMetadata[NAMESPACE] = metadataBefore;
+        message.extra = extraBefore;
+        message.swipe_info = swipesBefore;
+        return result("stale-chat");
+      }
       return { ok: true, headRevision: envelope.headRevision, record: clone2(record) };
     } catch (error) {
       const latest = adapter.getContext?.();
@@ -7355,7 +7360,12 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
       envelope.taskStatus = { state: "idle", requestId: null };
       await adapter.saveChat();
       const after = adapter.getContext?.();
-      if (after?.chatId !== chatId || after.chat !== capturedChat || after.chatMetadata !== capturedMetadata || after.chatMetadata?.[NAMESPACE] !== envelope || after.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId) !== message || message.swipe_info?.[activeRef.swipeId] !== capturedSwipe || capturedSwipe?.extra?.[NAMESPACE]?.branch !== capturedBranch) return result("stale-chat");
+      if (after?.chatId !== chatId || after.chat !== capturedChat || after.chatMetadata !== capturedMetadata || after.chatMetadata?.[NAMESPACE] !== envelope || after.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId) !== message || message.swipe_info?.[activeRef.swipeId] !== capturedSwipe || capturedSwipe?.extra?.[NAMESPACE]?.branch !== capturedBranch) {
+        if (capturedMetadata[NAMESPACE] === envelope) capturedMetadata[NAMESPACE] = metadataBefore;
+        message.extra = extraBefore;
+        message.swipe_info = swipesBefore;
+        return result("stale-chat");
+      }
       return { ok: true, stateVersion: envelope.stateVersion, headRevision: envelope.headRevision, record: record ? clone2(record) : void 0 };
     } catch (error) {
       const latest = adapter.getContext?.();
