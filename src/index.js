@@ -1,6 +1,8 @@
 export { default as Ajv } from 'ajv';
 import { probeHostCapabilities } from './capability-probe.js';
 
+export { createOrchestrator } from './orchestrator.js';
+
 export async function bootstrap({ adapter } = {}) {
     const runtimeAdapter = adapter ?? (await import('./st-runtime.js')).createRuntimeAdapter();
 

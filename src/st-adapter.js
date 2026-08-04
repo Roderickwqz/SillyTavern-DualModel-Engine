@@ -1,5 +1,6 @@
 export function createSTAdapter(host) {
     return {
+        events: host.eventTypes ?? {},
         getContext: () => host.getContext(),
         on: (eventName, handler) => host.eventSource?.on(eventName, handler),
         off: (eventName, handler) => host.eventSource?.removeListener(eventName, handler),
