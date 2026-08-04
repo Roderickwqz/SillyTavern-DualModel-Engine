@@ -6784,6 +6784,12 @@ function createOrchestrator(deps) {
     const located = locate(context(), generation);
     const captured = generation;
     generation = null;
+    if (captured.ruleToolFailed) {
+      captured.pendingRuleRecords.length = 0;
+      captured.pendingRuleEffects.length = 0;
+      await Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => void 0);
+      return { ok: false, reason: "rule-tool-failed" };
+    }
     if (!located.ok) {
       await Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => void 0);
       diagnostic({ requestId: captured.requestId, ...located });
@@ -8315,13 +8321,29 @@ function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateC
     const config = getActiveGeneration()?.effectiveConfig ?? getConfig();
     return Boolean(getActiveGeneration()) && config?.enabled && config.rulePresetId !== "narrative" && config.adjudication === "automatic-tool";
   };
-  const sameCall = (generation, key, work) => {
+  const authorized = (generation) => generation?.effectiveConfig?.enabled && generation.effectiveConfig.rulePresetId !== "narrative" && generation.effectiveConfig.adjudication === "automatic-tool";
+  const discard = (generation) => {
+    generation.ruleToolFailed = true;
+    generation.pendingRuleRecords.length = 0;
+    generation.pendingRuleEffects.length = 0;
+  };
+  const enqueue = (generation, work) => {
+    generation.ruleToolTail ??= Promise.resolve();
+    const run = generation.ruleToolTail.catch(() => void 0).then(async () => {
+      if (!activeIdentity(getActiveGeneration, generation)) throw staleGeneration();
+      if (!authorized(generation)) throw new Error("Rule tool is not authorized for this generation");
+      return work();
+    });
+    generation.ruleToolTail = run;
+    return run.catch((error) => {
+      discard(generation);
+      throw error;
+    });
+  };
+  const sameCheck = (generation, key, work) => {
     generation.ruleToolInflight ??= /* @__PURE__ */ new Map();
     if (!generation.ruleToolInflight.has(key)) {
-      generation.ruleToolTail ??= Promise.resolve();
-      const run = generation.ruleToolTail.catch(() => void 0).then(work);
-      generation.ruleToolTail = run;
-      generation.ruleToolInflight.set(key, run.finally(() => generation.ruleToolInflight.delete(key)));
+      generation.ruleToolInflight.set(key, enqueue(generation, work).finally(() => generation.ruleToolInflight.delete(key)));
     }
     return generation.ruleToolInflight.get(key);
   };
@@ -8334,12 +8356,15 @@ function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateC
     stealth: false,
     formatMessage: (input) => `D20: ${input.actor} \u2014 ${input.action}`,
     action: async (input) => {
-      const validation = validateCheck(input);
-      if (!validation.ok) throw new Error(JSON.stringify(validation.errors));
       const generation = getActiveGeneration();
       if (!generation) throw new Error("No active generation");
+      const validation = validateCheck(input);
+      if (!validation.ok) {
+        discard(generation);
+        throw new Error(JSON.stringify(validation.errors));
+      }
       const key = `check:${signature(input, generation.userMessageId)}`;
-      return sameCall(generation, key, async () => {
+      return sameCheck(generation, key, async () => {
         const existing = generation.pendingRuleRecords.find((record2) => record2.kind === "check" && record2.signature === key.slice(6));
         if (existing) return existing;
         const reusable = generation.baseBranchId && ledger.findReusable({ baseBranchId: generation.baseBranchId, signature: key.slice(6) });
@@ -8366,12 +8391,14 @@ function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateC
     stealth: false,
     formatMessage: (input) => `Damage: ${input.target} \u2014 ${input.expression}`,
     action: async (input) => {
-      const validation = validateDamage(input);
-      if (!validation.ok) throw new Error(JSON.stringify(validation.errors));
       const generation = getActiveGeneration();
       if (!generation) throw new Error("No active generation");
-      const key = `damage:${JSON.stringify(input)}`;
-      return sameCall(generation, key, async () => {
+      const validation = validateDamage(input);
+      if (!validation.ok) {
+        discard(generation);
+        throw new Error(JSON.stringify(validation.errors));
+      }
+      return enqueue(generation, async () => {
         const state = structuredClone(generation.pendingRuleEffects.at(-1)?.nextState ?? generation.baseSnapshot);
         const resolved = await resolveDamage(input, state);
         if (!activeIdentity(getActiveGeneration, generation)) throw staleGeneration();
@@ -8382,21 +8409,26 @@ function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateC
       });
     }
   };
+  const registered = /* @__PURE__ */ new Set();
   return { register() {
-    try {
-      adapter.registerTool(checkDefinition);
-      adapter.registerTool(damageDefinition);
+    for (const definition of [checkDefinition, damageDefinition]) try {
+      adapter.registerTool(definition);
+      registered.add(definition.name);
     } catch (error) {
-      try {
-        adapter.unregisterTool(names[0]);
-      } catch {
+      let cleanupError;
+      for (const name of [...registered]) try {
+        adapter.unregisterTool(name);
+        registered.delete(name);
+      } catch (failure) {
+        cleanupError ??= failure;
       }
-      throw error;
+      throw error ?? cleanupError;
     }
   }, unregister() {
     let first;
-    for (const name of names) try {
+    for (const name of [...registered]) try {
       adapter.unregisterTool(name);
+      registered.delete(name);
     } catch (error) {
       first ??= error;
     }
