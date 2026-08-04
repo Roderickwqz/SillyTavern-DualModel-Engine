@@ -6773,9 +6773,9 @@ function createOrchestrator(deps) {
     return { ok: true, queued: true };
   }
   function generationStopped(reason = "host-stopped") {
-    if (!generation) return;
-    diagnostic({ requestId: generation.requestId, reason });
+    const stopped = generation;
     generation = null;
+    if (stopped) diagnostic({ requestId: stopped.requestId, reason });
   }
   const handlers = { chatChanged: () => {
     const previous = activeChatId;
@@ -6792,8 +6792,11 @@ function createOrchestrator(deps) {
         first ??= error;
       }
     }
-    started = false;
-    generationStopped("orchestrator-stopped");
+    try {
+      generationStopped("orchestrator-stopped");
+    } catch (error) {
+      first ??= error;
+    }
     try {
       if (activeChatId) deps.queue.cancelChat(activeChatId, "orchestrator-stopped");
     } catch (error) {
@@ -6804,6 +6807,7 @@ function createOrchestrator(deps) {
     } catch (error) {
       first ??= error;
     }
+    started = Boolean(first);
     return first;
   }
   function start() {

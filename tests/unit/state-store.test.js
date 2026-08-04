@@ -96,6 +96,28 @@ it('rolls back a replaced cloned source branch when saving fails', async () => {
     expect({ metadata: context.chatMetadata, extra: current.extra, swipes: current.swipe_info }).toEqual(before);
 });
 
+it('T1 creates a pinned envelope once when one is missing', async () => {
+    const { store, context, saveChat } = setup({ metadata: null });
+    const result = await store.ensureEnvelope({ presetId: 'narrative', initialState: { version: 0, value: 0 } });
+    expect(result).toMatchObject({ ok: true, created: true, value: { preset: { id: 'narrative', version: 1 } } });
+    expect(saveChat).toHaveBeenCalledOnce(); expect(context.chatMetadata.dualModelEngine.activeSnapshot).toEqual({ version: 0, value: 0 });
+});
+
+it('T2 rolls back envelope creation when save rejects', async () => {
+    const { store, context } = setup({ metadata: null, saveChat: vi.fn().mockRejectedValue(new Error('no')) });
+    await expect(store.ensureEnvelope({ presetId: 'narrative', initialState: { version: 0 } })).resolves.toMatchObject({ ok: false, reason: 'save-failed' });
+    expect(context.chatMetadata).toEqual({ dualModelEngine: null });
+});
+
+it('T4 prepares a cloned source branch and T5 rejects missing source', () => {
+    const source = { branchId: 'source', baseStateVersion: 1, baseSnapshot: { version: 1, nested: { x: 1 } }, segments: [], status: 'committed' };
+    const { store, current } = setup({ current: message(source) });
+    const prepared = store.prepareSwipeGeneration({ target: current });
+    expect(prepared).toMatchObject({ ok: true, baseStateVersion: 1, baseBranchId: 'source' }); prepared.baseSnapshot.nested.x = 2;
+    expect(source.baseSnapshot.nested.x).toBe(1);
+    expect(store.prepareSwipeGeneration({ target: message() })).toEqual({ ok: false, reason: 'missing-source-branch' });
+});
+
 it('rejects duplicate requests before hashing or save', async () => {
     const { store, current, saveChat } = setup({ metadata: envelope({ lastCommittedRequestId: 'r1' }) });
     expect(await store.commitSegment(commitInput(current))).toEqual({ ok: false, reason: 'duplicate-request' });
