@@ -9701,7 +9701,8 @@ async function bootstrap({ adapter, dependencies } = {}) {
     if (!settings2 || typeof settings2 !== "object") return;
     const diagnostics = Array.isArray(settings2.diagnostics) ? settings2.diagnostics : [];
     settings2.diagnostics = [...diagnostics, structuredClone(value)].slice(-100);
-    await (runtimeAdapter.saveSettings?.() ?? runtimeAdapter.saveGlobalSettings?.());
+    if (typeof runtimeAdapter.saveSettings === "function") await runtimeAdapter.saveSettings();
+    else if (typeof runtimeAdapter.saveGlobalSettings === "function") await runtimeAdapter.saveGlobalSettings(settings2);
   });
   const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });

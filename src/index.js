@@ -60,7 +60,8 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         const settings = runtimeAdapter.getSettings?.(); if (!settings || typeof settings !== 'object') return;
         const diagnostics = Array.isArray(settings.diagnostics) ? settings.diagnostics : [];
         settings.diagnostics = [...diagnostics, structuredClone(value)].slice(-100);
-        await (runtimeAdapter.saveSettings?.() ?? runtimeAdapter.saveGlobalSettings?.());
+        if (typeof runtimeAdapter.saveSettings === 'function') await runtimeAdapter.saveSettings();
+        else if (typeof runtimeAdapter.saveGlobalSettings === 'function') await runtimeAdapter.saveGlobalSettings(settings);
     });
     const presets = [narrativePreset, d20LitePreset];
     const validator = createStateValidator({ presets });
