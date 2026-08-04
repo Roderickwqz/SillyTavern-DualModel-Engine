@@ -33,7 +33,7 @@ function createSTAdapter(host) {
   };
 }
 
-// src/st-runtime.js
+// src/main-tool-probe.js
 function createMainToolProbe(host) {
   let probeInFlight = false;
   return async ({ prompt, definition, responseLength = 32 }) => {
@@ -62,6 +62,8 @@ function createMainToolProbe(host) {
     }
   };
 }
+
+// src/st-runtime.js
 var probeMainTool = createMainToolProbe({ eventSource, eventTypes: event_types, generateRawData, isGenerating, tools: ToolManager });
 function createRuntimeAdapter() {
   return createSTAdapter({
@@ -81,6 +83,5 @@ function createRuntimeAdapter() {
   });
 }
 export {
-  createMainToolProbe,
   createRuntimeAdapter
 };

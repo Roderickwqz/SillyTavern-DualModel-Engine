@@ -8638,7 +8638,7 @@ var adjudicator_schema_default = {
 
 // src/index.js
 async function bootstrap({ adapter, dependencies } = {}) {
-  const runtimeAdapter = adapter ?? (await import("./st-runtime-SZIQOQ7A.js")).createRuntimeAdapter();
+  const runtimeAdapter = adapter ?? (await import("./st-runtime-DWPLWOTI.js")).createRuntimeAdapter();
   const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });
   const resolved = dependencies ?? {};
