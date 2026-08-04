@@ -36,19 +36,26 @@ function createSTAdapter(host) {
 // src/main-tool-probe.js
 function createMainToolProbe(host) {
   let probeInFlight = false;
+  let sequence = 0;
   return async ({ prompt, definition, responseLength = 32 }) => {
     if (host.isGenerating()) throw new Error("Finish the current generation before probing tools");
     if (probeInFlight) throw new Error("A tool capability probe is already running");
     if (!host.tools.isToolCallingSupported()) return { supported: false, reason: "Current main API/model settings do not support tools" };
     probeInFlight = true;
+    const marker = `[[dual-model-probe:${++sequence}:${host.probeNonce?.() ?? ""}]]`;
+    let injected = false;
     const inject = (data) => {
+      if (!JSON.stringify({ prompt: data?.prompt, messages: data?.messages }).includes(marker)) return;
+      injected = true;
       host.eventSource.removeListener(host.eventTypes.CHAT_COMPLETION_SETTINGS_READY, inject);
       data.tools = [{ type: "function", function: { name: definition.name, description: definition.description, parameters: definition.parameters } }];
       data.tool_choice = { type: "function", function: { name: definition.name } };
     };
     host.eventSource.on(host.eventTypes.CHAT_COMPLETION_SETTINGS_READY, inject);
     try {
-      let raw = await host.generateRawData({ prompt, responseLength });
+      let raw = await host.generateRawData({ prompt: `${prompt}
+${marker}`, responseLength });
+      if (!injected) return { supported: false, reason: "Probe settings hook did not match its request" };
       if (typeof raw === "function") {
         let calls = [];
         for await (const chunk of raw()) if (Array.isArray(chunk?.toolCalls)) calls = chunk.toolCalls;

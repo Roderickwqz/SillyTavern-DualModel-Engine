@@ -53,7 +53,14 @@ export function createOrchestrator(deps) {
         } catch (error) { captured.formalD20Blocked = true; diagnostic({ requestId: captured.requestId, reason: 'adjudication-failed', error }); }
         if (generation !== captured || captured.closed || context().chatId !== captured.chatId) return { ignored: true, reason: 'generation-cancelled' };
         const hardRuleText = [deps.formatReusableChecks?.(captured.reusableChecks) ?? '', adjudication.injectedText ?? ''].filter(Boolean).join('\n');
-        try { await deps.promptInjector.refresh({ state: captured.baseSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection, hardRuleText }); } catch (error) { if (generation === captured) generation = null; diagnostic({ reason: 'prompt-refresh-failed', error }); return { ignored: true, reason: 'prompt-refresh-failed' }; }
+        const refresh = Promise.resolve().then(() => deps.promptInjector.refresh({ state: captured.baseSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection, hardRuleText }));
+        const settledRefresh = refresh.then(() => ({ ok: true }), error => ({ ok: false, error }));
+        const refreshResult = await Promise.race([settledRefresh, captured.cancelled.then(() => ({ cancelled: true }))]);
+        if (refreshResult.cancelled) {
+            void settledRefresh.then(async () => { try { await initializeChat(); } catch (error) { diagnostic({ requestId: captured.requestId, reason: 'prompt-refresh-recovery-failed', error }); } });
+            return { ignored: true, reason: 'generation-cancelled' };
+        }
+        if (!refreshResult.ok) { if (generation === captured) generation = null; diagnostic({ reason: 'prompt-refresh-failed', error: refreshResult.error }); return { ignored: true, reason: 'prompt-refresh-failed' }; }
         if (generation !== captured || captured.closed || context().chatId !== captured.chatId) return { ignored: true, reason: 'generation-cancelled' };
         return { ok: true, requestId: captured.requestId };
     }

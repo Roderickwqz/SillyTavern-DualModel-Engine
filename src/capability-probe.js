@@ -45,12 +45,12 @@ export async function runDynamicToolProbe(adapter) {
         return { ...report, ...safe };
     };
     if (typeof adapter?.registerTool !== 'function' || typeof adapter?.unregisterTool !== 'function' || typeof adapter?.probeMainTool !== 'function') return persist({ supported: false, reason: 'Tool probe API is unavailable' });
-    let registered = false;
+    let attempted = false;
     try {
-        adapter.registerTool(definition); registered = true;
+        attempted = true; adapter.registerTool(definition);
         const result = await adapter.probeMainTool({ prompt: `Call ${name} exactly once.`, definition, responseLength: 32 });
         const errors = result?.invocation?.errors ?? [];
         return await persist({ supported: Boolean(result?.supported && invoked && !errors.length), reason: result?.reason ?? (invoked && !errors.length ? null : 'Model response did not successfully invoke the probe tool'), invocation: result?.invocation });
     } catch (error) { return persist({ supported: false, reason: error?.message ?? String(error) }); }
-    finally { if (registered) try { adapter.unregisterTool(name); } catch { /* cleanup must not falsify the probe result */ } }
+    finally { if (attempted) try { adapter.unregisterTool(name); } catch { /* cleanup must not falsify the probe result */ } }
 }

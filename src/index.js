@@ -49,16 +49,22 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     let orchestrator;
     const resolveCheck = async (input, state) => createRuleEngine({ nextUint32, preset: orchestrator?.getActiveGeneration()?.preset ?? d20LitePreset }).resolveCheck(input, state);
     const resolveManualCheck = resolved.resolveManualCheck ?? (async input => {
-        const context = runtimeAdapter.getContext(); const config = getEffectiveConfig();
-        const envelope = store.loadEnvelope?.(); const value = envelope?.ok ? envelope.value : envelope;
-        if (context?.groupId || !config.enabled || config.rulePresetId !== 'd20-lite' || config.adjudication !== 'manual' || value?.preset?.id !== 'd20-lite') throw new Error('Manual D20 checks are not authorized for this chat configuration');
-        const ref = value.activeRef; const message = context?.chat?.find(item => item?.extra?.[NAMESPACE]?.messageId === ref?.messageId);
-        const branch = message?.swipe_info?.[ref?.swipeId]?.extra?.[NAMESPACE]?.branch;
-        if (!ref || !message || (message.swipe_id ?? 0) !== ref.swipeId || !branch || branch.branchId !== ref.branchId || branch.status !== 'committed' || !branch.segments?.length) throw new Error('No active committed branch');
-        const manualGeneration = { branchId: ref.branchId, baseBranchId: ref.branchId, userMessageId: branch.segments.at(-1).userMessageId ?? null, baseSnapshot: structuredClone(value.activeSnapshot), pendingRuleRecords: [], pendingRuleEffects: [], ruleReplayMode: null, closed: false };
-        const record = await stageCheckRecord({ generation: manualGeneration, input, ledger, resolveCheck: (request, state) => createRuleEngine({ nextUint32, preset: d20LitePreset }).resolveCheck(request, state) });
-        const committed = await store.commitCurrentBranchAudit({ chatId: context.chatId, expectedHeadRevision: value.headRevision, activeRef: ref, record });
-        if (!committed?.ok) throw new Error(committed?.reason ?? 'manual audit failed'); ledger.commit([committed.record ?? record]); return committed.record ?? record;
+        const queuedChatId = runtimeAdapter.getContext()?.chatId;
+        if (!queuedChatId) throw new Error('No active chat for manual D20 check');
+        return queue.enqueue(queuedChatId, `manual-${makeId()}`, async signal => {
+            signal.throwIfAborted();
+            const context = runtimeAdapter.getContext(); const config = getEffectiveConfig();
+            const envelope = store.loadEnvelope?.(); const value = envelope?.ok ? envelope.value : envelope;
+            if (context?.chatId !== queuedChatId || context?.groupId || !config.enabled || config.rulePresetId !== 'd20-lite' || config.adjudication !== 'manual' || value?.preset?.id !== 'd20-lite') throw new Error('Manual D20 checks are not authorized for this chat configuration');
+            const ref = value.activeRef; const message = context.chat?.find(item => item?.extra?.[NAMESPACE]?.messageId === ref?.messageId);
+            const branch = message?.swipe_info?.[ref?.swipeId]?.extra?.[NAMESPACE]?.branch;
+            if (!ref || !message || (message.swipe_id ?? 0) !== ref.swipeId || !branch || branch.branchId !== ref.branchId || branch.status !== 'committed' || !branch.segments?.length) throw new Error('No active committed branch');
+            const manualGeneration = { branchId: ref.branchId, baseBranchId: ref.branchId, userMessageId: branch.segments.at(-1).userMessageId ?? null, baseSnapshot: structuredClone(value.activeSnapshot), pendingRuleRecords: [], pendingRuleEffects: [], ruleReplayMode: null, closed: false };
+            const record = await stageCheckRecord({ generation: manualGeneration, input, ledger, signal, resolveCheck: (request, state) => createRuleEngine({ nextUint32, preset: d20LitePreset }).resolveCheck(request, state) });
+            signal.throwIfAborted();
+            const committed = await store.commitCurrentBranchAudit({ chatId: context.chatId, expectedHeadRevision: value.headRevision, activeRef: ref, record });
+            if (!committed?.ok) throw new Error(committed?.reason ?? 'manual audit failed'); ledger.commit([committed.record ?? record]); return committed.record ?? record;
+        });
     });
     const adjudicator = resolved.adjudicator ?? createAdjudicatorService({ toolProbe: resolved.toolProbe ?? { supported: false }, getToolProbe: resolved.getToolProbe ?? (() => runtimeAdapter.getSettings?.().toolProbe ?? { supported: false }), getMainApiModelLabel: () => runtimeAdapter.getMainApiModelLabel?.(), requestDecision: resolved.requestDecision ?? (input => modelService.requestDecision({ ...input, profileId: input.recorderProfileId ?? getEffectiveConfig().recorderProfileId })), validateInput: validate(checkValidator), stageCheck: async (input, context) => { const generation = context.generation ?? orchestrator?.getActiveGeneration(); if (!generation) throw new Error('No active generation'); return stageCheckRecord({ generation, input, ledger, resolveCheck, signal: context.signal, isActive: () => orchestrator?.getActiveGeneration() === generation && !generation.closed }); }, formatCheck: resolved.formatCheck ?? (check => `Formal check ${check.checkId}: total ${check.result.total} vs DC ${check.result.dc} — ${check.result.outcome}`), confirm: resolved.confirm ?? (async () => true), resolveManualCheck });
     const rollbackManager = resolved.rollbackManager ?? createRollbackManager({

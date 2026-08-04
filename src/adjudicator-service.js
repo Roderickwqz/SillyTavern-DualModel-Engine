@@ -1,6 +1,7 @@
 export function createAdjudicatorService(deps) {
     async function preflight(input, requireConfirm) {
-        const request = await deps.requestDecision(input);
+        const response = await deps.requestDecision(input);
+        const request = response?.decision ?? response;
         if (!request?.required) return { strategy: input.strategy, required: false, injectedText: '' };
         const checkInput = { ...request }; delete checkInput.required;
         const validation = deps.validateInput(checkInput);

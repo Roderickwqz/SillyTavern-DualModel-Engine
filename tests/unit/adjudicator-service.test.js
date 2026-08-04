@@ -8,6 +8,11 @@ it('downgrades unsupported automatic tools to an authoritative preflight', async
     const d = deps(); const result = await createAdjudicatorService(d).resolveBeforeGeneration({ strategy: 'automatic-tool', playerText: 'jump' });
     expect(result).toMatchObject({ strategy: 'enforced-preflight', required: true, check: { checkId: 'c1' } }); expect(d.stageCheck).toHaveBeenCalledWith(expect.not.objectContaining({ required: expect.anything() }), expect.any(Object));
 });
+it('unwraps the real model-service decision envelope before staging a check', async () => {
+    const d = deps({ requestDecision: vi.fn(async () => ({ decision: request, repaired: true })) });
+    await expect(createAdjudicatorService(d).resolveBeforeGeneration({ strategy: 'enforced-preflight', generation: { requestId: 'g' } })).resolves.toMatchObject({ required: true, check: { checkId: 'c1' } });
+    expect(d.stageCheck).toHaveBeenCalledOnce();
+});
 it('honours supported automatic, confirmation cancellation, manual, validation and resolver errors', async () => {
     await expect(createAdjudicatorService(deps({ toolProbe: { supported: true } })).resolveBeforeGeneration({ strategy: 'automatic-tool' })).resolves.toMatchObject({ strategy: 'automatic-tool', required: false });
     await expect(createAdjudicatorService(deps({ confirm: vi.fn(async () => false) })).resolveBeforeGeneration({ strategy: 'confirm' })).resolves.toMatchObject({ cancelled: true, required: false });
