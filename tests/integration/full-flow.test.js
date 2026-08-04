@@ -68,6 +68,17 @@ it('recovers state after a selected message is deleted', async () => {
     await app.stop();
 });
 
+it('invalidates and recalculates through the bound edit event', async () => {
+    const host = createAcceptanceHost();
+    const app = host.attach(await bootstrap({ adapter: host.adapter, dependencies: host.dependencies }));
+    await host.runNarrativeTurn('first', 'first result');
+    await host.runNarrativeTurn('second', 'second result');
+
+    await expect(host.editLastMessage('corrected second result')).resolves.toMatchObject({ ok: true });
+    expect(host.currentState().version).toBeGreaterThan(0);
+    await app.stop();
+});
+
 it('downgrades group chats without starting a Recorder task', async () => {
     const host = createAcceptanceHost();
     const app = host.attach(await bootstrap({ adapter: host.adapter, dependencies: host.dependencies }));
