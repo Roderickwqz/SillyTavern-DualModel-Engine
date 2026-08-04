@@ -6709,9 +6709,11 @@ function createOrchestrator(deps) {
       diagnostic({ reason: "missing-source-branch" });
       return { ignored: true, reason: "missing-source-branch" };
     }
+    const captured = generation;
     let adjudication = { injectedText: "" };
     try {
-      adjudication = await deps.adjudicator?.resolveBeforeGeneration?.({ strategy: generation.effectiveConfig.adjudication, playerText: generation.playerText, baseSnapshot: generation.baseSnapshot, branchId: generation.branchId, baseBranchId: generation.baseBranchId, userMessageId: generation.userMessageId, generation }) ?? adjudication;
+      adjudication = await deps.adjudicator?.resolveBeforeGeneration?.({ strategy: generation.effectiveConfig.adjudication, recorderProfileId: generation.effectiveConfig.recorderProfileId, playerText: generation.playerText, baseSnapshot: generation.baseSnapshot, branchId: generation.branchId, baseBranchId: generation.baseBranchId, userMessageId: generation.userMessageId, generation, signal: generation.abortController.signal }) ?? adjudication;
+      if (generation !== captured || captured.closed || context().chatId !== captured.chatId) throw new Error("generation changed during adjudication");
       if (adjudication.check && !generation.pendingRuleRecords.some((record) => record.checkId === adjudication.check.checkId)) generation.pendingRuleRecords.push(adjudication.check);
     } catch (error) {
       generation.formalD20Blocked = true;
@@ -6719,7 +6721,7 @@ function createOrchestrator(deps) {
     }
     const hardRuleText = [deps.formatReusableChecks?.(generation.reusableChecks) ?? "", adjudication.injectedText ?? ""].filter(Boolean).join("\n");
     try {
-      await deps.promptInjector.refresh({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection, hardRuleText });
+      await deps.promptInjector.refresh({ state: generation.baseSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection, hardRuleText });
     } catch (error) {
       generation = null;
       diagnostic({ reason: "prompt-refresh-failed", error });
@@ -7653,7 +7655,7 @@ function validate(value, validateValue, input) {
   }
   return result2.ok ? { ok: true, errors: [] } : { ok: false, errors: normalizeErrors(result2.errors) };
 }
-function createModelService({ adapter, validatePatch, validateState }) {
+function createModelService({ adapter, validatePatch, validateState, validateDecision = () => ({ ok: true, errors: [] }) }) {
   async function requestValidated(input, buildMessages, validateValue, resultKey, label) {
     let errors = [];
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -7703,12 +7705,7 @@ function createModelService({ adapter, validatePatch, validateState }) {
   return {
     requestPatch: (input) => requestValidated(input, buildRecorderMessages, validatePatch, "patch", "Recorder"),
     requestSummary: (input) => requestValidated(input, buildSummaryMessages, validateState, "state", "summary"),
-    async requestDecision(input) {
-      throwIfAborted(input.signal);
-      const response = await adapter.requestProfile(input.profileId, buildAdjudicatorMessages(input), 400, { extractData: true, includePreset: true, stream: false, signal: input.signal }, {});
-      throwIfAborted(input.signal);
-      return extractJsonObject(response.content);
-    }
+    requestDecision: (input) => requestValidated(input, buildAdjudicatorMessages, validateDecision, "decision", "adjudicator")
   };
 }
 
@@ -8344,7 +8341,9 @@ var damageSchema = { $ref: "#/$defs/damageInput", ...d20_schema_default };
 function checkSignature(input, userMessageId) {
   return JSON.stringify([userMessageId, input.actor, input.action.trim(), input.ability, input.skill, input.dc, input.advantage]);
 }
-async function stageCheckRecord({ generation, input, ledger, resolveCheck }) {
+async function stageCheckRecord({ generation, input, ledger, resolveCheck, signal, isActive = () => !generation.closed }) {
+  signal?.throwIfAborted?.();
+  if (!isActive()) throw staleGeneration();
   const signature = checkSignature(input, generation.userMessageId);
   const existing = generation.pendingRuleRecords.find((record2) => record2.kind === "check" && record2.signature === signature);
   if (existing) return existing;
@@ -8355,6 +8354,8 @@ async function stageCheckRecord({ generation, input, ledger, resolveCheck }) {
   }
   if (generation.ruleReplayMode === "reuse-only") throw new Error("Ordinary regeneration cannot create or reroll a formal check; use explicit reroll");
   const result2 = await resolveCheck(input, structuredClone(generation.pendingRuleEffects.at(-1)?.nextState ?? generation.baseSnapshot));
+  signal?.throwIfAborted?.();
+  if (!isActive()) throw staleGeneration();
   const record = ledger.createRecord({ kind: "check", branchId: generation.branchId, signature, request: structuredClone(input), result: structuredClone(result2) });
   generation.pendingRuleRecords.push(record);
   return record;
@@ -8489,16 +8490,19 @@ function createAdjudicatorService(deps) {
   async function preflight(input, requireConfirm) {
     const request = await deps.requestDecision(input);
     if (!request?.required) return { strategy: input.strategy, required: false, injectedText: "" };
-    const validation = deps.validateInput(request);
+    const checkInput = { ...request };
+    delete checkInput.required;
+    const validation = deps.validateInput(checkInput);
     if (!validation?.ok) throw new Error(JSON.stringify(validation?.errors ?? ["Invalid adjudicator decision"]));
-    if (requireConfirm && !await deps.confirm(request)) return { strategy: "confirm", required: false, cancelled: true, injectedText: "" };
-    const check = await deps.stageCheck(request, input);
+    if (requireConfirm && !await deps.confirm(checkInput)) return { strategy: "confirm", required: false, cancelled: true, injectedText: "" };
+    const check = await deps.stageCheck(checkInput, input);
     return { strategy: requireConfirm ? "confirm" : "enforced-preflight", required: true, check, injectedText: deps.formatCheck(check) };
   }
   return {
     async resolveBeforeGeneration(input) {
       if (input.strategy === "manual") return { strategy: "manual", required: false, injectedText: "" };
-      if (input.strategy === "automatic-tool" && deps.toolProbe?.supported) return { strategy: "automatic-tool", required: false, injectedText: "" };
+      const probe = deps.getToolProbe?.() ?? deps.toolProbe;
+      if (input.strategy === "automatic-tool" && probe?.supported && (!deps.getMainApiModelLabel || probe.apiModelLabel === deps.getMainApiModelLabel())) return { strategy: "automatic-tool", required: false, injectedText: "" };
       const strategy = input.strategy === "automatic-tool" ? "enforced-preflight" : input.strategy;
       return preflight({ ...input, strategy }, input.strategy === "confirm");
     },
@@ -8589,14 +8593,28 @@ function createRuleEngine({ nextUint32, preset }) {
   };
 }
 
+// schemas/adjudicator.schema.json
+var adjudicator_schema_default = {
+  $defs: {
+    decision: {
+      oneOf: [
+        { type: "object", required: ["required"], properties: { required: { const: false } }, additionalProperties: false },
+        { type: "object", required: ["required", "actor", "action", "ability", "skill", "dc", "advantage"], properties: { required: { const: true }, actor: { type: "string", minLength: 1 }, action: { type: "string", minLength: 1 }, ability: { enum: ["strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"] }, skill: { type: "string", minLength: 1 }, dc: { type: "integer", minimum: 1, maximum: 30 }, advantage: { enum: ["normal", "advantage", "disadvantage"] }, reason: { type: "string" } }, additionalProperties: false }
+      ]
+    }
+  }
+};
+
 // src/index.js
 async function bootstrap({ adapter, dependencies } = {}) {
-  const runtimeAdapter = adapter ?? (await import("./st-runtime-BG4BI6KE.js")).createRuntimeAdapter();
+  const runtimeAdapter = adapter ?? (await import("./st-runtime-BOVYRKH2.js")).createRuntimeAdapter();
   const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });
   const resolved = dependencies ?? {};
   const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
-  const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState });
+  const decisionAjv = new import_ajv2.default({ allErrors: true, strict: false });
+  const decisionValidator = decisionAjv.compile({ $ref: "#/$defs/decision", ...adjudicator_schema_default });
+  const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState, validateDecision: (value) => ({ ok: Boolean(decisionValidator(value)), errors: structuredClone(decisionValidator.errors ?? []) }) });
   const queue = resolved.queue ?? createChatTaskQueue();
   const getEffectiveConfig = resolved.getConfig ?? (() => {
     const envelope = store.loadEnvelope?.();
@@ -8615,7 +8633,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
   const nextUint32 = resolved.nextUint32 ?? (() => (randomSource ??= createWebCryptoUint32(globalThis.crypto))());
   let orchestrator;
   const resolveCheck = async (input, state) => createRuleEngine({ nextUint32, preset: orchestrator?.getActiveGeneration()?.preset ?? d20LitePreset }).resolveCheck(input, state);
-  const adjudicator = resolved.adjudicator ?? createAdjudicatorService({ toolProbe: resolved.toolProbe ?? { supported: false }, requestDecision: resolved.requestDecision ?? ((input) => modelService.requestDecision({ ...input, profileId: getEffectiveConfig().recorderProfileId })), validateInput: validate2(checkValidator), stageCheck: async (input, context) => {
+  const adjudicator = resolved.adjudicator ?? createAdjudicatorService({ toolProbe: resolved.toolProbe ?? { supported: false }, getToolProbe: resolved.getToolProbe ?? (() => runtimeAdapter.getSettings?.().toolProbe ?? { supported: false }), getMainApiModelLabel: () => runtimeAdapter.getMainApiModelLabel?.(), requestDecision: resolved.requestDecision ?? ((input) => modelService.requestDecision({ ...input, profileId: input.recorderProfileId ?? getEffectiveConfig().recorderProfileId })), validateInput: validate2(checkValidator), stageCheck: async (input, context) => {
     const generation = context.generation ?? orchestrator?.getActiveGeneration();
     if (!generation) throw new Error("No active generation");
     return stageCheckRecord({ generation, input, ledger, resolveCheck });

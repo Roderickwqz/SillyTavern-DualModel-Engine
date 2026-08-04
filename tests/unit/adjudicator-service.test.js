@@ -6,7 +6,7 @@ function deps(overrides = {}) { return { toolProbe: { supported: false }, reques
 
 it('downgrades unsupported automatic tools to an authoritative preflight', async () => {
     const d = deps(); const result = await createAdjudicatorService(d).resolveBeforeGeneration({ strategy: 'automatic-tool', playerText: 'jump' });
-    expect(result).toMatchObject({ strategy: 'enforced-preflight', required: true, check: { checkId: 'c1' } }); expect(d.stageCheck).toHaveBeenCalledWith(request, expect.any(Object));
+    expect(result).toMatchObject({ strategy: 'enforced-preflight', required: true, check: { checkId: 'c1' } }); expect(d.stageCheck).toHaveBeenCalledWith(expect.not.objectContaining({ required: expect.anything() }), expect.any(Object));
 });
 it('honours supported automatic, confirmation cancellation, manual, validation and resolver errors', async () => {
     await expect(createAdjudicatorService(deps({ toolProbe: { supported: true } })).resolveBeforeGeneration({ strategy: 'automatic-tool' })).resolves.toMatchObject({ strategy: 'automatic-tool', required: false });

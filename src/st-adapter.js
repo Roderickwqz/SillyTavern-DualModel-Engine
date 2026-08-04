@@ -12,6 +12,7 @@ export function createSTAdapter(host) {
         registerTool: definition => host.registerTool?.(definition),
         unregisterTool: name => host.unregisterTool?.(name),
         probeMainTool: typeof host.probeMainTool === 'function' ? params => host.probeMainTool(params) : undefined,
+        getMainApiModelLabel: typeof host.getMainApiModelLabel === 'function' ? () => host.getMainApiModelLabel() : () => null,
         saveChat: () => host.getContext().saveMetadata(),
         saveSettings: () => host.saveSettingsDebounced?.(),
         getSettings: () => host.getSettings?.() ?? {},

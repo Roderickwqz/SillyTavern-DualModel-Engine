@@ -19,6 +19,7 @@ import { createAdjudicatorService } from './adjudicator-service.js';
 import { createRuleEngine } from './rule-engine.js';
 import { createWebCryptoUint32 } from './dice-engine.js';
 import d20Schema from '../schemas/d20.schema.json';
+import adjudicatorSchema from '../schemas/adjudicator.schema.json';
 
 export { createOrchestrator } from './orchestrator.js';
 
@@ -28,7 +29,9 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     const validator = createStateValidator({ presets });
     const resolved = dependencies ?? {};
     const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
-    const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState });
+    const decisionAjv = new Ajv({ allErrors: true, strict: false });
+    const decisionValidator = decisionAjv.compile({ $ref: '#/$defs/decision', ...adjudicatorSchema });
+    const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState, validateDecision: value => ({ ok: Boolean(decisionValidator(value)), errors: structuredClone(decisionValidator.errors ?? []) }) });
     const queue = resolved.queue ?? createChatTaskQueue();
     const getEffectiveConfig = resolved.getConfig ?? (() => {
         const envelope = store.loadEnvelope?.();
@@ -44,7 +47,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     const nextUint32 = resolved.nextUint32 ?? (() => (randomSource ??= createWebCryptoUint32(globalThis.crypto))());
     let orchestrator;
     const resolveCheck = async (input, state) => createRuleEngine({ nextUint32, preset: orchestrator?.getActiveGeneration()?.preset ?? d20LitePreset }).resolveCheck(input, state);
-    const adjudicator = resolved.adjudicator ?? createAdjudicatorService({ toolProbe: resolved.toolProbe ?? { supported: false }, requestDecision: resolved.requestDecision ?? (input => modelService.requestDecision({ ...input, profileId: getEffectiveConfig().recorderProfileId })), validateInput: validate(checkValidator), stageCheck: async (input, context) => { const generation = context.generation ?? orchestrator?.getActiveGeneration(); if (!generation) throw new Error('No active generation'); return stageCheckRecord({ generation, input, ledger, resolveCheck }); }, formatCheck: resolved.formatCheck ?? (check => `Formal check ${check.checkId}: total ${check.result.total} vs DC ${check.result.dc} — ${check.result.outcome}`), confirm: resolved.confirm ?? (async () => true), resolveManualCheck: resolved.resolveManualCheck ?? (async input => { const generation = orchestrator?.getActiveGeneration(); if (!generation) throw new Error('No active generation'); const record = await stageCheckRecord({ generation, input, ledger, resolveCheck }); ledger.commit([record]); return record; }) });
+    const adjudicator = resolved.adjudicator ?? createAdjudicatorService({ toolProbe: resolved.toolProbe ?? { supported: false }, getToolProbe: resolved.getToolProbe ?? (() => runtimeAdapter.getSettings?.().toolProbe ?? { supported: false }), getMainApiModelLabel: () => runtimeAdapter.getMainApiModelLabel?.(), requestDecision: resolved.requestDecision ?? (input => modelService.requestDecision({ ...input, profileId: input.recorderProfileId ?? getEffectiveConfig().recorderProfileId })), validateInput: validate(checkValidator), stageCheck: async (input, context) => { const generation = context.generation ?? orchestrator?.getActiveGeneration(); if (!generation) throw new Error('No active generation'); return stageCheckRecord({ generation, input, ledger, resolveCheck }); }, formatCheck: resolved.formatCheck ?? (check => `Formal check ${check.checkId}: total ${check.result.total} vs DC ${check.result.dc} — ${check.result.outcome}`), confirm: resolved.confirm ?? (async () => true), resolveManualCheck: resolved.resolveManualCheck ?? (async input => { const generation = orchestrator?.getActiveGeneration(); if (!generation) throw new Error('No active generation'); const record = await stageCheckRecord({ generation, input, ledger, resolveCheck }); ledger.commit([record]); return record; }) });
     const rollbackManager = resolved.rollbackManager ?? createRollbackManager({
         adapter: runtimeAdapter, store, queue,
         confirm: resolved.confirmRecalculation ?? (async () => false),

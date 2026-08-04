@@ -5,14 +5,15 @@ const damageSchema = { $ref: '#/$defs/damageInput', ...d20Schema };
 export { checkSchema as d20ToolInputSchema, damageSchema as d20DamageInputSchema };
 
 export function checkSignature(input, userMessageId) { return JSON.stringify([userMessageId, input.actor, input.action.trim(), input.ability, input.skill, input.dc, input.advantage]); }
-export async function stageCheckRecord({ generation, input, ledger, resolveCheck }) {
+export async function stageCheckRecord({ generation, input, ledger, resolveCheck, signal, isActive = () => !generation.closed }) {
+    signal?.throwIfAborted?.(); if (!isActive()) throw staleGeneration();
     const signature = checkSignature(input, generation.userMessageId);
     const existing = generation.pendingRuleRecords.find(record => record.kind === 'check' && record.signature === signature);
     if (existing) return existing;
     const reusable = generation.baseBranchId && ledger.findReusable({ baseBranchId: generation.baseBranchId, signature });
     if (reusable) { generation.pendingRuleRecords.push(reusable); return reusable; }
     if (generation.ruleReplayMode === 'reuse-only') throw new Error('Ordinary regeneration cannot create or reroll a formal check; use explicit reroll');
-    const result = await resolveCheck(input, structuredClone(generation.pendingRuleEffects.at(-1)?.nextState ?? generation.baseSnapshot));
+    const result = await resolveCheck(input, structuredClone(generation.pendingRuleEffects.at(-1)?.nextState ?? generation.baseSnapshot)); signal?.throwIfAborted?.(); if (!isActive()) throw staleGeneration();
     const record = ledger.createRecord({ kind: 'check', branchId: generation.branchId, signature, request: structuredClone(input), result: structuredClone(result) });
     generation.pendingRuleRecords.push(record); return record;
 }

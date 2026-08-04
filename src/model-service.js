@@ -50,7 +50,7 @@ function validate(value, validateValue, input) {
     return result.ok ? { ok: true, errors: [] } : { ok: false, errors: normalizeErrors(result.errors) };
 }
 
-export function createModelService({ adapter, validatePatch, validateState }) {
+export function createModelService({ adapter, validatePatch, validateState, validateDecision = () => ({ ok: true, errors: [] }) }) {
     async function requestValidated(input, buildMessages, validateValue, resultKey, label) {
         let errors = [];
 
@@ -105,11 +105,6 @@ export function createModelService({ adapter, validatePatch, validateState }) {
     return {
         requestPatch: input => requestValidated(input, buildRecorderMessages, validatePatch, 'patch', 'Recorder'),
         requestSummary: input => requestValidated(input, buildSummaryMessages, validateState, 'state', 'summary'),
-        async requestDecision(input) {
-            throwIfAborted(input.signal);
-            const response = await adapter.requestProfile(input.profileId, buildAdjudicatorMessages(input), 400, { extractData: true, includePreset: true, stream: false, signal: input.signal }, {});
-            throwIfAborted(input.signal);
-            return extractJsonObject(response.content);
-        },
+        requestDecision: input => requestValidated(input, buildAdjudicatorMessages, validateDecision, 'decision', 'adjudicator'),
     };
 }
