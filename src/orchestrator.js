@@ -4,13 +4,16 @@ const conflicts = new Set(['stale-chat', 'stale-message', 'stale-swipe', 'branch
 
 export function createOrchestrator(deps) {
     const supported = new Set(['normal', 'swipe', 'regenerate', 'continue']);
-    let activeChatId = null; let generation = null; let pendingGeneration = null; let started = false; let promptTail = null; const unbind = [];
+    let activeChatId = null; let generation = null; let pendingGeneration = null; let started = false; let stopped = false; let promptTail = null; let promptEpoch = 0; const unbind = [];
     const diagnostic = value => { try { return Promise.resolve(deps.recordDiagnostic?.(value)).catch(() => undefined); } catch { return undefined; } };
     function context() { return deps.adapter.getContext(); }
     function messageId(message) { return deps.ensureMessageId ? deps.ensureMessageId(message) : (message.extra?.dualModelEngine?.messageId); }
     function refreshPrompt(input) {
+        promptEpoch += 1;
         const run = () => deps.promptInjector.refresh(input);
-        const next = promptTail ? promptTail.then(run) : Promise.resolve(run());
+        let next;
+        try { next = promptTail ? promptTail.then(run) : Promise.resolve(run()); }
+        catch (error) { next = Promise.reject(error); }
         const settled = next.catch(() => undefined); promptTail = settled;
         void settled.finally(() => { if (promptTail === settled) promptTail = null; });
         return next;
@@ -60,11 +63,11 @@ export function createOrchestrator(deps) {
         } catch (error) { captured.formalD20Blocked = true; diagnostic({ requestId: captured.requestId, reason: 'adjudication-failed', error }); }
         if (generation !== captured || captured.closed || context().chatId !== captured.chatId) return { ignored: true, reason: 'generation-cancelled' };
         const hardRuleText = [deps.formatReusableChecks?.(captured.reusableChecks) ?? '', adjudication.injectedText ?? ''].filter(Boolean).join('\n');
-        const refresh = refreshPrompt({ state: captured.baseSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection, hardRuleText });
+        const refresh = refreshPrompt({ state: captured.baseSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection, hardRuleText }); const capturedRefreshEpoch = promptEpoch;
         const settledRefresh = refresh.then(() => ({ ok: true }), error => ({ ok: false, error }));
         const refreshResult = await Promise.race([settledRefresh, captured.cancelled.then(() => ({ cancelled: true }))]);
         if (refreshResult.cancelled) {
-            void settledRefresh.then(async () => { try { await initializeChat(); } catch (error) { diagnostic({ requestId: captured.requestId, reason: 'prompt-refresh-recovery-failed', error }); } });
+            void settledRefresh.then(async () => { try { if (stopped) { deps.promptInjector.clear(); return; } if (promptEpoch === capturedRefreshEpoch && !generation && context().chatId === captured.chatId) await initializeChat(); } catch (error) { diagnostic({ requestId: captured.requestId, reason: 'prompt-refresh-recovery-failed', error }); } });
             return { ignored: true, reason: 'generation-cancelled' };
         }
         if (!refreshResult.ok) { if (generation === captured) generation = null; diagnostic({ reason: 'prompt-refresh-failed', error: refreshResult.error }); return { ignored: true, reason: 'prompt-refresh-failed' }; }
@@ -136,7 +139,7 @@ export function createOrchestrator(deps) {
     function generationStopped(reason = 'host-stopped') { const pending = pendingGeneration; const stopped = generation; generation = null; if (stopped) { stopped.closed = true; stopped.abortController?.abort(reason); stopped.cancel?.(reason); stopped.pendingRuleRecords.length = 0; stopped.pendingRuleEffects.length = 0; } if (pending) { pendingGeneration = null; pending.pendingRuleRecords.length = 0; pending.pendingRuleEffects.length = 0; diagnostic({ requestId: pending.requestId, reason }); deps.queue.cancelChat(pending.chatId, reason); return; } if (stopped) { diagnostic({ requestId: stopped.requestId, reason }); void Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => undefined); } }
     const handlers = { chatChanged: () => { const previous = activeChatId; generationStopped('chat-changed'); if (previous) deps.queue.cancelChat(previous, 'chat-changed'); deps.rollbackManager?.refresh?.(); return initializeChat(); }, beforeGeneration: (type, _options, dryRun) => dryRun ? undefined : beforeGeneration(type), generationEnded: afterGeneration, generationStopped: () => generationStopped() };
     function cleanup() { let first; while (unbind.length) { try { unbind.pop()(); } catch (error) { first ??= error; } } try { deps.rollbackManager?.destroy?.(); } catch (error) { first ??= error; } try { generationStopped('orchestrator-stopped'); } catch (error) { first ??= error; } try { if (activeChatId) deps.queue.cancelChat(activeChatId, 'orchestrator-stopped'); } catch (error) { first ??= error; } try { deps.promptInjector.clear(); } catch (error) { first ??= error; } started = Boolean(first); return first; }
-    function start() { if (started) return; started = true; try { for (const [name, fn] of [[deps.adapter.events?.CHAT_CHANGED, handlers.chatChanged], [deps.adapter.events?.GENERATION_AFTER_COMMANDS, handlers.beforeGeneration], [deps.adapter.events?.GENERATION_ENDED, handlers.generationEnded], [deps.adapter.events?.GENERATION_STOPPED, handlers.generationStopped]]) if (name) { deps.adapter.on(name, fn); unbind.push(() => deps.adapter.off(name, fn)); } } catch (error) { cleanup(); throw error; } }
-    function stop() { const error = cleanup(); if (error) throw error; }
+    function start() { if (started) return; stopped = false; started = true; try { for (const [name, fn] of [[deps.adapter.events?.CHAT_CHANGED, handlers.chatChanged], [deps.adapter.events?.GENERATION_AFTER_COMMANDS, handlers.beforeGeneration], [deps.adapter.events?.GENERATION_ENDED, handlers.generationEnded], [deps.adapter.events?.GENERATION_STOPPED, handlers.generationStopped]]) if (name) { deps.adapter.on(name, fn); unbind.push(() => deps.adapter.off(name, fn)); } } catch (error) { cleanup(); throw error; } }
+    function stop() { stopped = true; const error = cleanup(); if (error) throw error; }
     return { start, stop, initializeChat, beforeGeneration, afterGeneration, replayTurn, getActiveGeneration: () => generation, getStatus: () => ({ activeChatId, generation: Boolean(generation), queue: activeChatId ? deps.queue.getStatus(activeChatId) : { state: 'idle', requestId: null } }) };
 }

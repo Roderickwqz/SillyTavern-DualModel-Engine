@@ -12,9 +12,11 @@ it('ignores an unrelated normal-generation settings event until its marker arriv
     expect(h.eventSource.removeListener).toHaveBeenCalledTimes(2);
 });
 it('rejects an empty nonce before registering a settings listener', async () => {
-    const h = host({ probeNonce: () => '' });
-    await expect(createMainToolProbe(h)({ definition })).rejects.toThrow('nonce');
+    let valid = false; const h = host({ probeNonce: () => valid ? 'recovered-secret' : '' }); const probe = createMainToolProbe(h);
+    await expect(probe({ definition })).rejects.toThrow('nonce');
     expect(h.eventSource.on).not.toHaveBeenCalled();
+    valid = true; h.generateRawData.mockImplementation(async ({ prompt }) => { h.emit({ prompt }); return { choices: [] }; });
+    await expect(probe({ definition })).resolves.toMatchObject({ supported: true });
 });
 it('handles busy, unsupported, stream, throws and releases its mutex', async () => {
     const busy = host({ isGenerating: () => true }); await expect(createMainToolProbe(busy)({ definition })).rejects.toThrow('Finish');

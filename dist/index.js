@@ -6612,7 +6612,9 @@ function createOrchestrator(deps) {
   let generation = null;
   let pendingGeneration = null;
   let started = false;
+  let stopped = false;
   let promptTail = null;
+  let promptEpoch = 0;
   const unbind = [];
   const diagnostic = (value) => {
     try {
@@ -6628,8 +6630,14 @@ function createOrchestrator(deps) {
     return deps.ensureMessageId ? deps.ensureMessageId(message) : message.extra?.dualModelEngine?.messageId;
   }
   function refreshPrompt(input) {
+    promptEpoch += 1;
     const run = () => deps.promptInjector.refresh(input);
-    const next = promptTail ? promptTail.then(run) : Promise.resolve(run());
+    let next;
+    try {
+      next = promptTail ? promptTail.then(run) : Promise.resolve(run());
+    } catch (error) {
+      next = Promise.reject(error);
+    }
     const settled = next.catch(() => void 0);
     promptTail = settled;
     void settled.finally(() => {
@@ -6733,12 +6741,17 @@ function createOrchestrator(deps) {
     if (generation !== captured || captured.closed || context().chatId !== captured.chatId) return { ignored: true, reason: "generation-cancelled" };
     const hardRuleText = [deps.formatReusableChecks?.(captured.reusableChecks) ?? "", adjudication.injectedText ?? ""].filter(Boolean).join("\n");
     const refresh = refreshPrompt({ state: captured.baseSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection, hardRuleText });
+    const capturedRefreshEpoch = promptEpoch;
     const settledRefresh = refresh.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
     const refreshResult = await Promise.race([settledRefresh, captured.cancelled.then(() => ({ cancelled: true }))]);
     if (refreshResult.cancelled) {
       void settledRefresh.then(async () => {
         try {
-          await initializeChat();
+          if (stopped) {
+            deps.promptInjector.clear();
+            return;
+          }
+          if (promptEpoch === capturedRefreshEpoch && !generation && context().chatId === captured.chatId) await initializeChat();
         } catch (error) {
           diagnostic({ requestId: captured.requestId, reason: "prompt-refresh-recovery-failed", error });
         }
@@ -6905,14 +6918,14 @@ function createOrchestrator(deps) {
   }
   function generationStopped(reason = "host-stopped") {
     const pending = pendingGeneration;
-    const stopped = generation;
+    const stopped2 = generation;
     generation = null;
-    if (stopped) {
-      stopped.closed = true;
-      stopped.abortController?.abort(reason);
-      stopped.cancel?.(reason);
-      stopped.pendingRuleRecords.length = 0;
-      stopped.pendingRuleEffects.length = 0;
+    if (stopped2) {
+      stopped2.closed = true;
+      stopped2.abortController?.abort(reason);
+      stopped2.cancel?.(reason);
+      stopped2.pendingRuleRecords.length = 0;
+      stopped2.pendingRuleEffects.length = 0;
     }
     if (pending) {
       pendingGeneration = null;
@@ -6922,8 +6935,8 @@ function createOrchestrator(deps) {
       deps.queue.cancelChat(pending.chatId, reason);
       return;
     }
-    if (stopped) {
-      diagnostic({ requestId: stopped.requestId, reason });
+    if (stopped2) {
+      diagnostic({ requestId: stopped2.requestId, reason });
       void Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => void 0);
     }
   }
@@ -6968,6 +6981,7 @@ function createOrchestrator(deps) {
   }
   function start() {
     if (started) return;
+    stopped = false;
     started = true;
     try {
       for (const [name, fn] of [[deps.adapter.events?.CHAT_CHANGED, handlers.chatChanged], [deps.adapter.events?.GENERATION_AFTER_COMMANDS, handlers.beforeGeneration], [deps.adapter.events?.GENERATION_ENDED, handlers.generationEnded], [deps.adapter.events?.GENERATION_STOPPED, handlers.generationStopped]]) if (name) {
@@ -6980,6 +6994,7 @@ function createOrchestrator(deps) {
     }
   }
   function stop() {
+    stopped = true;
     const error = cleanup();
     if (error) throw error;
   }
@@ -8666,7 +8681,7 @@ var adjudicator_schema_default = {
 
 // src/index.js
 async function bootstrap({ adapter, dependencies } = {}) {
-  const runtimeAdapter = adapter ?? (await import("./st-runtime-2WGEWDHK.js")).createRuntimeAdapter();
+  const runtimeAdapter = adapter ?? (await import("./st-runtime-UZFDFOXW.js")).createRuntimeAdapter();
   const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });
   const resolved = dependencies ?? {};
