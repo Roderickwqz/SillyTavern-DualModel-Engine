@@ -133,6 +133,27 @@ it('T2 rolls back envelope creation when save rejects', async () => {
     expect(context.chatMetadata).toEqual({ dualModelEngine: null });
 });
 
+it('resets only DME state transactionally for a newly pinned preset', async () => {
+    const branch = { branchId: 'b', status: 'committed', segments: [] };
+    const { store, current, context, saveChat } = setup({
+        current: message(branch),
+        metadata: envelope({ preset: { id: 'narrative', version: 1 }, configOverrides: { rulePresetId: 'narrative' } }),
+    });
+    current.extra.other = { retained: true }; current.swipe_info[0].extra.other = { retained: true };
+    await expect(store.resetForPreset({ id: 'custom-a', presetVersion: 2, initialState: { version: 0, notes: [] } })).resolves.toMatchObject({ ok: true });
+    expect(context.chatMetadata.dualModelEngine).toMatchObject({ preset: { id: 'custom-a', version: 2 }, stateVersion: 0, headRevision: 8, activeRef: null, configOverrides: { rulePresetId: 'custom-a', presetVersion: 2 } });
+    expect(current.extra.dualModelEngine).toBeUndefined(); expect(current.swipe_info[0].extra.dualModelEngine).toBeUndefined(); expect(current.extra.other).toEqual({ retained: true }); expect(saveChat).toHaveBeenCalledOnce();
+});
+
+it('does not save a preset reset when envelope head changed before save', async () => {
+    const { context, saveChat } = setup({ metadata: envelope({ preset: { id: 'narrative', version: 1 } }) });
+    const original = context.chatMetadata.dualModelEngine;
+    const adapter = { getContext: () => context, saveChat }; const raced = createStateStore({ adapter, makeId: () => 'x', hashText: async () => 'x' });
+    adapter.getContext = () => ({ ...context, chatMetadata: { ...context.chatMetadata, dualModelEngine: { ...original, headRevision: 8 } } });
+    await expect(raced.resetForPreset({ id: 'custom-a', presetVersion: 1, initialState: { version: 0 } })).resolves.toMatchObject({ ok: false, reason: 'stale-chat' });
+    expect(saveChat).not.toHaveBeenCalled();
+});
+
 it('T4 prepares a cloned source branch and T5 rejects missing source', () => {
     const source = { branchId: 'source', baseStateVersion: 1, baseSnapshot: { version: 1, nested: { x: 1 } }, segments: [], status: 'committed' };
     const { store, current } = setup({ current: message(source) });

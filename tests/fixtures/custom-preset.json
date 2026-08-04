@@ -1,0 +1,9 @@
+{
+  "id": "relationship-meter", "name": "Relationship Meter", "presetVersion": 1,
+  "compatibleDataVersions": { "minimum": 1, "maximum": 1 },
+  "stateSchema": { "type": "object", "required": ["version", "relationship"], "properties": { "version": { "type": "integer", "minimum": 0 }, "relationship": { "type": "object", "required": ["trust"], "properties": { "trust": { "type": "integer", "minimum": -100, "maximum": 100 } }, "additionalProperties": false } }, "additionalProperties": false },
+  "initialState": { "version": 0, "relationship": { "trust": 0 } },
+  "allowedPaths": ["/relationship"], "lockedPaths": ["/version"],
+  "injection": [{ "path": "/relationship", "label": "Relationship", "priority": 100, "required": true }],
+  "ui": [{ "path": "/relationship", "control": "json", "label": "Relationship" }], "d20": null
+}

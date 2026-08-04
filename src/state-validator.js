@@ -41,8 +41,17 @@ export function createStateValidator({ presets }) {
     const patchValidator = ajv.compile(patchSchema);
     const presetById = new Map(presets.map((preset) => [preset.id, preset]));
     const stateValidators = new Map(presets.map((preset) => [preset.id, ajv.compile(preset.stateSchema)]));
+    const schemaIds = new Map(presets.filter(preset => typeof preset.stateSchema?.$id === 'string').map(preset => [preset.id, preset.stateSchema.$id]));
 
+    function registerPreset(preset) {
+        if (!preset || typeof preset.id !== 'string') throw new TypeError('Invalid preset');
+        if (presetById.has(preset.id)) throw new Error(`Duplicate preset ID: ${preset.id}`);
+        const validator = ajv.compile(preset.stateSchema);
+        presetById.set(preset.id, preset); stateValidators.set(preset.id, validator); if (typeof preset.stateSchema?.$id === 'string') schemaIds.set(preset.id, preset.stateSchema.$id);
+    }
     return {
+        registerPreset,
+        unregisterPreset(id) { const schemaId = schemaIds.get(id); if (schemaId) ajv.removeSchema(schemaId); schemaIds.delete(id); presetById.delete(id); stateValidators.delete(id); },
         validateState(presetId, state) {
             const validate = stateValidators.get(presetId);
             const schemaOk = Boolean(validate?.(state));

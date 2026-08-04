@@ -1,6 +1,13 @@
 import stateSchema from '../../schemas/state.schema.json';
 
-export const narrativePreset = Object.freeze({
+function deepFreeze(value, seen = new WeakSet()) {
+    if (!value || typeof value !== 'object' || seen.has(value)) return value;
+    seen.add(value);
+    for (const child of Object.values(value)) deepFreeze(child, seen);
+    return Object.freeze(value);
+}
+
+export const narrativePreset = deepFreeze({
     id: 'narrative',
     name: 'Narrative',
     presetVersion: 1,

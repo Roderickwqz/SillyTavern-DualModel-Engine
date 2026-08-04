@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "presetVersion", "compatibleDataVersions", "stateSchema", "initialState", "allowedPaths", "lockedPaths", "injection", "ui", "d20"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "presetVersion": { "type": "integer", "minimum": 1 },
+    "compatibleDataVersions": { "type": "object", "additionalProperties": false, "required": ["minimum", "maximum"], "properties": { "minimum": { "type": "integer", "minimum": 1 }, "maximum": { "type": "integer", "minimum": 1 } } },
+    "stateSchema": { "type": "object" }, "initialState": { "type": "object" },
+    "allowedPaths": { "$ref": "#/$defs/paths" }, "lockedPaths": { "$ref": "#/$defs/paths" },
+    "injection": { "type": "array", "maxItems": 100, "items": { "type": "object", "additionalProperties": false, "required": ["path", "label", "priority", "required"], "properties": { "path": { "$ref": "#/$defs/path" }, "label": { "type": "string", "maxLength": 80 }, "priority": { "type": "integer" }, "required": { "type": "boolean" } } } },
+    "ui": { "type": "array", "maxItems": 100, "items": { "type": "object", "additionalProperties": false, "required": ["path", "control", "label"], "properties": { "path": { "$ref": "#/$defs/path" }, "control": { "enum": ["json", "text", "number", "boolean"] }, "label": { "type": "string", "maxLength": 80 } } } },
+    "d20": { "type": ["null", "object"], "properties": { "actorsPath": { "$ref": "#/$defs/path" }, "abilitiesPath": { "$ref": "#/$defs/path" }, "proficiencyBonusPath": { "$ref": "#/$defs/path" }, "proficientSkillsPath": { "$ref": "#/$defs/path" }, "hpPath": { "$ref": "#/$defs/path" }, "conditionsPath": { "$ref": "#/$defs/path" }, "skillAbilities": { "type": "object", "additionalProperties": { "type": "string", "maxLength": 40 } }, "naturalRollPolicy": { "enum": ["critical", "normal"] } }, "required": ["actorsPath", "abilitiesPath", "proficiencyBonusPath", "proficientSkillsPath", "hpPath", "conditionsPath"], "additionalProperties": false }
+  },
+  "$defs": { "path": { "type": "string", "maxLength": 200 }, "paths": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/path" } } }
+}

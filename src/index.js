@@ -18,6 +18,7 @@ import { createToolRegistry, stageCheckRecord } from './tool-registry.js';
 import { createAdjudicatorService } from './adjudicator-service.js';
 import { createRuleEngine } from './rule-engine.js';
 import { createWebCryptoUint32 } from './dice-engine.js';
+import { createPresetManager } from './preset-manager.js';
 import d20Schema from '../schemas/d20.schema.json';
 import adjudicatorSchema from '../schemas/adjudicator.schema.json';
 import { NAMESPACE } from './constants.js';
@@ -30,6 +31,15 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     const validator = createStateValidator({ presets });
     const resolved = dependencies ?? {};
     const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
+    const settings = runtimeAdapter.getSettings?.() ?? {};
+    const presetManager = resolved.presetManager ?? createPresetManager({
+        settings, builtInPresets: presets, registerPreset: validator.registerPreset, unregisterPreset: validator.unregisterPreset,
+        save: () => runtimeAdapter.saveSettings?.(),
+        getReferences: id => {
+            const context = runtimeAdapter.getContext?.();
+            return context?.chatMetadata?.[NAMESPACE]?.preset?.id === id ? [{ type: 'chat', id: context.chatId }] : [];
+        }, stateStore: store,
+    });
     const decisionAjv = new Ajv({ allErrors: true, strict: false });
     const decisionValidator = decisionAjv.compile({ $ref: '#/$defs/decision', ...adjudicatorSchema });
     const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState, validateDecision: value => ({ ok: Boolean(decisionValidator(value)), errors: structuredClone(decisionValidator.errors ?? []) }) });
@@ -78,7 +88,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     orchestrator = createOrchestrator({
         adapter: runtimeAdapter, store, validator, modelService, ledger,
         promptInjector: resolved.promptInjector ?? createPromptInjector({ adapter: runtimeAdapter }), queue, rollbackManager,
-        getConfig: getEffectiveConfig, getPreset: resolved.getPreset ?? (id => presets.find(item => item.id === id)),
+        getConfig: getEffectiveConfig, getPreset: resolved.getPreset ?? (id => presetManager.getPreset(id)),
         hasProfile: resolved.hasProfile ?? (id => runtimeAdapter.listProfiles().some(profile => profile.id === id)),
         ensureMessageId, applyPatch: applyValidatedPatch, getChecks: resolved.getChecks ?? (() => []), recordDiagnostic: resolved.recordDiagnostic ?? (() => {}), prepareSwipeGeneration: resolved.prepareSwipeGeneration ?? (input => store.prepareSwipeGeneration(input)),
         formatReusableChecks: resolved.formatReusableChecks ?? (records => records.length ? `Authoritative completed checks; do not request them again: ${records.map(record => `${record.checkId}=${record.pass ?? record.outcome ?? 'recorded'}`).join(', ')}` : ''), adjudicator,
@@ -114,6 +124,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         ledger,
         toolRegistry,
         adjudicator,
+        presetManager,
     };
 }
 

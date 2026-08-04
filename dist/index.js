@@ -4027,7 +4027,7 @@ var require_core = __commonJS({
         uriResolver
       };
     }
-    var Ajv3 = class {
+    var Ajv4 = class {
       constructor(opts = {}) {
         this.schemas = {};
         this.refs = {};
@@ -4397,9 +4397,9 @@ var require_core = __commonJS({
         }
       }
     };
-    Ajv3.ValidationError = validation_error_1.default;
-    Ajv3.MissingRefError = ref_error_1.default;
-    exports.default = Ajv3;
+    Ajv4.ValidationError = validation_error_1.default;
+    Ajv4.MissingRefError = ref_error_1.default;
+    exports.default = Ajv4;
     function checkOptions(checkOpts, options, msg, log = "error") {
       for (const key in checkOpts) {
         const opt = key;
@@ -6510,7 +6510,7 @@ var require_ajv = __commonJS({
     var draft7MetaSchema = require_json_schema_draft_07();
     var META_SUPPORT_DATA = ["/properties"];
     var META_SCHEMA_ID = "http://json-schema.org/draft-07/schema";
-    var Ajv3 = class extends core_1.default {
+    var Ajv4 = class extends core_1.default {
       _addVocabularies() {
         super._addVocabularies();
         draft7_1.default.forEach((v) => this.addVocabulary(v));
@@ -6529,11 +6529,11 @@ var require_ajv = __commonJS({
         return this.opts.defaultMeta = super.defaultMeta() || (this.getSchema(META_SCHEMA_ID) ? META_SCHEMA_ID : void 0);
       }
     };
-    exports.Ajv = Ajv3;
-    module.exports = exports = Ajv3;
-    module.exports.Ajv = Ajv3;
+    exports.Ajv = Ajv4;
+    module.exports = exports = Ajv4;
+    module.exports.Ajv = Ajv4;
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.default = Ajv3;
+    exports.default = Ajv4;
     var validate_1 = require_validate();
     Object.defineProperty(exports, "KeywordCxt", { enumerable: true, get: function() {
       return validate_1.KeywordCxt;
@@ -6569,7 +6569,7 @@ var require_ajv = __commonJS({
 });
 
 // src/index.js
-var import_ajv2 = __toESM(require_ajv(), 1);
+var import_ajv3 = __toESM(require_ajv(), 1);
 
 // src/capability-probe.js
 function probeHostCapabilities(adapter) {
@@ -7406,6 +7406,52 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
       return result("save-failed", error);
     }
   }
+  function describePresetReset(preset) {
+    const context = adapter.getContext?.();
+    return { targetPreset: preset.id, targetVersion: preset.presetVersion, branchesRemoved: (context?.chat ?? []).reduce((total, message) => total + (message.swipe_info ?? []).filter((swipe) => swipe?.extra?.[NAMESPACE]?.branch).length, 0) };
+  }
+  async function resetForPreset(preset) {
+    if (!preset || typeof preset.id !== "string" || !Number.isSafeInteger(preset.presetVersion) || !isPlainObject(preset.initialState) || preset.initialState.version !== 0) return result("invalid-preset");
+    const context = adapter.getContext?.();
+    const envelope = context?.chatMetadata?.[NAMESPACE];
+    if (!context?.chatId || !Array.isArray(context.chat) || !validEnvelope(envelope)) return result("invalid-context");
+    const chatId = context.chatId;
+    const chat = context.chat;
+    const expectedHeadRevision = envelope.headRevision;
+    const metadataHad = Object.hasOwn(context.chatMetadata, NAMESPACE);
+    const metadataBefore = clone2(envelope);
+    const messageBefore = chat.map((message) => ({ message, extraHad: Object.hasOwn(message ?? {}, "extra"), extra: clone2(message?.extra), swipes: (message?.swipe_info ?? []).map((swipe) => ({ swipe, extraHad: Object.hasOwn(swipe ?? {}, "extra"), extra: clone2(swipe?.extra) })) }));
+    const stale = () => {
+      const latest = adapter.getContext?.();
+      return !latest || latest.chatId !== chatId || latest.chat !== chat || latest.chatMetadata?.[NAMESPACE] !== envelope || latest.chatMetadata[NAMESPACE].headRevision !== expectedHeadRevision;
+    };
+    if (stale()) return result("stale-chat");
+    try {
+      const configOverrides = { ...isPlainObject(envelope.configOverrides) ? clone2(envelope.configOverrides) : {}, rulePresetId: preset.id, presetVersion: preset.presetVersion };
+      context.chatMetadata[NAMESPACE] = { schemaVersion: envelope.schemaVersion, stateVersion: 0, headRevision: envelope.headRevision + 1, initialSnapshot: clone2(preset.initialState), activeSnapshot: clone2(preset.initialState), activeRef: null, preset: { id: preset.id, version: preset.presetVersion }, configOverrides, taskStatus: { state: "idle", requestId: null }, lastCommittedRequestId: null };
+      for (const message of chat) {
+        if (message?.extra) delete message.extra[NAMESPACE];
+        for (const swipe of message?.swipe_info ?? []) if (swipe?.extra) delete swipe.extra[NAMESPACE];
+      }
+      const latestBeforeSave = adapter.getContext?.();
+      if (!latestBeforeSave || latestBeforeSave.chatId !== chatId || latestBeforeSave.chat !== chat || latestBeforeSave.chatMetadata?.[NAMESPACE] !== context.chatMetadata[NAMESPACE]) throw new Error("stale-chat");
+      await adapter.saveChat();
+      return { ok: true };
+    } catch (error) {
+      if (metadataHad) context.chatMetadata[NAMESPACE] = metadataBefore;
+      else delete context.chatMetadata[NAMESPACE];
+      for (const item of messageBefore) {
+        if (!item.message) continue;
+        if (item.extraHad) item.message.extra = item.extra;
+        else delete item.message.extra;
+        for (const swipe of item.swipes) {
+          if (swipe.extraHad) swipe.swipe.extra = swipe.extra;
+          else delete swipe.swipe.extra;
+        }
+      }
+      return result(error?.message === "stale-chat" ? "stale-chat" : "save-failed", error);
+    }
+  }
   async function auditActiveRef() {
     const context = adapter.getContext?.();
     const envelope = context?.chatMetadata?.[NAMESPACE];
@@ -7469,7 +7515,7 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     }
     return [...records.values()].map(clone2);
   }
-  return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, commitCurrentBranchAudit, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef };
+  return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, commitCurrentBranchAudit, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef, describePresetReset, resetForPreset };
 }
 
 // src/json-patch.js
@@ -7857,7 +7903,24 @@ function createStateValidator({ presets }) {
   const patchValidator = ajv.compile(patch_schema_default);
   const presetById = new Map(presets.map((preset) => [preset.id, preset]));
   const stateValidators = new Map(presets.map((preset) => [preset.id, ajv.compile(preset.stateSchema)]));
+  const schemaIds = new Map(presets.filter((preset) => typeof preset.stateSchema?.$id === "string").map((preset) => [preset.id, preset.stateSchema.$id]));
+  function registerPreset(preset) {
+    if (!preset || typeof preset.id !== "string") throw new TypeError("Invalid preset");
+    if (presetById.has(preset.id)) throw new Error(`Duplicate preset ID: ${preset.id}`);
+    const validator = ajv.compile(preset.stateSchema);
+    presetById.set(preset.id, preset);
+    stateValidators.set(preset.id, validator);
+    if (typeof preset.stateSchema?.$id === "string") schemaIds.set(preset.id, preset.stateSchema.$id);
+  }
   return {
+    registerPreset,
+    unregisterPreset(id) {
+      const schemaId = schemaIds.get(id);
+      if (schemaId) ajv.removeSchema(schemaId);
+      schemaIds.delete(id);
+      presetById.delete(id);
+      stateValidators.delete(id);
+    },
     validateState(presetId, state) {
       const validate2 = stateValidators.get(presetId);
       const schemaOk = Boolean(validate2?.(state));
@@ -8246,7 +8309,13 @@ var state_schema_default = {
 };
 
 // src/rules/narrative.js
-var narrativePreset = Object.freeze({
+function deepFreeze(value, seen = /* @__PURE__ */ new WeakSet()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) deepFreeze(child, seen);
+  return Object.freeze(value);
+}
+var narrativePreset = deepFreeze({
   id: "narrative",
   name: "Narrative",
   presetVersion: 1,
@@ -8312,13 +8381,13 @@ var d20_state_schema_default = {
 };
 
 // src/rules/d20-lite.js
-function deepFreeze(value, seen = /* @__PURE__ */ new WeakSet()) {
+function deepFreeze2(value, seen = /* @__PURE__ */ new WeakSet()) {
   if (!value || typeof value !== "object" || seen.has(value)) return value;
   seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
+  for (const child of Object.values(value)) deepFreeze2(child, seen);
   return Object.freeze(value);
 }
-var d20LitePreset = deepFreeze({
+var d20LitePreset = deepFreeze2({
   ...narrativePreset,
   id: "d20-lite",
   name: "D20 Lite",
@@ -8362,20 +8431,20 @@ function resolveConfig({ globalConfig = {}, characterConfig = {}, chatConfig = {
 }
 
 // src/check-ledger.js
-function deepFreeze2(value, seen = /* @__PURE__ */ new WeakSet()) {
+function deepFreeze3(value, seen = /* @__PURE__ */ new WeakSet()) {
   if (!value || typeof value !== "object" || seen.has(value)) return value;
   seen.add(value);
-  for (const child of Object.values(value)) deepFreeze2(child, seen);
+  for (const child of Object.values(value)) deepFreeze3(child, seen);
   return Object.freeze(value);
 }
 function createCheckLedger({ makeId, now, initialRecords = [] }) {
-  const records = initialRecords.map((record) => deepFreeze2(structuredClone(record)));
-  const freezeRecord = (input) => deepFreeze2(structuredClone({ checkId: makeId(), createdAt: now(), supersedes: null, ...input }));
+  const records = initialRecords.map((record) => deepFreeze3(structuredClone(record)));
+  const freezeRecord = (input) => deepFreeze3(structuredClone({ checkId: makeId(), createdAt: now(), supersedes: null, ...input }));
   return {
     createRecord: freezeRecord,
     reroll: (previous, input) => freezeRecord({ ...input, supersedes: previous.checkId }),
     commit(staged = []) {
-      for (const record of staged) if (record?.checkId && !records.some((item) => item.checkId === record.checkId)) records.push(deepFreeze2(structuredClone(record)));
+      for (const record of staged) if (record?.checkId && !records.some((item) => item.checkId === record.checkId)) records.push(deepFreeze3(structuredClone(record)));
     },
     findReusable({ baseBranchId, signature }) {
       return records.findLast((record) => record.branchId === baseBranchId && record.signature === signature) ?? null;
@@ -8679,6 +8748,223 @@ function createRuleEngine({ nextUint32, preset }) {
   };
 }
 
+// src/preset-manager.js
+var import_ajv2 = __toESM(require_ajv(), 1);
+
+// schemas/preset.schema.json
+var preset_schema_default = {
+  $schema: "http://json-schema.org/draft-07/schema#",
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "name", "presetVersion", "compatibleDataVersions", "stateSchema", "initialState", "allowedPaths", "lockedPaths", "injection", "ui", "d20"],
+  properties: {
+    id: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{2,63}$" },
+    name: { type: "string", minLength: 1, maxLength: 80 },
+    presetVersion: { type: "integer", minimum: 1 },
+    compatibleDataVersions: { type: "object", additionalProperties: false, required: ["minimum", "maximum"], properties: { minimum: { type: "integer", minimum: 1 }, maximum: { type: "integer", minimum: 1 } } },
+    stateSchema: { type: "object" },
+    initialState: { type: "object" },
+    allowedPaths: { $ref: "#/$defs/paths" },
+    lockedPaths: { $ref: "#/$defs/paths" },
+    injection: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: false, required: ["path", "label", "priority", "required"], properties: { path: { $ref: "#/$defs/path" }, label: { type: "string", maxLength: 80 }, priority: { type: "integer" }, required: { type: "boolean" } } } },
+    ui: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: false, required: ["path", "control", "label"], properties: { path: { $ref: "#/$defs/path" }, control: { enum: ["json", "text", "number", "boolean"] }, label: { type: "string", maxLength: 80 } } } },
+    d20: { type: ["null", "object"], properties: { actorsPath: { $ref: "#/$defs/path" }, abilitiesPath: { $ref: "#/$defs/path" }, proficiencyBonusPath: { $ref: "#/$defs/path" }, proficientSkillsPath: { $ref: "#/$defs/path" }, hpPath: { $ref: "#/$defs/path" }, conditionsPath: { $ref: "#/$defs/path" }, skillAbilities: { type: "object", additionalProperties: { type: "string", maxLength: 40 } }, naturalRollPolicy: { enum: ["critical", "normal"] } }, required: ["actorsPath", "abilitiesPath", "proficiencyBonusPath", "proficientSkillsPath", "hpPath", "conditionsPath"], additionalProperties: false }
+  },
+  $defs: { path: { type: "string", maxLength: 200 }, paths: { type: "array", maxItems: 500, items: { $ref: "#/$defs/path" } } }
+};
+
+// src/rules/custom.js
+function deepFreeze4(value, seen = /* @__PURE__ */ new WeakSet()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) deepFreeze4(child, seen);
+  return Object.freeze(value);
+}
+function readAt(root, path) {
+  return decodePointer(path).reduce((value, key) => value?.[key], root);
+}
+function writeAt(root, path, value) {
+  const parts = decodePointer(path);
+  const key = parts.pop();
+  const parent = parts.reduce((item, part) => item?.[part], root);
+  if (!parent || key === void 0) throw new Error(`Invalid adapter path: ${path}`);
+  parent[key] = value;
+}
+function encode(value) {
+  return String(value).replace(/~/g, "~0").replace(/\//g, "~1");
+}
+function createCustomRuleAdapter(preset) {
+  const runtime = structuredClone(preset);
+  if (!runtime.d20) return deepFreeze4(runtime);
+  const d20 = runtime.d20;
+  return deepFreeze4({
+    ...runtime,
+    ruleLockedPaths: [d20.actorsPath],
+    skillAbilities: d20.skillAbilities ?? {},
+    naturalRollPolicy: d20.naturalRollPolicy ?? "normal",
+    validateInvariants(state) {
+      const actors = readAt(state, d20.actorsPath) ?? {};
+      return Object.entries(actors).flatMap(([id, root]) => {
+        const hp = readAt(root, d20.hpPath);
+        return hp && hp.current <= hp.max ? [] : [{ instancePath: `${d20.actorsPath}/${encode(id)}`, message: "current HP must not exceed max HP" }];
+      });
+    },
+    readActor(state, id) {
+      const root = readAt(state, `${d20.actorsPath}/${encode(id)}`);
+      if (!root) return void 0;
+      return { abilities: readAt(root, d20.abilitiesPath), proficiencyBonus: readAt(root, d20.proficiencyBonusPath), proficientSkills: readAt(root, d20.proficientSkillsPath), hp: readAt(root, d20.hpPath), conditions: readAt(root, d20.conditionsPath) };
+    },
+    writeActor(state, id, actor) {
+      const root = readAt(state, `${d20.actorsPath}/${encode(id)}`);
+      writeAt(root, d20.hpPath, structuredClone(actor.hp));
+      writeAt(root, d20.conditionsPath, structuredClone(actor.conditions));
+    }
+  });
+}
+
+// src/preset-manager.js
+var forbidden = /* @__PURE__ */ new Set(["$ref", "$dynamicRef", "$recursiveRef", "pattern", "patternProperties", "format", "allOf", "anyOf", "oneOf", "not"]);
+var dangerous = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
+var clone4 = (value) => structuredClone(value);
+function inspectObject(value) {
+  if (!value || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value)) {
+    if (dangerous.has(key)) throw new Error(`Unsafe key: ${key}`);
+    inspectObject(child);
+  }
+}
+function inspectSchema(node, depth = 0, counters = { properties: 0 }) {
+  if (depth > PRESET_LIMITS.maxDepth) throw new Error(`Schema depth exceeds ${PRESET_LIMITS.maxDepth}`);
+  if (!node || typeof node !== "object") return;
+  for (const key of Object.keys(node)) if (forbidden.has(key)) throw new Error(`Unsupported schema keyword: ${key}`);
+  if (node.properties) counters.properties += Object.keys(node.properties).length;
+  if (counters.properties > PRESET_LIMITS.maxProperties) throw new Error(`Schema properties exceed ${PRESET_LIMITS.maxProperties}`);
+  if ((node.type === "array" || Array.isArray(node.type) && node.type.includes("array")) && (!Number.isInteger(node.maxItems) || node.maxItems > PRESET_LIMITS.maxItems)) throw new Error(`Array maxItems must be at most ${PRESET_LIMITS.maxItems}`);
+  for (const child of Object.values(node)) inspectSchema(child, depth + 1, counters);
+}
+function overlaps(a, b) {
+  return a === "" || b === "" || a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+function validatePointers(preset) {
+  for (const path of [...preset.allowedPaths, ...preset.lockedPaths, ...preset.injection.map((x) => x.path), ...preset.ui.map((x) => x.path)]) decodePointer(path);
+  for (const a of preset.allowedPaths) for (const b of preset.lockedPaths) if (overlaps(a, b)) throw new Error(`Conflicting allowed and locked paths: ${a}, ${b}`);
+}
+function createPresetManager({ settings, builtInPresets = [], registerPreset, unregisterPreset = () => {
+}, save, getReferences = () => [], stateStore }) {
+  if (!Array.isArray(settings.customPresets)) settings.customPresets = [];
+  const envelopeValidator = new import_ajv2.default({ allErrors: true, strict: false }).compile(preset_schema_default);
+  const builtIns = new Map(builtInPresets.map((p) => [p.id, p]));
+  const compiled = /* @__PURE__ */ new Map();
+  function validate2(raw) {
+    inspectObject(raw);
+    if (!envelopeValidator(raw)) throw new Error(`Invalid preset: ${(envelopeValidator.errors ?? []).map((e) => e.message).join(", ")}`);
+    inspectSchema(raw.stateSchema);
+    validatePointers(raw);
+    if (!raw.stateSchema.required?.includes("version") || raw.stateSchema.properties?.version?.type !== "integer") throw new Error("State schema must require integer version");
+    if (raw.initialState.version !== 0) throw new Error("Initial state version must be 0");
+    if (raw.compatibleDataVersions.minimum > raw.compatibleDataVersions.maximum || raw.compatibleDataVersions.minimum > DATA_SCHEMA_VERSION || raw.compatibleDataVersions.maximum < DATA_SCHEMA_VERSION) throw new Error("Incompatible data version");
+    const check = new import_ajv2.default({ allErrors: true, strict: false }).compile(raw.stateSchema);
+    if (!check(raw.initialState)) throw new Error("Initial state does not match schema");
+  }
+  function getPreset(id) {
+    const value = compiled.get(id) ?? builtIns.get(id);
+    if (!value) throw new Error(`Preset not found: ${id}`);
+    return value;
+  }
+  function compile(raw) {
+    validate2(raw);
+    const value = createCustomRuleAdapter(raw);
+    if (value.validateInvariants?.(raw.initialState).length) throw new Error("Initial state violates preset invariants");
+    return value;
+  }
+  for (const raw of settings.customPresets) {
+    const value = compile(raw);
+    if (builtIns.has(raw.id) || compiled.has(raw.id)) throw new Error(`Duplicate preset ID: ${raw.id}`);
+    compiled.set(raw.id, value);
+  }
+  const registeredAtStartup = [];
+  try {
+    for (const value of compiled.values()) {
+      registerPreset(value);
+      registeredAtStartup.push(value.id);
+    }
+  } catch (error) {
+    for (const id of registeredAtStartup) unregisterPreset(id);
+    throw error;
+  }
+  return {
+    async importPreset(text) {
+      if (typeof text !== "string") throw new TypeError("Preset text must be a string");
+      if (new TextEncoder().encode(text).byteLength > PRESET_LIMITS.maxBytes) throw new Error(`Preset exceeds ${PRESET_LIMITS.maxBytes} bytes`);
+      let raw;
+      try {
+        raw = JSON.parse(text);
+      } catch {
+        throw new Error("Invalid preset JSON");
+      }
+      inspectObject(raw);
+      if (builtIns.has(raw?.id) || compiled.has(raw?.id)) throw new Error(`Duplicate preset ID: ${raw?.id}`);
+      const value = compile(raw);
+      registerPreset(value);
+      const before = clone4(settings.customPresets);
+      settings.customPresets = [...before, clone4(raw)];
+      compiled.set(raw.id, value);
+      try {
+        await save();
+        return { ok: true, preset: value };
+      } catch (error) {
+        settings.customPresets = before;
+        compiled.delete(raw.id);
+        unregisterPreset(raw.id);
+        throw error;
+      }
+    },
+    exportPreset(id) {
+      const raw = settings.customPresets.find((item) => item.id === id);
+      if (!raw) throw new Error(`Custom preset not found: ${id}`);
+      return JSON.stringify(clone4(raw), null, 2);
+    },
+    listPresets() {
+      return settings.customPresets.map(clone4);
+    },
+    getPreset,
+    bindCharacter(character, id) {
+      const preset = getPreset(id);
+      character.data ??= {};
+      character.data.extensions ??= {};
+      character.data.extensions.dualModelEngine ??= {};
+      character.data.extensions.dualModelEngine.rulePresetId = preset.id;
+      character.data.extensions.dualModelEngine.presetVersion = preset.presetVersion;
+    },
+    async bindChat(metadata, id, { confirmedReset = false } = {}) {
+      const preset = getPreset(id);
+      const current = metadata?.dualModelEngine?.preset;
+      if (current?.id === preset.id && current.version === preset.presetVersion) return { ok: true, unchanged: true };
+      const summary = stateStore.describePresetReset?.(preset) ?? { targetPreset: preset.id };
+      if (!confirmedReset) return { ok: false, reason: "preset-reset-required", summary, exportRawData: this.exportPreset.bind(this, id) };
+      return stateStore.resetForPreset(preset);
+    },
+    async deletePreset(id) {
+      if (builtIns.has(id)) throw new Error(`Built-in preset cannot be deleted: ${id}`);
+      if (!compiled.has(id)) throw new Error(`Custom preset not found: ${id}`);
+      const references = getReferences(id);
+      if (references.length) throw new Error(`Preset is still referenced: ${JSON.stringify(references)}`);
+      const before = clone4(settings.customPresets);
+      const existing = compiled.get(id);
+      settings.customPresets = before.filter((item) => item.id !== id);
+      compiled.delete(id);
+      try {
+        await save();
+        unregisterPreset(id);
+      } catch (error) {
+        settings.customPresets = before;
+        compiled.set(id, existing);
+        throw error;
+      }
+    }
+  };
+}
+
 // schemas/adjudicator.schema.json
 var adjudicator_schema_default = {
   $defs: {
@@ -8698,7 +8984,20 @@ async function bootstrap({ adapter, dependencies } = {}) {
   const validator = createStateValidator({ presets });
   const resolved = dependencies ?? {};
   const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
-  const decisionAjv = new import_ajv2.default({ allErrors: true, strict: false });
+  const settings = runtimeAdapter.getSettings?.() ?? {};
+  const presetManager = resolved.presetManager ?? createPresetManager({
+    settings,
+    builtInPresets: presets,
+    registerPreset: validator.registerPreset,
+    unregisterPreset: validator.unregisterPreset,
+    save: () => runtimeAdapter.saveSettings?.(),
+    getReferences: (id) => {
+      const context = runtimeAdapter.getContext?.();
+      return context?.chatMetadata?.[NAMESPACE]?.preset?.id === id ? [{ type: "chat", id: context.chatId }] : [];
+    },
+    stateStore: store
+  });
+  const decisionAjv = new import_ajv3.default({ allErrors: true, strict: false });
   const decisionValidator = decisionAjv.compile({ $ref: "#/$defs/decision", ...adjudicator_schema_default });
   const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState, validateDecision: (value) => ({ ok: Boolean(decisionValidator(value)), errors: structuredClone(decisionValidator.errors ?? []) }) });
   const queue = resolved.queue ?? createChatTaskQueue();
@@ -8711,7 +9010,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
     return globalThis.crypto.randomUUID();
   });
   const ledger = resolved.ledger ?? createCheckLedger({ makeId, now: resolved.now ?? (() => (/* @__PURE__ */ new Date()).toISOString()), initialRecords: store.listRuleRecords?.() ?? [] });
-  const ajv = new import_ajv2.default({ allErrors: true, strict: false });
+  const ajv = new import_ajv3.default({ allErrors: true, strict: false });
   const checkValidator = ajv.compile({ $ref: "#/$defs/checkInput", ...d20_schema_default });
   const damageValidator = ajv.compile({ $ref: "#/$defs/damageInput", ...d20_schema_default });
   const validate2 = (fn) => (input) => ({ ok: Boolean(fn(input)), errors: structuredClone(fn.errors ?? []) });
@@ -8770,7 +9069,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
     queue,
     rollbackManager,
     getConfig: getEffectiveConfig,
-    getPreset: resolved.getPreset ?? ((id) => presets.find((item) => item.id === id)),
+    getPreset: resolved.getPreset ?? ((id) => presetManager.getPreset(id)),
     hasProfile: resolved.hasProfile ?? ((id) => runtimeAdapter.listProfiles().some((profile) => profile.id === id)),
     ensureMessageId,
     applyPatch: applyValidatedPatch,
@@ -8837,13 +9136,14 @@ async function bootstrap({ adapter, dependencies } = {}) {
     orchestrator,
     ledger,
     toolRegistry,
-    adjudicator
+    adjudicator,
+    presetManager
   };
 }
 if (typeof document !== "undefined" && import.meta.url.includes("/scripts/extensions/")) {
   void bootstrap();
 }
-var export_Ajv = import_ajv2.default;
+var export_Ajv = import_ajv3.default;
 export {
   export_Ajv as Ajv,
   bootstrap,

@@ -318,6 +318,35 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         catch (error) { context.chatMetadata[NAMESPACE] = before; return result('save-failed', error); }
     }
 
+    function describePresetReset(preset) {
+        const context = adapter.getContext?.();
+        return { targetPreset: preset.id, targetVersion: preset.presetVersion, branchesRemoved: (context?.chat ?? []).reduce((total, message) => total + (message.swipe_info ?? []).filter(swipe => swipe?.extra?.[NAMESPACE]?.branch).length, 0) };
+    }
+
+    async function resetForPreset(preset) {
+        if (!preset || typeof preset.id !== 'string' || !Number.isSafeInteger(preset.presetVersion) || !isPlainObject(preset.initialState) || preset.initialState.version !== 0) return result('invalid-preset');
+        const context = adapter.getContext?.(); const envelope = context?.chatMetadata?.[NAMESPACE];
+        if (!context?.chatId || !Array.isArray(context.chat) || !validEnvelope(envelope)) return result('invalid-context');
+        const chatId = context.chatId; const chat = context.chat; const expectedHeadRevision = envelope.headRevision;
+        const metadataHad = Object.hasOwn(context.chatMetadata, NAMESPACE); const metadataBefore = clone(envelope);
+        const messageBefore = chat.map(message => ({ message, extraHad: Object.hasOwn(message ?? {}, 'extra'), extra: clone(message?.extra), swipes: (message?.swipe_info ?? []).map(swipe => ({ swipe, extraHad: Object.hasOwn(swipe ?? {}, 'extra'), extra: clone(swipe?.extra) })) }));
+        const stale = () => { const latest = adapter.getContext?.(); return !latest || latest.chatId !== chatId || latest.chat !== chat || latest.chatMetadata?.[NAMESPACE] !== envelope || latest.chatMetadata[NAMESPACE].headRevision !== expectedHeadRevision; };
+        if (stale()) return result('stale-chat');
+        try {
+            const configOverrides = { ...(isPlainObject(envelope.configOverrides) ? clone(envelope.configOverrides) : {}), rulePresetId: preset.id, presetVersion: preset.presetVersion };
+            context.chatMetadata[NAMESPACE] = { schemaVersion: envelope.schemaVersion, stateVersion: 0, headRevision: envelope.headRevision + 1, initialSnapshot: clone(preset.initialState), activeSnapshot: clone(preset.initialState), activeRef: null, preset: { id: preset.id, version: preset.presetVersion }, configOverrides, taskStatus: { state: 'idle', requestId: null }, lastCommittedRequestId: null };
+            for (const message of chat) { if (message?.extra) delete message.extra[NAMESPACE]; for (const swipe of message?.swipe_info ?? []) if (swipe?.extra) delete swipe.extra[NAMESPACE]; }
+            const latestBeforeSave = adapter.getContext?.();
+            if (!latestBeforeSave || latestBeforeSave.chatId !== chatId || latestBeforeSave.chat !== chat || latestBeforeSave.chatMetadata?.[NAMESPACE] !== context.chatMetadata[NAMESPACE]) throw new Error('stale-chat');
+            await adapter.saveChat();
+            return { ok: true };
+        } catch (error) {
+            if (metadataHad) context.chatMetadata[NAMESPACE] = metadataBefore; else delete context.chatMetadata[NAMESPACE];
+            for (const item of messageBefore) { if (!item.message) continue; if (item.extraHad) item.message.extra = item.extra; else delete item.message.extra; for (const swipe of item.swipes) { if (swipe.extraHad) swipe.swipe.extra = swipe.extra; else delete swipe.swipe.extra; } }
+            return result(error?.message === 'stale-chat' ? 'stale-chat' : 'save-failed', error);
+        }
+    }
+
     async function auditActiveRef() {
         const context = adapter.getContext?.(); const envelope = context?.chatMetadata?.[NAMESPACE];
         if (!validEnvelope(envelope)) return result('invalid-envelope');
@@ -374,5 +403,5 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         return [...records.values()].map(clone);
     }
 
-    return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, commitCurrentBranchAudit, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef };
+    return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, commitCurrentBranchAudit, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef, describePresetReset, resetForPreset };
 }
