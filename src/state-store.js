@@ -1,5 +1,6 @@
 import { NAMESPACE } from './constants.js';
 import { ensureMessageId } from './identity.js';
+import { createEmptyEnvelope } from './migrations.js';
 
 function result(reason, error) {
     return error === undefined ? { ok: false, reason } : { ok: false, reason, error };
@@ -36,6 +37,26 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
 
     function getBranch(message, swipeId) {
         return getNamespace(message, swipeId)?.branch ?? null;
+    }
+
+    async function ensureEnvelope({ presetId, initialState }) {
+        const context = adapter.getContext?.();
+        if (!context?.chatMetadata) return result('invalid-context');
+        const existing = context.chatMetadata[NAMESPACE];
+        if (existing) return validEnvelope(existing) ? { ok: true, value: existing, created: false } : result('invalid-envelope');
+        const before = clone(context.chatMetadata);
+        try {
+            const envelope = createEmptyEnvelope({ presetId, initialState });
+            context.chatMetadata[NAMESPACE] = envelope;
+            await adapter.saveChat();
+            return { ok: true, value: envelope, created: true };
+        } catch (error) { context.chatMetadata = before; return result('save-failed', error); }
+    }
+
+    function prepareSwipeGeneration({ target }) {
+        const swipeId = target?.swipe_id ?? 0; const branch = getBranch(target, swipeId);
+        if (!branch?.baseSnapshot || !Number.isSafeInteger(branch.baseStateVersion)) return result('missing-source-branch');
+        return { ok: true, baseSnapshot: clone(branch.baseSnapshot), baseStateVersion: branch.baseStateVersion, baseBranchId: branch.branchId, targetMessageId: target.extra?.[NAMESPACE]?.messageId };
     }
 
     function ensureBranch(message, swipeId, baseSnapshot, baseStateVersion, branchId, replaceExisting = false) {
@@ -201,14 +222,19 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         }
     }
 
-    async function markBranchFailed({ chatId, messageId, swipeId, branchId, requestId }) {
+    async function markBranchFailed({ chatId, messageId, swipeId, branchId, requestId, baseSnapshot, baseStateVersion, isContinue, baseBranchId }) {
         const context = adapter.getContext?.();
         const envelope = context?.chatMetadata?.[NAMESPACE];
         if (!context || context.chatId !== chatId) return result('stale-chat');
         if (!validEnvelope(envelope)) return result('invalid-envelope');
         const message = context.chat?.find(item => item?.extra?.[NAMESPACE]?.messageId === messageId);
-        const branch = message && getBranch(message, swipeId);
-        if (!message || (message.swipe_id ?? 0) !== swipeId || branch?.branchId !== branchId) return result('branch-conflict');
+        let branch = message && getBranch(message, swipeId);
+        if (!message || (message.swipe_id ?? 0) !== swipeId || (isContinue && branch?.branchId !== branchId)) return result('branch-conflict');
+        if (!isContinue && branch?.branchId !== branchId && baseSnapshot && Number.isSafeInteger(baseStateVersion)) {
+            if (baseBranchId && branch?.branchId !== baseBranchId) return result('branch-conflict');
+            branch = ensureBranch(message, swipeId, baseSnapshot, baseStateVersion, branchId, true);
+        }
+        if (branch?.branchId !== branchId) return result('branch-conflict');
         const metadataBefore = clone(envelope); const extraBefore = clone(message.extra); const swipesBefore = clone(message.swipe_info);
         try {
             branch.status = 'stale';
@@ -237,5 +263,5 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         return [...records.values()].map(clone);
     }
 
-    return { loadEnvelope, getBranch, ensureBranch, commitSegment, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords };
+    return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords };
 }

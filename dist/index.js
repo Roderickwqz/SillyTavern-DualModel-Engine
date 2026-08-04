@@ -6637,11 +6637,20 @@ function createOrchestrator(deps) {
       return { enabled: false, reason: current.groupId ? "group-chat" : "disabled" };
     }
     const loaded = deps.store.loadEnvelope();
-    const envelope = envelopeValue(loaded);
+    let envelope = envelopeValue(loaded);
+    const configuredPreset = deps.getPreset(config.rulePresetId);
     if (!envelope || loaded?.ok === false) {
-      diagnostic({ reason: "missing-envelope" });
-      deps.promptInjector.clear();
-      return { enabled: false, reason: "missing-envelope" };
+      const created = await deps.store.ensureEnvelope?.({ presetId: config.rulePresetId, initialState: configuredPreset?.initialState });
+      if (!created?.ok) {
+        diagnostic({ reason: "missing-envelope", result: created });
+        try {
+          deps.promptInjector.clear();
+        } catch (error) {
+          diagnostic({ reason: "prompt-clear-failed", error });
+        }
+        return { enabled: false, reason: "missing-envelope" };
+      }
+      envelope = envelopeValue(created);
     }
     const preset = deps.getPreset(envelope.preset.id);
     try {
@@ -6657,6 +6666,7 @@ function createOrchestrator(deps) {
     const previousUser = current.chat.findLast((m) => m.is_user);
     const existing = deps.store.getBranch?.(target, target?.swipe_id ?? 0);
     const prepared = ["swipe", "regenerate"].includes(type) ? deps.prepareSwipeGeneration?.({ type, target, envelope }) : null;
+    if (prepared?.ok === false) return null;
     const branch = type === "continue" ? existing?.branchId : null;
     return { type, chatId: current.chatId, expectedHeadRevision: envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (["swipe", "regenerate"].includes(type) ? existing?.branchId ?? null : null), effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === "continue" ? target?.mes ?? "" : null, playerText: previousUser?.mes ?? "", userMessageId: previousUser ? messageId(previousUser) : null };
   }
@@ -6689,6 +6699,10 @@ function createOrchestrator(deps) {
     }
     activeChatId = current.chatId;
     generation = capture(type, current, envelope, config, preset);
+    if (!generation) {
+      diagnostic({ reason: "missing-source-branch" });
+      return { ignored: true, reason: "missing-source-branch" };
+    }
     return { ok: true, requestId: generation.requestId };
   }
   function isFinalAssistant(message) {
@@ -6727,8 +6741,11 @@ function createOrchestrator(deps) {
     captured.assistantMessageId = messageId(located.message);
     captured.swipeId = located.message.swipe_id ?? 0;
     captured.checks = clone(deps.getChecks(captured));
+    let failed = false;
     const fail = async (detail) => {
-      const outcome = await deps.store.markBranchFailed?.({ chatId: captured.chatId, messageId: captured.assistantMessageId, swipeId: captured.swipeId, branchId: captured.branchId, requestId: captured.requestId });
+      if (failed) return;
+      failed = true;
+      const outcome = await deps.store.markBranchFailed?.({ chatId: captured.chatId, messageId: captured.assistantMessageId, swipeId: captured.swipeId, branchId: captured.branchId, requestId: captured.requestId, baseSnapshot: captured.baseSnapshot, baseStateVersion: captured.baseVersion, isContinue: captured.type === "continue", baseBranchId: captured.baseBranchId });
       if (!outcome?.ok) diagnostic({ requestId: captured.requestId, ...detail, failureResult: outcome });
       else diagnostic({ requestId: captured.requestId, ...detail });
     };
@@ -6786,6 +6803,7 @@ function createOrchestrator(deps) {
 
 // src/constants.js
 var NAMESPACE = "dualModelEngine";
+var DATA_SCHEMA_VERSION = 1;
 var DEFAULT_CONFIG = Object.freeze({
   enabled: false,
   recorderProfileId: "",
@@ -6828,6 +6846,24 @@ async function hashText(text, subtle = crypto.subtle) {
   return `sha256:${hex}`;
 }
 
+// src/migrations.js
+function createEmptyEnvelope({ presetId, initialState }) {
+  const snapshot = structuredClone(initialState);
+  if (snapshot.version !== 0) throw new Error("Initial state version must be 0");
+  return {
+    schemaVersion: DATA_SCHEMA_VERSION,
+    stateVersion: 0,
+    headRevision: 0,
+    preset: { id: presetId, version: 1 },
+    initialSnapshot: structuredClone(snapshot),
+    activeSnapshot: snapshot,
+    activeRef: null,
+    configOverrides: {},
+    taskStatus: { state: "idle", requestId: null },
+    lastCommittedRequestId: null
+  };
+}
+
 // src/state-store.js
 function result(reason, error) {
   return error === void 0 ? { ok: false, reason } : { ok: false, reason, error };
@@ -6857,6 +6893,28 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
   }
   function getBranch(message, swipeId) {
     return getNamespace(message, swipeId)?.branch ?? null;
+  }
+  async function ensureEnvelope({ presetId, initialState }) {
+    const context = adapter.getContext?.();
+    if (!context?.chatMetadata) return result("invalid-context");
+    const existing = context.chatMetadata[NAMESPACE];
+    if (existing) return validEnvelope(existing) ? { ok: true, value: existing, created: false } : result("invalid-envelope");
+    const before = clone2(context.chatMetadata);
+    try {
+      const envelope = createEmptyEnvelope({ presetId, initialState });
+      context.chatMetadata[NAMESPACE] = envelope;
+      await adapter.saveChat();
+      return { ok: true, value: envelope, created: true };
+    } catch (error) {
+      context.chatMetadata = before;
+      return result("save-failed", error);
+    }
+  }
+  function prepareSwipeGeneration({ target }) {
+    const swipeId = target?.swipe_id ?? 0;
+    const branch = getBranch(target, swipeId);
+    if (!branch?.baseSnapshot || !Number.isSafeInteger(branch.baseStateVersion)) return result("missing-source-branch");
+    return { ok: true, baseSnapshot: clone2(branch.baseSnapshot), baseStateVersion: branch.baseStateVersion, baseBranchId: branch.branchId, targetMessageId: target.extra?.[NAMESPACE]?.messageId };
   }
   function ensureBranch(message, swipeId, baseSnapshot, baseStateVersion, branchId, replaceExisting = false) {
     if (!isPlainObject(message) || !Array.isArray(message.swipe_info) || !Number.isSafeInteger(swipeId) || swipeId < 0 || swipeId >= message.swipe_info.length || !isPlainObject(message.swipe_info[swipeId])) throw new Error("Invalid swipe index");
@@ -7008,14 +7066,19 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
       return result("save-failed", error);
     }
   }
-  async function markBranchFailed({ chatId, messageId, swipeId, branchId, requestId }) {
+  async function markBranchFailed({ chatId, messageId, swipeId, branchId, requestId, baseSnapshot, baseStateVersion, isContinue, baseBranchId }) {
     const context = adapter.getContext?.();
     const envelope = context?.chatMetadata?.[NAMESPACE];
     if (!context || context.chatId !== chatId) return result("stale-chat");
     if (!validEnvelope(envelope)) return result("invalid-envelope");
     const message = context.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === messageId);
-    const branch = message && getBranch(message, swipeId);
-    if (!message || (message.swipe_id ?? 0) !== swipeId || branch?.branchId !== branchId) return result("branch-conflict");
+    let branch = message && getBranch(message, swipeId);
+    if (!message || (message.swipe_id ?? 0) !== swipeId || isContinue && branch?.branchId !== branchId) return result("branch-conflict");
+    if (!isContinue && branch?.branchId !== branchId && baseSnapshot && Number.isSafeInteger(baseStateVersion)) {
+      if (baseBranchId && branch?.branchId !== baseBranchId) return result("branch-conflict");
+      branch = ensureBranch(message, swipeId, baseSnapshot, baseStateVersion, branchId, true);
+    }
+    if (branch?.branchId !== branchId) return result("branch-conflict");
     const metadataBefore = clone2(envelope);
     const extraBefore = clone2(message.extra);
     const swipesBefore = clone2(message.swipe_info);
@@ -7046,7 +7109,7 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     }
     return [...records.values()].map(clone2);
   }
-  return { loadEnvelope, getBranch, ensureBranch, commitSegment, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords };
+  return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords };
 }
 
 // src/json-patch.js
@@ -7609,9 +7672,22 @@ var narrativePreset = Object.freeze({
   ]
 });
 
+// src/config-resolver.js
+function definedEntries(value = {}) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== void 0));
+}
+function resolveConfig({ globalConfig = {}, characterConfig = {}, chatConfig = {} }) {
+  return Object.freeze({
+    ...DEFAULT_CONFIG,
+    ...definedEntries(globalConfig),
+    ...definedEntries(characterConfig),
+    ...definedEntries(chatConfig)
+  });
+}
+
 // src/index.js
 async function bootstrap({ adapter, dependencies } = {}) {
-  const runtimeAdapter = adapter ?? (await import("./st-runtime-RG4M7Z22.js")).createRuntimeAdapter();
+  const runtimeAdapter = adapter ?? (await import("./st-runtime-WSMD2CWO.js")).createRuntimeAdapter();
   const presets = [narrativePreset];
   const validator = createStateValidator({ presets });
   const resolved = dependencies ?? {};
@@ -7624,14 +7700,18 @@ async function bootstrap({ adapter, dependencies } = {}) {
     modelService,
     promptInjector: resolved.promptInjector ?? createPromptInjector({ adapter: runtimeAdapter }),
     queue: resolved.queue ?? createChatTaskQueue(),
-    getConfig: resolved.getConfig ?? (() => DEFAULT_CONFIG),
+    getConfig: resolved.getConfig ?? (() => {
+      const envelope = store.loadEnvelope?.();
+      return resolveConfig({ globalConfig: runtimeAdapter.getSettings?.(), chatConfig: envelope?.ok ? envelope.value.configOverrides : envelope?.configOverrides });
+    }),
     getPreset: resolved.getPreset ?? ((id) => presets.find((item) => item.id === id)),
     hasProfile: resolved.hasProfile ?? ((id) => runtimeAdapter.listProfiles().some((profile) => profile.id === id)),
     ensureMessageId,
     applyPatch: applyValidatedPatch,
     getChecks: resolved.getChecks ?? (() => []),
     recordDiagnostic: resolved.recordDiagnostic ?? (() => {
-    })
+    }),
+    prepareSwipeGeneration: resolved.prepareSwipeGeneration ?? ((input) => store.prepareSwipeGeneration(input))
   });
   orchestrator.start();
   await orchestrator.initializeChat();

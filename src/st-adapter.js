@@ -13,6 +13,7 @@ export function createSTAdapter(host) {
         unregisterTool: name => host.unregisterTool?.(name),
         saveChat: () => host.getContext().saveMetadata(),
         saveSettings: () => host.saveSettingsDebounced?.(),
+        getSettings: () => host.getSettings?.() ?? {},
         countTokens: text => host.countTokens(text),
         canInjectPrompt: typeof host.setExtensionPrompt === 'function',
         canPersist: typeof host.getContext?.().saveMetadata === 'function',

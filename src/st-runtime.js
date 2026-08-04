@@ -1,4 +1,4 @@
-import { eventSource, event_types, setExtensionPrompt, saveSettingsDebounced } from '/script.js';
+import { eventSource, event_types, setExtensionPrompt, saveSettingsDebounced, extension_settings } from '/script.js';
 import { getContext } from '/scripts/extensions.js';
 import { ConnectionManagerRequestService } from '/scripts/extensions/shared.js';
 import { ToolManager } from '/scripts/tool-calling.js';
@@ -12,6 +12,7 @@ export function createRuntimeAdapter() {
         getContext,
         setExtensionPrompt,
         saveSettingsDebounced,
+        getSettings: () => extension_settings.dualModelEngine ?? {},
         getProfiles: () => ConnectionManagerRequestService.getSupportedProfiles(),
         sendRequest: (...args) => ConnectionManagerRequestService.sendRequest(...args),
         registerTool: definition => ToolManager.registerFunctionTool(definition),

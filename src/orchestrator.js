@@ -11,8 +11,13 @@ export function createOrchestrator(deps) {
     async function initializeChat() {
         const current = context(); activeChatId = current.chatId; const config = deps.getConfig();
         if (current.groupId || !config.enabled) { try { deps.promptInjector.clear(); } catch (error) { diagnostic({ reason: 'prompt-clear-failed', error }); } return { enabled: false, reason: current.groupId ? 'group-chat' : 'disabled' }; }
-        const loaded = deps.store.loadEnvelope(); const envelope = envelopeValue(loaded);
-        if (!envelope || loaded?.ok === false) { diagnostic({ reason: 'missing-envelope' }); deps.promptInjector.clear(); return { enabled: false, reason: 'missing-envelope' }; }
+        const loaded = deps.store.loadEnvelope(); let envelope = envelopeValue(loaded);
+        const configuredPreset = deps.getPreset(config.rulePresetId);
+        if (!envelope || loaded?.ok === false) {
+            const created = await deps.store.ensureEnvelope?.({ presetId: config.rulePresetId, initialState: configuredPreset?.initialState });
+            if (!created?.ok) { diagnostic({ reason: 'missing-envelope', result: created }); try { deps.promptInjector.clear(); } catch (error) { diagnostic({ reason: 'prompt-clear-failed', error }); } return { enabled: false, reason: 'missing-envelope' }; }
+            envelope = envelopeValue(created);
+        }
         const preset = deps.getPreset(envelope.preset.id);
         try { await deps.promptInjector.refresh({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection }); } catch (error) { diagnostic({ reason: 'prompt-refresh-failed', error }); }
         return { enabled: true };
@@ -23,6 +28,7 @@ export function createOrchestrator(deps) {
         const previousUser = current.chat.findLast(m => m.is_user);
         const existing = deps.store.getBranch?.(target, target?.swipe_id ?? 0);
         const prepared = ['swipe', 'regenerate'].includes(type) ? deps.prepareSwipeGeneration?.({ type, target, envelope }) : null;
+        if (prepared?.ok === false) return null;
         const branch = type === 'continue' ? existing?.branchId : null;
         return { type, chatId: current.chatId, expectedHeadRevision: envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (['swipe', 'regenerate'].includes(type) ? existing?.branchId ?? null : null), effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === 'continue' ? (target?.mes ?? '') : null, playerText: previousUser?.mes ?? '', userMessageId: previousUser ? messageId(previousUser) : null };
     }
@@ -36,7 +42,7 @@ export function createOrchestrator(deps) {
         if (!deps.hasProfile(config.recorderProfileId)) { diagnostic({ reason: 'missing-recorder-profile', profileId: config.recorderProfileId }); return { ignored: true, reason: 'missing-recorder-profile' }; }
         const preset = deps.getPreset(config.rulePresetId);
         try { await deps.promptInjector.refresh({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection }); } catch (error) { diagnostic({ reason: 'prompt-refresh-failed', error }); return { ignored: true, reason: 'prompt-refresh-failed' }; }
-        activeChatId = current.chatId; generation = capture(type, current, envelope, config, preset); return { ok: true, requestId: generation.requestId };
+        activeChatId = current.chatId; generation = capture(type, current, envelope, config, preset); if (!generation) { diagnostic({ reason: 'missing-source-branch' }); return { ignored: true, reason: 'missing-source-branch' }; } return { ok: true, requestId: generation.requestId };
     }
     function isFinalAssistant(message) { return !message?.is_user && !message?.is_system && !message?.extra?.tool_invocations && !message?.extra?.tool_call_id && !message?.extra?.tool_calls && !message?.tool_calls; }
     function locate(current, captured) {
@@ -62,7 +68,7 @@ export function createOrchestrator(deps) {
         const located = locate(context(), generation); const captured = generation; generation = null;
         if (!located.ok) { diagnostic({ requestId: captured.requestId, ...located }); return located; }
         captured.assistantMessageId = messageId(located.message); captured.swipeId = located.message.swipe_id ?? 0; captured.checks = clone(deps.getChecks(captured));
-        const fail = async detail => { const outcome = await deps.store.markBranchFailed?.({ chatId: captured.chatId, messageId: captured.assistantMessageId, swipeId: captured.swipeId, branchId: captured.branchId, requestId: captured.requestId }); if (!outcome?.ok) diagnostic({ requestId: captured.requestId, ...detail, failureResult: outcome }); else diagnostic({ requestId: captured.requestId, ...detail }); };
+        let failed = false; const fail = async detail => { if (failed) return; failed = true; const outcome = await deps.store.markBranchFailed?.({ chatId: captured.chatId, messageId: captured.assistantMessageId, swipeId: captured.swipeId, branchId: captured.branchId, requestId: captured.requestId, baseSnapshot: captured.baseSnapshot, baseStateVersion: captured.baseVersion, isContinue: captured.type === 'continue', baseBranchId: captured.baseBranchId }); if (!outcome?.ok) diagnostic({ requestId: captured.requestId, ...detail, failureResult: outcome }); else diagnostic({ requestId: captured.requestId, ...detail }); };
         let queued; try { queued = deps.queue.enqueue(captured.chatId, captured.requestId, signal => process(captured, located.message, signal)); } catch (error) { await fail({ reason: 'queue-enqueue-failed', error }); return { ok: false, reason: 'queue-enqueue-failed' }; }
         void queued.then(async result => { if (result?.ok) { try { const env = envelopeValue(deps.store.loadEnvelope()); await deps.promptInjector.refresh({ state: env.activeSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection }); } catch (error) { diagnostic({ requestId: captured.requestId, reason: 'prompt-refresh-failed', error }); } } else if (conflicts.has(result?.reason)) diagnostic({ requestId: captured.requestId, ...result }); else await fail({ reason: result?.reason ?? 'task-failed', result }); }).catch(async error => { if (error?.name === 'AbortError') return diagnostic({ requestId: captured.requestId, reason: 'cancelled' }); await fail({ reason: 'recorder-failed', error }); }).catch(() => undefined);
         return { ok: true, queued: true };

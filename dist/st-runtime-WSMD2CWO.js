@@ -1,7 +1,7 @@
 import "./chunk-TRTQSARU.js";
 
 // src/st-runtime.js
-import { eventSource, event_types, setExtensionPrompt, saveSettingsDebounced } from "/script.js";
+import { eventSource, event_types, setExtensionPrompt, saveSettingsDebounced, extension_settings } from "/script.js";
 import { getContext } from "/scripts/extensions.js";
 import { ConnectionManagerRequestService } from "/scripts/extensions/shared.js";
 import { ToolManager } from "/scripts/tool-calling.js";
@@ -22,6 +22,7 @@ function createSTAdapter(host) {
     unregisterTool: (name) => host.unregisterTool?.(name),
     saveChat: () => host.getContext().saveMetadata(),
     saveSettings: () => host.saveSettingsDebounced?.(),
+    getSettings: () => host.getSettings?.() ?? {},
     countTokens: (text) => host.countTokens(text),
     canInjectPrompt: typeof host.setExtensionPrompt === "function",
     canPersist: typeof host.getContext?.().saveMetadata === "function",
@@ -37,6 +38,7 @@ function createRuntimeAdapter() {
     getContext,
     setExtensionPrompt,
     saveSettingsDebounced,
+    getSettings: () => extension_settings.dualModelEngine ?? {},
     getProfiles: () => ConnectionManagerRequestService.getSupportedProfiles(),
     sendRequest: (...args) => ConnectionManagerRequestService.sendRequest(...args),
     registerTool: (definition) => ToolManager.registerFunctionTool(definition),
