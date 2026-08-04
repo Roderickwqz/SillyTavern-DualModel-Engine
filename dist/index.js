@@ -1,32 +1,7 @@
-var __create = Object.create;
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __getProtoOf = Object.getPrototypeOf;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __commonJS = (cb, mod) => function __require() {
-  try {
-    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
-  } catch (e) {
-    throw mod = 0, e;
-  }
-};
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
-  // If the importer is in node compatibility mode or this is not an ESM
-  // file that has been converted to a CommonJS file using a Babel-
-  // compatible transform (i.e. "__esModule" has not been set), then set
-  // "default" to the CommonJS "module.exports" for node compatibility.
-  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
-  mod
-));
+import {
+  __commonJS,
+  __toESM
+} from "./chunk-TRTQSARU.js";
 
 // node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS({
@@ -6595,10 +6570,43 @@ var require_ajv = __commonJS({
 
 // src/index.js
 var import_ajv = __toESM(require_ajv(), 1);
-async function bootstrap() {
-  return { name: "dualModelEngine" };
+
+// src/capability-probe.js
+function probeHostCapabilities(adapter) {
+  const context = adapter.getContext();
+  const reasons = [];
+  const isGroupChat = Boolean(context.groupId);
+  if (isGroupChat) reasons.push("Group chats are not supported");
+  if (!adapter.canInjectPrompt) reasons.push("Prompt injection API is unavailable");
+  if (!adapter.canPersist) reasons.push("Chat metadata persistence is unavailable");
+  let profiles = [];
+  try {
+    profiles = adapter.listProfiles();
+    if (!profiles.length) reasons.push("No supported Recorder connection profile is configured");
+  } catch (error) {
+    reasons.push(`Connection Manager is unavailable: ${error.message}`);
+  }
+  return {
+    supported: !isGroupChat && adapter.canInjectPrompt && adapter.canPersist,
+    isGroupChat,
+    profiles,
+    toolApiAvailable: adapter.canRegisterTools,
+    promptInjectionAvailable: adapter.canInjectPrompt,
+    persistenceAvailable: adapter.canPersist,
+    reasons
+  };
 }
-if (typeof document !== "undefined") {
+
+// src/index.js
+async function bootstrap({ adapter } = {}) {
+  const runtimeAdapter = adapter ?? (await import("./st-runtime-JMX7SE3I.js")).createRuntimeAdapter();
+  return {
+    name: "dualModelEngine",
+    adapter: runtimeAdapter,
+    capabilities: probeHostCapabilities(runtimeAdapter)
+  };
+}
+if (typeof document !== "undefined" && import.meta.url.includes("/scripts/extensions/")) {
   void bootstrap();
 }
 var export_Ajv = import_ajv.default;

@@ -5,6 +5,7 @@ const context = await esbuild.context({
     entryPoints: { index: 'src/index.js', style: 'src/ui/style.css' },
     outdir: 'dist',
     bundle: true,
+    splitting: true,
     format: 'esm',
     target: 'es2022',
     sourcemap: false,
