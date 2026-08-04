@@ -6609,6 +6609,7 @@ function createOrchestrator(deps) {
   const supported = /* @__PURE__ */ new Set(["normal", "swipe", "regenerate", "continue"]);
   let activeChatId = null;
   let generation = null;
+  let pendingGeneration = null;
   let started = false;
   const unbind = [];
   const diagnostic = (value) => {
@@ -6729,6 +6730,7 @@ function createOrchestrator(deps) {
     if (captured.type === "continue" && (!message.mes.startsWith(captured.assistantText) || message.mes.length < captured.assistantText.length)) return { ok: false, reason: "stale-message" };
     const checks = clone(captured.checks);
     const response = await deps.modelService.requestPatch({ profileId: captured.effectiveConfig.recorderProfileId, baseVersion: captured.baseVersion, oldState: captured.baseSnapshot, playerText: captured.playerText, assistantText, checks, signal });
+    signal?.throwIfAborted?.();
     const validation = deps.validator.validatePatch(captured.effectiveConfig.rulePresetId, response.patch, { expectedVersion: captured.baseVersion, allowedPaths: captured.preset.allowedPaths, lockedPaths: [...captured.preset.lockedPaths, ...captured.preset.ruleLockedPaths ?? []] });
     if (!validation.ok) throw new Error(JSON.stringify(validation.errors));
     const applied = deps.applyPatch({ state: captured.baseSnapshot, patch: response.patch, policy: captured.preset, validateState: (state) => deps.validator.validateState(captured.effectiveConfig.rulePresetId, state) });
@@ -6798,6 +6800,7 @@ function createOrchestrator(deps) {
     const settleReplacement = (ok) => {
       if (replacementSettled) return null;
       replacementSettled = true;
+      if (pendingGeneration === captured) pendingGeneration = null;
       try {
         if (ok) {
           deps.rollbackManager?.completeReplacement?.();
@@ -6812,6 +6815,7 @@ function createOrchestrator(deps) {
     let queued;
     try {
       queued = deps.queue.enqueue(captured.chatId, captured.requestId, (signal) => process(captured, located.message, signal));
+      pendingGeneration = captured;
     } catch (error) {
       await Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => void 0);
       await fail({ reason: "queue-enqueue-failed", error });
@@ -6841,8 +6845,15 @@ function createOrchestrator(deps) {
     return { ok: true, queued: true };
   }
   function generationStopped(reason = "host-stopped") {
+    const pending = pendingGeneration;
     const stopped = generation;
     generation = null;
+    if (pending) {
+      pendingGeneration = null;
+      diagnostic({ requestId: pending.requestId, reason });
+      deps.queue.cancelChat(pending.chatId, reason);
+      return;
+    }
     if (stopped) {
       diagnostic({ requestId: stopped.requestId, reason });
       void Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => void 0);
