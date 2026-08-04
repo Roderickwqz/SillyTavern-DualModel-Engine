@@ -8164,6 +8164,10 @@ async function bootstrap({ adapter, dependencies } = {}) {
   const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
   const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState });
   const queue = resolved.queue ?? createChatTaskQueue();
+  const getEffectiveConfig = resolved.getConfig ?? (() => {
+    const envelope = store.loadEnvelope?.();
+    return resolveConfig({ globalConfig: runtimeAdapter.getSettings?.(), chatConfig: envelope?.ok ? envelope.value.configOverrides : envelope?.configOverrides });
+  });
   let orchestrator;
   const rollbackManager = resolved.rollbackManager ?? createRollbackManager({
     adapter: runtimeAdapter,
@@ -8173,7 +8177,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
     replayTurn: resolved.replayTurn ?? ((input) => orchestrator?.replayTurn(input) ?? Promise.resolve({ ok: false, reason: "replay-unavailable" })),
     isWritable: resolved.isWritable ?? (() => {
       const current = runtimeAdapter.getContext();
-      return !current.groupId && Boolean((resolved.getConfig ?? (() => resolveConfig({ globalConfig: runtimeAdapter.getSettings?.() })))().enabled);
+      return !current.groupId && Boolean(getEffectiveConfig().enabled);
     })
   });
   orchestrator = createOrchestrator({
@@ -8184,10 +8188,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
     promptInjector: resolved.promptInjector ?? createPromptInjector({ adapter: runtimeAdapter }),
     queue,
     rollbackManager,
-    getConfig: resolved.getConfig ?? (() => {
-      const envelope = store.loadEnvelope?.();
-      return resolveConfig({ globalConfig: runtimeAdapter.getSettings?.(), chatConfig: envelope?.ok ? envelope.value.configOverrides : envelope?.configOverrides });
-    }),
+    getConfig: getEffectiveConfig,
     getPreset: resolved.getPreset ?? ((id) => presets.find((item) => item.id === id)),
     hasProfile: resolved.hasProfile ?? ((id) => runtimeAdapter.listProfiles().some((profile) => profile.id === id)),
     ensureMessageId,

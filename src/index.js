@@ -22,20 +22,21 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
     const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState });
     const queue = resolved.queue ?? createChatTaskQueue();
+    const getEffectiveConfig = resolved.getConfig ?? (() => {
+        const envelope = store.loadEnvelope?.();
+        return resolveConfig({ globalConfig: runtimeAdapter.getSettings?.(), chatConfig: envelope?.ok ? envelope.value.configOverrides : envelope?.configOverrides });
+    });
     let orchestrator;
     const rollbackManager = resolved.rollbackManager ?? createRollbackManager({
         adapter: runtimeAdapter, store, queue,
         confirm: resolved.confirmRecalculation ?? (async () => false),
         replayTurn: resolved.replayTurn ?? (input => orchestrator?.replayTurn(input) ?? Promise.resolve({ ok: false, reason: 'replay-unavailable' })),
-        isWritable: resolved.isWritable ?? (() => { const current = runtimeAdapter.getContext(); return !current.groupId && Boolean((resolved.getConfig ?? (() => resolveConfig({ globalConfig: runtimeAdapter.getSettings?.() })) )().enabled); }),
+        isWritable: resolved.isWritable ?? (() => { const current = runtimeAdapter.getContext(); return !current.groupId && Boolean(getEffectiveConfig().enabled); }),
     });
     orchestrator = createOrchestrator({
         adapter: runtimeAdapter, store, validator, modelService,
         promptInjector: resolved.promptInjector ?? createPromptInjector({ adapter: runtimeAdapter }), queue, rollbackManager,
-        getConfig: resolved.getConfig ?? (() => {
-            const envelope = store.loadEnvelope?.();
-            return resolveConfig({ globalConfig: runtimeAdapter.getSettings?.(), chatConfig: envelope?.ok ? envelope.value.configOverrides : envelope?.configOverrides });
-        }), getPreset: resolved.getPreset ?? (id => presets.find(item => item.id === id)),
+        getConfig: getEffectiveConfig, getPreset: resolved.getPreset ?? (id => presets.find(item => item.id === id)),
         hasProfile: resolved.hasProfile ?? (id => runtimeAdapter.listProfiles().some(profile => profile.id === id)),
         ensureMessageId, applyPatch: applyValidatedPatch, getChecks: resolved.getChecks ?? (() => []), recordDiagnostic: resolved.recordDiagnostic ?? (() => {}), prepareSwipeGeneration: resolved.prepareSwipeGeneration ?? (input => store.prepareSwipeGeneration(input)),
         formatReusableChecks: resolved.formatReusableChecks ?? (records => records.length ? `Authoritative completed checks; do not request them again: ${records.map(record => `${record.checkId}=${record.pass ?? record.outcome ?? 'recorded'}`).join(', ')}` : ''),
