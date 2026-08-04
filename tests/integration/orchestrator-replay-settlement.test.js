@@ -8,6 +8,7 @@ import { narrativePreset } from '../../src/rules/narrative.js';
 const initial = () => structuredClone(narrativePreset.initialState);
 const patch = { base_version: 0, operations: [{ op: 'add', path: '/inventory/-', value: 'key', reason: 'Recorder observed a key' }] };
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
+const nextMacrotask = () => new Promise(resolve => globalThis.setTimeout(resolve, 0));
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 function message(id, mes, is_user = false) { return { is_user, mes, swipe_id: 0, extra: { dualModelEngine: { messageId: id } }, swipe_info: is_user ? undefined : [{ extra: { dualModelEngine: { messageId: id } } }] }; }
 function replayFixture() {
@@ -56,21 +57,21 @@ it('refreshes prepared swipe with authoritative reusable checks and captures its
 it('settles failed replacement exactly once when queue rejects and abort itself rejects', async () => {
     const host = replayFixture(); const rejection = deferred(); const abort = vi.fn(() => Promise.reject(new Error('abort'))); const complete = vi.fn(); const failed = vi.fn(async () => ({ ok: true })); const diagnostics = [];
     Object.assign(host.deps, { rollbackManager: { abortReplacement: abort, completeReplacement: complete }, store: { loadEnvelope: () => host.envelope, getBranch: () => ({ branchId: 'b' }), markBranchFailed: failed }, queue: { waitForIdle: async () => {}, getStatus: () => ({ state: 'idle' }), enqueue: () => rejection.promise }, recordDiagnostic: value => diagnostics.push(value) });
-    const unhandled = []; const listener = reason => unhandled.push(reason); process.on('unhandledRejection', listener); try { const subject = createOrchestrator(host.deps); await subject.beforeGeneration('normal'); await subject.afterGeneration(); rejection.reject(new Error('offline')); await flush(); await flush(); } finally { process.off('unhandledRejection', listener); }
+    const unhandled = []; const listener = reason => unhandled.push(reason); process.on('unhandledRejection', listener); try { const subject = createOrchestrator(host.deps); await subject.beforeGeneration('normal'); await subject.afterGeneration(); rejection.reject(new Error('offline')); await flush(); await nextMacrotask(); } finally { process.off('unhandledRejection', listener); }
     expect(abort).toHaveBeenCalledOnce(); expect(complete).not.toHaveBeenCalled(); expect(failed).toHaveBeenCalledOnce(); expect(diagnostics.map(x => x.reason)).toContain('replacement-settlement-failed'); expect(unhandled).toEqual([]);
 });
 
 it('settles a fulfilled queue failure once, aborting before marking the branch failed', async () => {
-    const host = replayFixture(); const abort = vi.fn(); const complete = vi.fn(); const failed = vi.fn(async () => ({ ok: true }));
+    const host = replayFixture(); const order = []; const abort = vi.fn(() => { order.push('abort'); }); const complete = vi.fn(); const failed = vi.fn(async () => { expect(order).toEqual(['abort']); order.push('markBranchFailed'); return { ok: true }; });
     Object.assign(host.deps, { rollbackManager: { abortReplacement: abort, completeReplacement: complete }, store: { loadEnvelope: () => host.envelope, getBranch: () => ({ branchId: 'b' }), markBranchFailed: failed }, queue: { waitForIdle: async () => {}, getStatus: () => ({ state: 'idle' }), enqueue: () => Promise.resolve({ ok: false, reason: 'invalid-state' }) } });
     const subject = createOrchestrator(host.deps); await subject.beforeGeneration('normal'); await subject.afterGeneration(); await flush();
-    expect(abort).toHaveBeenCalledOnce(); expect(complete).not.toHaveBeenCalled(); expect(failed).toHaveBeenCalledOnce();
+    expect(abort).toHaveBeenCalledOnce(); expect(complete).not.toHaveBeenCalled(); expect(failed).toHaveBeenCalledOnce(); expect(order).toEqual(['abort', 'markBranchFailed']);
 });
 
 it('observes a locate-failure abort rejection without an unhandled rejection', async () => {
     const host = replayFixture(); const abort = vi.fn(() => Promise.reject(new Error('abort'))); const diagnostics = [];
     Object.assign(host.deps, { rollbackManager: { abortReplacement: abort }, recordDiagnostic: value => diagnostics.push(value) }); host.context.chat = [host.user];
-    const unhandled = []; const listener = reason => unhandled.push(reason); process.on('unhandledRejection', listener); try { const subject = createOrchestrator(host.deps); await subject.beforeGeneration('normal'); await expect(subject.afterGeneration()).resolves.toEqual({ ok: false, reason: 'missing-final-message' }); await flush(); } finally { process.off('unhandledRejection', listener); }
+    const unhandled = []; const listener = reason => unhandled.push(reason); process.on('unhandledRejection', listener); try { const subject = createOrchestrator(host.deps); await subject.beforeGeneration('normal'); await expect(subject.afterGeneration()).resolves.toEqual({ ok: false, reason: 'missing-final-message' }); await flush(); await nextMacrotask(); } finally { process.off('unhandledRejection', listener); }
     expect(abort).toHaveBeenCalledOnce(); expect(diagnostics).toContainEqual(expect.objectContaining({ reason: 'missing-final-message' })); expect(unhandled).toEqual([]);
 });
 
