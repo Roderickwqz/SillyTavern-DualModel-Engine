@@ -9650,9 +9650,16 @@ function firstInvalidHistoryIndex(adapter) {
 }
 async function bootstrap({ adapter, dependencies } = {}) {
   const runtimeAdapter = adapter ?? (await import("./st-runtime-SR4MNLUA.js")).createRuntimeAdapter();
+  const resolved = dependencies ?? {};
+  const recordDiagnostic = resolved.recordDiagnostic ?? (async (value) => {
+    const settings2 = runtimeAdapter.getSettings?.();
+    if (!settings2 || typeof settings2 !== "object") return;
+    const diagnostics = Array.isArray(settings2.diagnostics) ? settings2.diagnostics : [];
+    settings2.diagnostics = [...diagnostics, structuredClone(value)].slice(-100);
+    await (runtimeAdapter.saveSettings?.() ?? runtimeAdapter.saveGlobalSettings?.());
+  });
   const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });
-  const resolved = dependencies ?? {};
   const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
   const settings = runtimeAdapter.getSettings?.() ?? {};
   const presetManager = resolved.presetManager ?? createPresetManager({
@@ -9758,11 +9765,10 @@ async function bootstrap({ adapter, dependencies } = {}) {
     ensureMessageId,
     applyPatch: applyValidatedPatch,
     getChecks: resolved.getChecks ?? (() => []),
-    recordDiagnostic: resolved.recordDiagnostic ?? (() => {
-    }),
     prepareSwipeGeneration: resolved.prepareSwipeGeneration ?? ((input) => store.prepareSwipeGeneration(input)),
     formatReusableChecks: resolved.formatReusableChecks ?? ((records) => records.length ? `Authoritative completed checks; do not request them again: ${records.map((record) => `${record.checkId}=${record.pass ?? record.outcome ?? "recorded"}`).join(", ")}` : ""),
-    adjudicator
+    adjudicator,
+    recordDiagnostic
   });
   const toolRegistry = resolved.toolRegistry ?? createToolRegistry({
     adapter: runtimeAdapter,

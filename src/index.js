@@ -55,9 +55,15 @@ function firstInvalidHistoryIndex(adapter) {
 
 export async function bootstrap({ adapter, dependencies } = {}) {
     const runtimeAdapter = adapter ?? (await import('./st-runtime.js')).createRuntimeAdapter();
+    const resolved = dependencies ?? {};
+    const recordDiagnostic = resolved.recordDiagnostic ?? (async value => {
+        const settings = runtimeAdapter.getSettings?.(); if (!settings || typeof settings !== 'object') return;
+        const diagnostics = Array.isArray(settings.diagnostics) ? settings.diagnostics : [];
+        settings.diagnostics = [...diagnostics, structuredClone(value)].slice(-100);
+        await (runtimeAdapter.saveSettings?.() ?? runtimeAdapter.saveGlobalSettings?.());
+    });
     const presets = [narrativePreset, d20LitePreset];
     const validator = createStateValidator({ presets });
-    const resolved = dependencies ?? {};
     const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
     const settings = runtimeAdapter.getSettings?.() ?? {};
     const presetManager = resolved.presetManager ?? createPresetManager({
@@ -126,8 +132,8 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         promptInjector: resolved.promptInjector ?? createPromptInjector({ adapter: runtimeAdapter }), queue, rollbackManager,
         getConfig: getEffectiveConfig, getPreset: resolved.getPreset ?? (id => presetManager.getPreset(id)),
         hasProfile: resolved.hasProfile ?? (id => runtimeAdapter.listProfiles().some(profile => profile.id === id)),
-        ensureMessageId, applyPatch: applyValidatedPatch, getChecks: resolved.getChecks ?? (() => []), recordDiagnostic: resolved.recordDiagnostic ?? (() => {}), prepareSwipeGeneration: resolved.prepareSwipeGeneration ?? (input => store.prepareSwipeGeneration(input)),
-        formatReusableChecks: resolved.formatReusableChecks ?? (records => records.length ? `Authoritative completed checks; do not request them again: ${records.map(record => `${record.checkId}=${record.pass ?? record.outcome ?? 'recorded'}`).join(', ')}` : ''), adjudicator,
+        ensureMessageId, applyPatch: applyValidatedPatch, getChecks: resolved.getChecks ?? (() => []), prepareSwipeGeneration: resolved.prepareSwipeGeneration ?? (input => store.prepareSwipeGeneration(input)),
+        formatReusableChecks: resolved.formatReusableChecks ?? (records => records.length ? `Authoritative completed checks; do not request them again: ${records.map(record => `${record.checkId}=${record.pass ?? record.outcome ?? 'recorded'}`).join(', ')}` : ''), adjudicator, recordDiagnostic,
     });
     const toolRegistry = resolved.toolRegistry ?? createToolRegistry({
         adapter: runtimeAdapter, getConfig: getEffectiveConfig, getActiveGeneration: () => orchestrator?.getActiveGeneration(), validateCheck: validate(checkValidator), validateDamage: validate(damageValidator), ledger,
