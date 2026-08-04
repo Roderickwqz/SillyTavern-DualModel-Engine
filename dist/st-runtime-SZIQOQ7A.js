@@ -70,7 +70,7 @@ function createRuntimeAdapter() {
     getContext,
     setExtensionPrompt,
     saveSettingsDebounced,
-    getSettings: () => extension_settings.dualModelEngine ?? {},
+    getSettings: () => extension_settings.dualModelEngine ??= {},
     getProfiles: () => ConnectionManagerRequestService.getSupportedProfiles(),
     sendRequest: (...args) => ConnectionManagerRequestService.sendRequest(...args),
     registerTool: (definition) => ToolManager.registerFunctionTool(definition),

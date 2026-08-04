@@ -17,6 +17,6 @@ export function createAdjudicatorService(deps) {
             const strategy = input.strategy === 'automatic-tool' ? 'enforced-preflight' : input.strategy;
             return preflight({ ...input, strategy }, input.strategy === 'confirm');
         },
-        resolveManual: input => deps.resolveManualCheck(input),
+        resolveManual: async input => { const validation = deps.validateInput(input); if (!validation?.ok) throw new Error(JSON.stringify(validation?.errors ?? ['Invalid manual check'])); return deps.resolveManualCheck(input); },
     };
 }

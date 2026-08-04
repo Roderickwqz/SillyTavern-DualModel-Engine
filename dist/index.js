@@ -6712,22 +6712,23 @@ function createOrchestrator(deps) {
     const captured = generation;
     let adjudication = { injectedText: "" };
     try {
-      adjudication = await deps.adjudicator?.resolveBeforeGeneration?.({ strategy: generation.effectiveConfig.adjudication, recorderProfileId: generation.effectiveConfig.recorderProfileId, playerText: generation.playerText, baseSnapshot: generation.baseSnapshot, branchId: generation.branchId, baseBranchId: generation.baseBranchId, userMessageId: generation.userMessageId, generation, signal: generation.abortController.signal }) ?? adjudication;
+      adjudication = await deps.adjudicator?.resolveBeforeGeneration?.({ strategy: captured.effectiveConfig.adjudication, recorderProfileId: captured.effectiveConfig.recorderProfileId, playerText: captured.playerText, baseSnapshot: captured.baseSnapshot, branchId: captured.branchId, baseBranchId: captured.baseBranchId, userMessageId: captured.userMessageId, generation: captured, signal: captured.abortController.signal }) ?? adjudication;
       if (generation !== captured || captured.closed || context().chatId !== captured.chatId) throw new Error("generation changed during adjudication");
-      if (adjudication.check && !generation.pendingRuleRecords.some((record) => record.checkId === adjudication.check.checkId)) generation.pendingRuleRecords.push(adjudication.check);
+      if (adjudication.check && !captured.pendingRuleRecords.some((record) => record.checkId === adjudication.check.checkId)) captured.pendingRuleRecords.push(adjudication.check);
     } catch (error) {
-      generation.formalD20Blocked = true;
-      diagnostic({ requestId: generation.requestId, reason: "adjudication-failed", error });
+      captured.formalD20Blocked = true;
+      diagnostic({ requestId: captured.requestId, reason: "adjudication-failed", error });
     }
-    const hardRuleText = [deps.formatReusableChecks?.(generation.reusableChecks) ?? "", adjudication.injectedText ?? ""].filter(Boolean).join("\n");
+    if (generation !== captured || captured.closed || context().chatId !== captured.chatId) return { ignored: true, reason: "generation-cancelled" };
+    const hardRuleText = [deps.formatReusableChecks?.(captured.reusableChecks) ?? "", adjudication.injectedText ?? ""].filter(Boolean).join("\n");
     try {
-      await deps.promptInjector.refresh({ state: generation.baseSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection, hardRuleText });
+      await deps.promptInjector.refresh({ state: captured.baseSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection, hardRuleText });
     } catch (error) {
-      generation = null;
+      if (generation === captured) generation = null;
       diagnostic({ reason: "prompt-refresh-failed", error });
       return { ignored: true, reason: "prompt-refresh-failed" };
     }
-    return { ok: true, requestId: generation.requestId };
+    return { ok: true, requestId: captured.requestId };
   }
   function isFinalAssistant(message) {
     return !message?.is_user && !message?.is_system && !message?.extra?.tool_invocations && !message?.extra?.tool_call_id && !message?.extra?.tool_calls && !message?.tool_calls;
@@ -7165,6 +7166,32 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
       return result("save-failed", error);
     }
   }
+  async function commitCurrentBranchAudit({ chatId, expectedHeadRevision, activeRef, record }) {
+    const context = adapter.getContext?.();
+    const envelope = context?.chatMetadata?.[NAMESPACE];
+    if (!validEnvelope(envelope) || context?.chatId !== chatId) return result("stale-chat");
+    if (envelope.headRevision !== expectedHeadRevision) return result("head-conflict");
+    if (!activeRef || envelope.activeRef?.messageId !== activeRef.messageId || envelope.activeRef?.swipeId !== activeRef.swipeId || envelope.activeRef?.branchId !== activeRef.branchId) return result("active-ref-conflict");
+    const message = context.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId);
+    const branch = getBranch(message, activeRef.swipeId);
+    if (!message || (message.swipe_id ?? 0) !== activeRef.swipeId || branch?.branchId !== activeRef.branchId || !Array.isArray(branch.segments) || !branch.segments.length) return result("missing-active-branch");
+    if (branch.segments.some((segment) => segment.checks?.some((check) => check?.checkId === record.checkId))) return { ok: true, duplicate: true };
+    const metadataBefore = clone2(envelope);
+    const extraBefore = clone2(message.extra);
+    const swipesBefore = clone2(message.swipe_info);
+    try {
+      branch.segments.at(-1).checks ??= [];
+      branch.segments.at(-1).checks.push(clone2(record));
+      envelope.headRevision += 1;
+      await adapter.saveChat();
+      return { ok: true, headRevision: envelope.headRevision };
+    } catch (error) {
+      context.chatMetadata[NAMESPACE] = metadataBefore;
+      message.extra = extraBefore;
+      message.swipe_info = swipesBefore;
+      return result("save-failed", error);
+    }
+  }
   async function restoreBranch(message, swipeId) {
     const context = adapter.getContext?.();
     const envelope = context?.chatMetadata?.[NAMESPACE];
@@ -7388,7 +7415,7 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     }
     return [...records.values()].map(clone2);
   }
-  return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef };
+  return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, commitCurrentBranchAudit, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef };
 }
 
 // src/json-patch.js
@@ -8506,7 +8533,11 @@ function createAdjudicatorService(deps) {
       const strategy = input.strategy === "automatic-tool" ? "enforced-preflight" : input.strategy;
       return preflight({ ...input, strategy }, input.strategy === "confirm");
     },
-    resolveManual: (input) => deps.resolveManualCheck(input)
+    resolveManual: async (input) => {
+      const validation = deps.validateInput(input);
+      if (!validation?.ok) throw new Error(JSON.stringify(validation?.errors ?? ["Invalid manual check"]));
+      return deps.resolveManualCheck(input);
+    }
   };
 }
 
@@ -8599,7 +8630,7 @@ var adjudicator_schema_default = {
     decision: {
       oneOf: [
         { type: "object", required: ["required"], properties: { required: { const: false } }, additionalProperties: false },
-        { type: "object", required: ["required", "actor", "action", "ability", "skill", "dc", "advantage"], properties: { required: { const: true }, actor: { type: "string", minLength: 1 }, action: { type: "string", minLength: 1 }, ability: { enum: ["strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"] }, skill: { type: "string", minLength: 1 }, dc: { type: "integer", minimum: 1, maximum: 30 }, advantage: { enum: ["normal", "advantage", "disadvantage"] }, reason: { type: "string" } }, additionalProperties: false }
+        { type: "object", required: ["required", "actor", "action", "ability", "skill", "dc", "advantage", "reason"], properties: { required: { const: true }, actor: { type: "string", minLength: 1, maxLength: 100 }, action: { type: "string", minLength: 1, maxLength: 500 }, ability: { enum: ["strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"] }, skill: { enum: ["acrobatics", "athletics", "investigation", "perception", "persuasion", "sleight_of_hand", "stealth"] }, dc: { type: "integer", minimum: 1, maximum: 40 }, advantage: { enum: ["normal", "advantage", "disadvantage"] }, reason: { type: "string", minLength: 1, maxLength: 500 } }, additionalProperties: false }
       ]
     }
   }
@@ -8607,7 +8638,7 @@ var adjudicator_schema_default = {
 
 // src/index.js
 async function bootstrap({ adapter, dependencies } = {}) {
-  const runtimeAdapter = adapter ?? (await import("./st-runtime-BOVYRKH2.js")).createRuntimeAdapter();
+  const runtimeAdapter = adapter ?? (await import("./st-runtime-SZIQOQ7A.js")).createRuntimeAdapter();
   const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });
   const resolved = dependencies ?? {};
@@ -8636,11 +8667,19 @@ async function bootstrap({ adapter, dependencies } = {}) {
   const adjudicator = resolved.adjudicator ?? createAdjudicatorService({ toolProbe: resolved.toolProbe ?? { supported: false }, getToolProbe: resolved.getToolProbe ?? (() => runtimeAdapter.getSettings?.().toolProbe ?? { supported: false }), getMainApiModelLabel: () => runtimeAdapter.getMainApiModelLabel?.(), requestDecision: resolved.requestDecision ?? ((input) => modelService.requestDecision({ ...input, profileId: input.recorderProfileId ?? getEffectiveConfig().recorderProfileId })), validateInput: validate2(checkValidator), stageCheck: async (input, context) => {
     const generation = context.generation ?? orchestrator?.getActiveGeneration();
     if (!generation) throw new Error("No active generation");
-    return stageCheckRecord({ generation, input, ledger, resolveCheck });
+    return stageCheckRecord({ generation, input, ledger, resolveCheck, signal: context.signal, isActive: () => orchestrator?.getActiveGeneration() === generation && !generation.closed });
   }, formatCheck: resolved.formatCheck ?? ((check) => `Formal check ${check.checkId}: total ${check.result.total} vs DC ${check.result.dc} \u2014 ${check.result.outcome}`), confirm: resolved.confirm ?? (async () => true), resolveManualCheck: resolved.resolveManualCheck ?? (async (input) => {
-    const generation = orchestrator?.getActiveGeneration();
-    if (!generation) throw new Error("No active generation");
+    const context = runtimeAdapter.getContext();
+    const envelope = store.loadEnvelope?.();
+    const value = envelope?.ok ? envelope.value : envelope;
+    const ref = value?.activeRef;
+    const message = context?.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === ref?.messageId);
+    const branch = message?.swipe_info?.[ref?.swipeId]?.extra?.[NAMESPACE]?.branch;
+    if (!value || !ref || !branch || branch.branchId !== ref.branchId) throw new Error("No active committed branch");
+    const generation = { branchId: ref.branchId, baseBranchId: ref.branchId, userMessageId: branch.segments.at(-1)?.userMessageId ?? null, baseSnapshot: structuredClone(value.activeSnapshot), pendingRuleRecords: [], pendingRuleEffects: [], ruleReplayMode: null, closed: false };
     const record = await stageCheckRecord({ generation, input, ledger, resolveCheck });
+    const committed = await store.commitCurrentBranchAudit({ chatId: context.chatId, expectedHeadRevision: value.headRevision, activeRef: ref, record });
+    if (!committed?.ok) throw new Error(committed?.reason ?? "manual audit failed");
     ledger.commit([record]);
     return record;
   }) });

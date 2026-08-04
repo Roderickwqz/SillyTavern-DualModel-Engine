@@ -47,13 +47,14 @@ export function createOrchestrator(deps) {
         activeChatId = current.chatId; generation = capture(type, current, envelope, config, preset); if (!generation) { diagnostic({ reason: 'missing-source-branch' }); return { ignored: true, reason: 'missing-source-branch' }; }
         const captured = generation; let adjudication = { injectedText: '' };
         try {
-            adjudication = await deps.adjudicator?.resolveBeforeGeneration?.({ strategy: generation.effectiveConfig.adjudication, recorderProfileId: generation.effectiveConfig.recorderProfileId, playerText: generation.playerText, baseSnapshot: generation.baseSnapshot, branchId: generation.branchId, baseBranchId: generation.baseBranchId, userMessageId: generation.userMessageId, generation, signal: generation.abortController.signal }) ?? adjudication;
+            adjudication = await deps.adjudicator?.resolveBeforeGeneration?.({ strategy: captured.effectiveConfig.adjudication, recorderProfileId: captured.effectiveConfig.recorderProfileId, playerText: captured.playerText, baseSnapshot: captured.baseSnapshot, branchId: captured.branchId, baseBranchId: captured.baseBranchId, userMessageId: captured.userMessageId, generation: captured, signal: captured.abortController.signal }) ?? adjudication;
             if (generation !== captured || captured.closed || context().chatId !== captured.chatId) throw new Error('generation changed during adjudication');
-            if (adjudication.check && !generation.pendingRuleRecords.some(record => record.checkId === adjudication.check.checkId)) generation.pendingRuleRecords.push(adjudication.check);
-        } catch (error) { generation.formalD20Blocked = true; diagnostic({ requestId: generation.requestId, reason: 'adjudication-failed', error }); }
-        const hardRuleText = [deps.formatReusableChecks?.(generation.reusableChecks) ?? '', adjudication.injectedText ?? ''].filter(Boolean).join('\n');
-        try { await deps.promptInjector.refresh({ state: generation.baseSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection, hardRuleText }); } catch (error) { generation = null; diagnostic({ reason: 'prompt-refresh-failed', error }); return { ignored: true, reason: 'prompt-refresh-failed' }; }
-        return { ok: true, requestId: generation.requestId };
+            if (adjudication.check && !captured.pendingRuleRecords.some(record => record.checkId === adjudication.check.checkId)) captured.pendingRuleRecords.push(adjudication.check);
+        } catch (error) { captured.formalD20Blocked = true; diagnostic({ requestId: captured.requestId, reason: 'adjudication-failed', error }); }
+        if (generation !== captured || captured.closed || context().chatId !== captured.chatId) return { ignored: true, reason: 'generation-cancelled' };
+        const hardRuleText = [deps.formatReusableChecks?.(captured.reusableChecks) ?? '', adjudication.injectedText ?? ''].filter(Boolean).join('\n');
+        try { await deps.promptInjector.refresh({ state: captured.baseSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection, hardRuleText }); } catch (error) { if (generation === captured) generation = null; diagnostic({ reason: 'prompt-refresh-failed', error }); return { ignored: true, reason: 'prompt-refresh-failed' }; }
+        return { ok: true, requestId: captured.requestId };
     }
     function isFinalAssistant(message) { return !message?.is_user && !message?.is_system && !message?.extra?.tool_invocations && !message?.extra?.tool_call_id && !message?.extra?.tool_calls && !message?.tool_calls; }
     function locate(current, captured) {

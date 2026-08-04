@@ -159,6 +159,20 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         }
     }
 
+    async function commitCurrentBranchAudit({ chatId, expectedHeadRevision, activeRef, record }) {
+        const context = adapter.getContext?.(); const envelope = context?.chatMetadata?.[NAMESPACE];
+        if (!validEnvelope(envelope) || context?.chatId !== chatId) return result('stale-chat');
+        if (envelope.headRevision !== expectedHeadRevision) return result('head-conflict');
+        if (!activeRef || envelope.activeRef?.messageId !== activeRef.messageId || envelope.activeRef?.swipeId !== activeRef.swipeId || envelope.activeRef?.branchId !== activeRef.branchId) return result('active-ref-conflict');
+        const message = context.chat?.find(item => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId);
+        const branch = getBranch(message, activeRef.swipeId);
+        if (!message || (message.swipe_id ?? 0) !== activeRef.swipeId || branch?.branchId !== activeRef.branchId || !Array.isArray(branch.segments) || !branch.segments.length) return result('missing-active-branch');
+        if (branch.segments.some(segment => segment.checks?.some(check => check?.checkId === record.checkId))) return { ok: true, duplicate: true };
+        const metadataBefore = clone(envelope); const extraBefore = clone(message.extra); const swipesBefore = clone(message.swipe_info);
+        try { branch.segments.at(-1).checks ??= []; branch.segments.at(-1).checks.push(clone(record)); envelope.headRevision += 1; await adapter.saveChat(); return { ok: true, headRevision: envelope.headRevision }; }
+        catch (error) { context.chatMetadata[NAMESPACE] = metadataBefore; message.extra = extraBefore; message.swipe_info = swipesBefore; return result('save-failed', error); }
+    }
+
     async function restoreBranch(message, swipeId) {
         const context = adapter.getContext?.();
         const envelope = context?.chatMetadata?.[NAMESPACE];
@@ -354,5 +368,5 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         return [...records.values()].map(clone);
     }
 
-    return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef };
+    return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, commitCurrentBranchAudit, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef };
 }
