@@ -38,5 +38,15 @@ it('rejects future schemas without mutating the input', () => {
     const result = migrateEnvelope(input);
 
     expect(result.ok).toBe(false);
+    expect(result.error).toBeInstanceOf(Error);
     expect(input.activeSnapshot.safe).toBe(true);
+});
+
+it('returns an error result when the input cannot be cloned', () => {
+    const input = { schemaVersion: 1, callback: () => undefined };
+    const result = migrateEnvelope(input);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBeInstanceOf(Error);
+    expect(input.callback).toBeTypeOf('function');
 });

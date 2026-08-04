@@ -19,7 +19,11 @@ export function createEmptyEnvelope({ presetId, initialState }) {
 }
 
 export function migrateEnvelope(input) {
-    const copy = structuredClone(input);
-    if (copy.schemaVersion === DATA_SCHEMA_VERSION) return { ok: true, value: copy };
-    return { ok: false, error: new Error(`Unsupported data schema version: ${copy.schemaVersion}`) };
+    try {
+        const copy = structuredClone(input);
+        if (copy.schemaVersion === DATA_SCHEMA_VERSION) return { ok: true, value: copy };
+        return { ok: false, error: new Error(`Unsupported data schema version: ${copy.schemaVersion}`) };
+    } catch (error) {
+        return { ok: false, error: error instanceof Error ? error : new Error(String(error)) };
+    }
 }
