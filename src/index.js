@@ -51,8 +51,10 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     const resolveManualCheck = resolved.resolveManualCheck ?? (async input => {
         const queuedChatId = runtimeAdapter.getContext()?.chatId;
         if (!queuedChatId) throw new Error('No active chat for manual D20 check');
+        if (orchestrator?.getActiveGeneration()) throw new Error('Finish generation before resolving a manual D20 check');
         return queue.enqueue(queuedChatId, `manual-${makeId()}`, async signal => {
             signal.throwIfAborted();
+            if (orchestrator?.getActiveGeneration()) throw new Error('Finish generation before resolving a manual D20 check');
             const context = runtimeAdapter.getContext(); const config = getEffectiveConfig();
             const envelope = store.loadEnvelope?.(); const value = envelope?.ok ? envelope.value : envelope;
             if (context?.chatId !== queuedChatId || context?.groupId || !config.enabled || config.rulePresetId !== 'd20-lite' || config.adjudication !== 'manual' || value?.preset?.id !== 'd20-lite') throw new Error('Manual D20 checks are not authorized for this chat configuration');

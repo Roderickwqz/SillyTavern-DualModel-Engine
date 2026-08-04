@@ -6,7 +6,10 @@ import { getTokenCountAsync } from '/scripts/tokenizers.js';
 import { createSTAdapter } from './st-adapter.js';
 import { createMainToolProbe } from './main-tool-probe.js';
 
-const probeMainTool = createMainToolProbe({ eventSource, eventTypes: event_types, generateRawData, isGenerating, tools: ToolManager });
+const probeMainTool = createMainToolProbe({ eventSource, eventTypes: event_types, generateRawData, isGenerating, tools: ToolManager, probeNonce: () => {
+    if (typeof globalThis.crypto?.randomUUID !== 'function') throw new Error('Web Crypto randomUUID is unavailable for tool probing');
+    return globalThis.crypto.randomUUID();
+} });
 
 export function createRuntimeAdapter() {
     return createSTAdapter({

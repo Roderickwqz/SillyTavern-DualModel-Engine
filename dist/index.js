@@ -6612,6 +6612,7 @@ function createOrchestrator(deps) {
   let generation = null;
   let pendingGeneration = null;
   let started = false;
+  let promptTail = null;
   const unbind = [];
   const diagnostic = (value) => {
     try {
@@ -6625,6 +6626,16 @@ function createOrchestrator(deps) {
   }
   function messageId(message) {
     return deps.ensureMessageId ? deps.ensureMessageId(message) : message.extra?.dualModelEngine?.messageId;
+  }
+  function refreshPrompt(input) {
+    const run = () => deps.promptInjector.refresh(input);
+    const next = promptTail ? promptTail.then(run) : Promise.resolve(run());
+    const settled = next.catch(() => void 0);
+    promptTail = settled;
+    void settled.finally(() => {
+      if (promptTail === settled) promptTail = null;
+    });
+    return next;
   }
   async function initializeChat() {
     const current = context();
@@ -6661,7 +6672,7 @@ function createOrchestrator(deps) {
     }
     const preset = deps.getPreset(envelope.preset.id);
     try {
-      await deps.promptInjector.refresh({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection });
+      await refreshPrompt({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection });
     } catch (error) {
       diagnostic({ reason: "prompt-refresh-failed", error });
     }
@@ -6721,7 +6732,7 @@ function createOrchestrator(deps) {
     }
     if (generation !== captured || captured.closed || context().chatId !== captured.chatId) return { ignored: true, reason: "generation-cancelled" };
     const hardRuleText = [deps.formatReusableChecks?.(captured.reusableChecks) ?? "", adjudication.injectedText ?? ""].filter(Boolean).join("\n");
-    const refresh = Promise.resolve().then(() => deps.promptInjector.refresh({ state: captured.baseSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection, hardRuleText }));
+    const refresh = refreshPrompt({ state: captured.baseSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection, hardRuleText });
     const settledRefresh = refresh.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
     const refreshResult = await Promise.race([settledRefresh, captured.cancelled.then(() => ({ cancelled: true }))]);
     if (refreshResult.cancelled) {
@@ -6870,7 +6881,7 @@ function createOrchestrator(deps) {
         settleReplacement(true);
         try {
           const env = envelopeValue(deps.store.loadEnvelope());
-          await deps.promptInjector.refresh({ state: env.activeSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection });
+          await refreshPrompt({ state: env.activeSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection });
         } catch (error) {
           diagnostic({ requestId: captured.requestId, reason: "prompt-refresh-failed", error });
         }
@@ -8655,7 +8666,7 @@ var adjudicator_schema_default = {
 
 // src/index.js
 async function bootstrap({ adapter, dependencies } = {}) {
-  const runtimeAdapter = adapter ?? (await import("./st-runtime-JEJGZWKP.js")).createRuntimeAdapter();
+  const runtimeAdapter = adapter ?? (await import("./st-runtime-2WGEWDHK.js")).createRuntimeAdapter();
   const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });
   const resolved = dependencies ?? {};
@@ -8684,8 +8695,10 @@ async function bootstrap({ adapter, dependencies } = {}) {
   const resolveManualCheck = resolved.resolveManualCheck ?? (async (input) => {
     const queuedChatId = runtimeAdapter.getContext()?.chatId;
     if (!queuedChatId) throw new Error("No active chat for manual D20 check");
+    if (orchestrator?.getActiveGeneration()) throw new Error("Finish generation before resolving a manual D20 check");
     return queue.enqueue(queuedChatId, `manual-${makeId()}`, async (signal) => {
       signal.throwIfAborted();
+      if (orchestrator?.getActiveGeneration()) throw new Error("Finish generation before resolving a manual D20 check");
       const context = runtimeAdapter.getContext();
       const config = getEffectiveConfig();
       const envelope = store.loadEnvelope?.();

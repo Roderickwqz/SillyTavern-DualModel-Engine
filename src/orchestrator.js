@@ -4,10 +4,17 @@ const conflicts = new Set(['stale-chat', 'stale-message', 'stale-swipe', 'branch
 
 export function createOrchestrator(deps) {
     const supported = new Set(['normal', 'swipe', 'regenerate', 'continue']);
-    let activeChatId = null; let generation = null; let pendingGeneration = null; let started = false; const unbind = [];
+    let activeChatId = null; let generation = null; let pendingGeneration = null; let started = false; let promptTail = null; const unbind = [];
     const diagnostic = value => { try { return Promise.resolve(deps.recordDiagnostic?.(value)).catch(() => undefined); } catch { return undefined; } };
     function context() { return deps.adapter.getContext(); }
     function messageId(message) { return deps.ensureMessageId ? deps.ensureMessageId(message) : (message.extra?.dualModelEngine?.messageId); }
+    function refreshPrompt(input) {
+        const run = () => deps.promptInjector.refresh(input);
+        const next = promptTail ? promptTail.then(run) : Promise.resolve(run());
+        const settled = next.catch(() => undefined); promptTail = settled;
+        void settled.finally(() => { if (promptTail === settled) promptTail = null; });
+        return next;
+    }
     async function initializeChat() {
         const current = context(); activeChatId = current.chatId; const config = deps.getConfig();
         if (current.groupId || !config.enabled) { try { deps.promptInjector.clear(); } catch (error) { diagnostic({ reason: 'prompt-clear-failed', error }); } return { enabled: false, reason: current.groupId ? 'group-chat' : 'disabled' }; }
@@ -20,7 +27,7 @@ export function createOrchestrator(deps) {
             envelope = envelopeValue(created);
         }
         const preset = deps.getPreset(envelope.preset.id);
-        try { await deps.promptInjector.refresh({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection }); } catch (error) { diagnostic({ reason: 'prompt-refresh-failed', error }); }
+        try { await refreshPrompt({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection }); } catch (error) { diagnostic({ reason: 'prompt-refresh-failed', error }); }
         return { enabled: true };
     }
     function capture(type, current, envelope, config, preset) {
@@ -53,7 +60,7 @@ export function createOrchestrator(deps) {
         } catch (error) { captured.formalD20Blocked = true; diagnostic({ requestId: captured.requestId, reason: 'adjudication-failed', error }); }
         if (generation !== captured || captured.closed || context().chatId !== captured.chatId) return { ignored: true, reason: 'generation-cancelled' };
         const hardRuleText = [deps.formatReusableChecks?.(captured.reusableChecks) ?? '', adjudication.injectedText ?? ''].filter(Boolean).join('\n');
-        const refresh = Promise.resolve().then(() => deps.promptInjector.refresh({ state: captured.baseSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection, hardRuleText }));
+        const refresh = refreshPrompt({ state: captured.baseSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection, hardRuleText });
         const settledRefresh = refresh.then(() => ({ ok: true }), error => ({ ok: false, error }));
         const refreshResult = await Promise.race([settledRefresh, captured.cancelled.then(() => ({ cancelled: true }))]);
         if (refreshResult.cancelled) {
@@ -123,7 +130,7 @@ export function createOrchestrator(deps) {
         let failed = false; const fail = async detail => { if (failed) return; failed = true; const outcome = await deps.store.markBranchFailed?.({ chatId: captured.chatId, messageId: captured.assistantMessageId, swipeId: captured.swipeId, branchId: captured.branchId, requestId: captured.requestId, baseSnapshot: captured.baseSnapshot, baseStateVersion: captured.baseVersion, isContinue: captured.type === 'continue', baseBranchId: captured.baseBranchId }); if (!outcome?.ok) diagnostic({ requestId: captured.requestId, ...detail, failureResult: outcome }); else diagnostic({ requestId: captured.requestId, ...detail }); };
         let replacementSettled = false; const settleReplacement = ok => { if (replacementSettled) return null; replacementSettled = true; if (pendingGeneration === captured) pendingGeneration = null; try { if (ok) { deps.rollbackManager?.completeReplacement?.(); return null; } return deps.rollbackManager?.abortReplacement?.() ?? null; } catch (error) { diagnostic({ requestId: captured.requestId, reason: 'replacement-settlement-failed', error }); return null; } };
         let queued; try { queued = deps.queue.enqueue(captured.chatId, captured.requestId, signal => process(captured, located.message, signal)); pendingGeneration = captured; } catch (error) { await Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => undefined); await fail({ reason: 'queue-enqueue-failed', error }); return { ok: false, reason: 'queue-enqueue-failed' }; }
-        void queued.then(async result => { if (result?.ok) { settleReplacement(true); try { const env = envelopeValue(deps.store.loadEnvelope()); await deps.promptInjector.refresh({ state: env.activeSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection }); } catch (error) { diagnostic({ requestId: captured.requestId, reason: 'prompt-refresh-failed', error }); } } else { captured.pendingRuleRecords.length = 0; captured.pendingRuleEffects.length = 0; const abort = settleReplacement(false); if (abort) await Promise.resolve(abort).catch(error => diagnostic({ requestId: captured.requestId, reason: 'replacement-settlement-failed', error })); if (conflicts.has(result?.reason)) diagnostic({ requestId: captured.requestId, ...result }); else await fail({ reason: result?.reason ?? 'task-failed', result }); } }, async error => { captured.pendingRuleRecords.length = 0; captured.pendingRuleEffects.length = 0; const abort = settleReplacement(false); if (abort) await Promise.resolve(abort).catch(settleError => diagnostic({ requestId: captured.requestId, reason: 'replacement-settlement-failed', error: settleError })); if (error?.name === 'AbortError') diagnostic({ requestId: captured.requestId, reason: 'cancelled' }); else await fail({ reason: 'recorder-failed', error }); }).catch(error => diagnostic({ requestId: captured.requestId, reason: 'settlement-observer-failed', error }));
+        void queued.then(async result => { if (result?.ok) { settleReplacement(true); try { const env = envelopeValue(deps.store.loadEnvelope()); await refreshPrompt({ state: env.activeSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection }); } catch (error) { diagnostic({ requestId: captured.requestId, reason: 'prompt-refresh-failed', error }); } } else { captured.pendingRuleRecords.length = 0; captured.pendingRuleEffects.length = 0; const abort = settleReplacement(false); if (abort) await Promise.resolve(abort).catch(error => diagnostic({ requestId: captured.requestId, reason: 'replacement-settlement-failed', error })); if (conflicts.has(result?.reason)) diagnostic({ requestId: captured.requestId, ...result }); else await fail({ reason: result?.reason ?? 'task-failed', result }); } }, async error => { captured.pendingRuleRecords.length = 0; captured.pendingRuleEffects.length = 0; const abort = settleReplacement(false); if (abort) await Promise.resolve(abort).catch(settleError => diagnostic({ requestId: captured.requestId, reason: 'replacement-settlement-failed', error: settleError })); if (error?.name === 'AbortError') diagnostic({ requestId: captured.requestId, reason: 'cancelled' }); else await fail({ reason: 'recorder-failed', error }); }).catch(error => diagnostic({ requestId: captured.requestId, reason: 'settlement-observer-failed', error }));
         return { ok: true, queued: true };
     }
     function generationStopped(reason = 'host-stopped') { const pending = pendingGeneration; const stopped = generation; generation = null; if (stopped) { stopped.closed = true; stopped.abortController?.abort(reason); stopped.cancel?.(reason); stopped.pendingRuleRecords.length = 0; stopped.pendingRuleEffects.length = 0; } if (pending) { pendingGeneration = null; pending.pendingRuleRecords.length = 0; pending.pendingRuleEffects.length = 0; diagnostic({ requestId: pending.requestId, reason }); deps.queue.cancelChat(pending.chatId, reason); return; } if (stopped) { diagnostic({ requestId: stopped.requestId, reason }); void Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => undefined); } }

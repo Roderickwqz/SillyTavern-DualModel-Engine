@@ -42,7 +42,9 @@ function createMainToolProbe(host) {
     if (probeInFlight) throw new Error("A tool capability probe is already running");
     if (!host.tools.isToolCallingSupported()) return { supported: false, reason: "Current main API/model settings do not support tools" };
     probeInFlight = true;
-    const marker = `[[dual-model-probe:${++sequence}:${host.probeNonce?.() ?? ""}]]`;
+    const nonce = host.probeNonce?.();
+    if (typeof nonce !== "string" || !nonce) throw new Error("A non-empty unpredictable probe nonce is required");
+    const marker = `[[dual-model-probe:${++sequence}:${nonce}]]`;
     let injected = false;
     const inject = (data) => {
       if (!JSON.stringify({ prompt: data?.prompt, messages: data?.messages }).includes(marker)) return;
@@ -71,7 +73,10 @@ ${marker}`, responseLength });
 }
 
 // src/st-runtime.js
-var probeMainTool = createMainToolProbe({ eventSource, eventTypes: event_types, generateRawData, isGenerating, tools: ToolManager });
+var probeMainTool = createMainToolProbe({ eventSource, eventTypes: event_types, generateRawData, isGenerating, tools: ToolManager, probeNonce: () => {
+  if (typeof globalThis.crypto?.randomUUID !== "function") throw new Error("Web Crypto randomUUID is unavailable for tool probing");
+  return globalThis.crypto.randomUUID();
+} });
 function createRuntimeAdapter() {
   return createSTAdapter({
     eventSource,
