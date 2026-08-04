@@ -7101,8 +7101,10 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     if (!context || context.chatId !== chatId) return result("stale-chat");
     if (!validEnvelope(envelope)) return result("invalid-envelope");
     const message = context.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === messageId);
-    let branch = message && getBranch(message, swipeId);
-    if (!message || (message.swipe_id ?? 0) !== swipeId || isContinue && branch?.branchId !== branchId) return result("branch-conflict");
+    if (!message) return result("stale-message");
+    if ((message.swipe_id ?? 0) !== swipeId || !message.swipe_info?.[swipeId]) return result("stale-swipe");
+    let branch = getBranch(message, swipeId);
+    if (isContinue && branch?.branchId !== branchId) return result("branch-conflict");
     const metadataBefore = clone2(envelope);
     const extraBefore = clone2(message.extra);
     const swipesBefore = clone2(message.swipe_info);

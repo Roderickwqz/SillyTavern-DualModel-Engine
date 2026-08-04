@@ -76,3 +76,75 @@ it('T6 persists a matching Recorder failure as one stale destination branch', as
     const envelope = context.chatMetadata.dualModelEngine; const branch = assistant.swipe_info[0].extra.dualModelEngine.branch;
     expect(branch).toMatchObject({ branchId: 'id2', status: 'stale' }); expect(envelope.taskStatus).toEqual({ state: 'failed', requestId: captured.requestId }); expect(envelope.headRevision).toBe(1); expect(envelope.stateVersion).toBe(0); expect(envelope.activeSnapshot).toEqual(before); expect(saveChat).toHaveBeenCalledOnce();
 });
+
+function deferred() {
+    let reject;
+    const promise = new Promise((resolve, rejectPromise) => { reject = rejectPromise; });
+    return { promise, reject };
+}
+
+function createDeferredFailureHost() {
+    const user = { is_user: true, mes: 'go', extra: { dualModelEngine: { messageId: 'u' } } };
+    const assistant = { is_user: false, mes: 'answer', extra: {}, swipe_id: 0, swipe_info: [{ extra: {} }, { extra: {} }] };
+    const envelope = { schemaVersion: 1, stateVersion: 0, headRevision: 0, preset: { id: 'narrative', version: 1 }, activeSnapshot: { version: 0, inventory: [] }, initialSnapshot: { version: 0, inventory: [] }, taskStatus: { state: 'idle', requestId: null } };
+    const context = { chatId: 'chat-a', chat: [user, assistant], chatMetadata: { dualModelEngine: envelope } };
+    const saveChat = vi.fn(async () => {}); let id = 0; const request = deferred(); const diagnostics = [];
+    const adapter = { events: {}, getContext: () => context, saveChat, on: vi.fn(), off: vi.fn() };
+    const store = createStateStore({ adapter, makeId: () => `id${++id}`, hashText: async () => 'hash' });
+    const queue = createChatTaskQueue(); const preset = { id: 'narrative', allowedPaths: ['/inventory'], lockedPaths: ['/version'], injection: [] };
+    const recorder = vi.fn(() => request.promise);
+    const orchestrator = createOrchestrator({ adapter, store, queue, getConfig: () => ({ enabled: true, recorderProfileId: 'r', rulePresetId: 'narrative', injectionBudget: 1 }), getPreset: () => preset, hasProfile: () => true, ensureMessageId: message => (message.extra.dualModelEngine ??= {}).messageId ??= `m${++id}`, makeId: () => `id${++id}`, promptInjector: { refresh: vi.fn(async () => {}), clear: vi.fn() }, modelService: { requestPatch: recorder }, validator: {}, applyPatch: () => ({ ok: true }), getChecks: () => [], recordDiagnostic: value => diagnostics.push(value) });
+    return { assistant, context, diagnostics, envelope, orchestrator, queue, recorder, request, saveChat };
+}
+
+async function beginDeferredRecorder(host) {
+    await host.orchestrator.beforeGeneration('normal');
+    await host.orchestrator.afterGeneration();
+    await vi.waitFor(() => expect(host.orchestrator.getStatus().queue.state).toBe('pending'));
+    await vi.waitFor(() => expect(host.recorder).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(host.context.chat.at(-1).extra.dualModelEngine.messageId).toBeTruthy());
+}
+
+async function settleDeferredRecorder(host) {
+    host.request.reject(new Error('offline'));
+    await host.queue.waitForIdle('chat-a');
+    await Promise.resolve();
+    await Promise.resolve();
+}
+
+it('records branch-conflict without mutating an unrelated selected branch after a deferred Recorder rejection', async () => {
+    const host = createDeferredFailureHost(); await beginDeferredRecorder(host);
+    const other = { branchId: 'other', baseStateVersion: 0, baseSnapshot: { version: 0, inventory: ['other'] }, segments: [], status: 'committed' };
+    host.assistant.swipe_info[0].extra.dualModelEngine = { messageId: host.assistant.extra.dualModelEngine.messageId, branch: other };
+    host.assistant.extra.dualModelEngine = structuredClone(host.assistant.swipe_info[0].extra.dualModelEngine);
+    const beforeEnvelope = structuredClone(host.envelope); const beforeOther = structuredClone(other);
+    const unhandled = []; const listener = reason => unhandled.push(reason); process.on('unhandledRejection', listener);
+    try { await settleDeferredRecorder(host); } finally { process.off('unhandledRejection', listener); }
+    expect(host.diagnostics.at(-1)).toMatchObject({ reason: 'recorder-failed', failureResult: { ok: false, reason: 'branch-conflict' } });
+    expect(host.assistant.swipe_info[0].extra.dualModelEngine.branch).toEqual(beforeOther);
+    expect(host.assistant.swipe_info[0].extra.dualModelEngine.branch.status).not.toBe('stale');
+    expect(host.envelope).toEqual(beforeEnvelope); expect(host.saveChat).not.toHaveBeenCalled(); expect(unhandled).toEqual([]);
+});
+
+it('records stale-swipe without mutating either swipe after a deferred Recorder rejection', async () => {
+    const host = createDeferredFailureHost(); await beginDeferredRecorder(host);
+    const branches = ['first', 'second'].map(branchId => ({ branchId, baseStateVersion: 0, baseSnapshot: { version: 0, inventory: [branchId] }, segments: [], status: 'committed' }));
+    for (const [swipeId, branch] of branches.entries()) host.assistant.swipe_info[swipeId].extra.dualModelEngine = { messageId: host.assistant.extra.dualModelEngine.messageId, branch };
+    host.assistant.swipe_id = 1; host.assistant.extra.dualModelEngine = structuredClone(host.assistant.swipe_info[1].extra.dualModelEngine);
+    const beforeEnvelope = structuredClone(host.envelope); const beforeBranches = structuredClone(branches);
+    await settleDeferredRecorder(host);
+    expect(host.diagnostics.at(-1)).toMatchObject({ reason: 'recorder-failed', failureResult: { ok: false, reason: 'stale-swipe' } });
+    expect(host.assistant.swipe_info.map(swipe => swipe.extra.dualModelEngine.branch)).toEqual(beforeBranches);
+    expect(host.assistant.swipe_info.every(swipe => swipe.extra.dualModelEngine.branch.status !== 'stale')).toBe(true);
+    expect(host.envelope).toEqual(beforeEnvelope); expect(host.saveChat).not.toHaveBeenCalled();
+});
+
+it('records stale-message without mutating a replacement message after a deferred Recorder rejection', async () => {
+    const host = createDeferredFailureHost(); await beginDeferredRecorder(host);
+    const replacement = { is_user: false, mes: 'replacement', extra: { dualModelEngine: { messageId: 'replacement' } }, swipe_id: 0, swipe_info: [{ extra: { dualModelEngine: { messageId: 'replacement', branch: { branchId: 'other', status: 'committed', segments: [] } } } }] };
+    host.context.chat[1] = replacement;
+    const beforeEnvelope = structuredClone(host.envelope); const beforeReplacement = structuredClone(replacement);
+    await settleDeferredRecorder(host);
+    expect(host.diagnostics.at(-1)).toMatchObject({ reason: 'recorder-failed', failureResult: { ok: false, reason: 'stale-message' } });
+    expect(replacement).toEqual(beforeReplacement); expect(host.envelope).toEqual(beforeEnvelope); expect(host.saveChat).not.toHaveBeenCalled();
+});
