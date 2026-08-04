@@ -6918,14 +6918,22 @@ function createOrchestrator(deps) {
   }
   function generationStopped(reason = "host-stopped") {
     const pending = pendingGeneration;
-    const stopped2 = generation;
+    const stoppedGeneration = generation;
     generation = null;
-    if (stopped2) {
-      stopped2.closed = true;
-      stopped2.abortController?.abort(reason);
-      stopped2.cancel?.(reason);
-      stopped2.pendingRuleRecords.length = 0;
-      stopped2.pendingRuleEffects.length = 0;
+    if (stoppedGeneration) {
+      stoppedGeneration.closed = true;
+      stoppedGeneration.cancelReason = reason;
+      stoppedGeneration.abortController?.abort(reason);
+      stoppedGeneration.cancel?.(reason);
+      stoppedGeneration.pendingRuleRecords.length = 0;
+      stoppedGeneration.pendingRuleEffects.length = 0;
+    }
+    if (reason === "host-stopped") {
+      try {
+        deps.promptInjector.clear();
+      } catch (error) {
+        diagnostic({ reason: "prompt-clear-failed", error });
+      }
     }
     if (pending) {
       pendingGeneration = null;
@@ -6935,8 +6943,8 @@ function createOrchestrator(deps) {
       deps.queue.cancelChat(pending.chatId, reason);
       return;
     }
-    if (stopped2) {
-      diagnostic({ requestId: stopped2.requestId, reason });
+    if (stoppedGeneration) {
+      diagnostic({ requestId: stoppedGeneration.requestId, reason });
       void Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => void 0);
     }
   }
