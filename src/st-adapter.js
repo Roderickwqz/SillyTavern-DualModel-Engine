@@ -11,6 +11,7 @@ export function createSTAdapter(host) {
             host.sendRequest(profileId, messages, maxTokens, options, overridePayload),
         registerTool: definition => host.registerTool?.(definition),
         unregisterTool: name => host.unregisterTool?.(name),
+        probeMainTool: typeof host.probeMainTool === 'function' ? params => host.probeMainTool(params) : undefined,
         saveChat: () => host.getContext().saveMetadata(),
         saveSettings: () => host.saveSettingsDebounced?.(),
         getSettings: () => host.getSettings?.() ?? {},
@@ -18,5 +19,6 @@ export function createSTAdapter(host) {
         canInjectPrompt: typeof host.setExtensionPrompt === 'function',
         canPersist: typeof host.getContext?.().saveMetadata === 'function',
         canRegisterTools: typeof host.registerTool === 'function',
+        canProbeMainTools: typeof host.probeMainTool === 'function',
     };
 }

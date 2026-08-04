@@ -1,4 +1,5 @@
 import { buildRecorderMessages, buildSummaryMessages } from './prompts/recorder.js';
+import { buildAdjudicatorMessages } from './prompts/adjudicator.js';
 
 function abortError() {
     return new DOMException('Recorder request aborted', 'AbortError');
@@ -104,5 +105,11 @@ export function createModelService({ adapter, validatePatch, validateState }) {
     return {
         requestPatch: input => requestValidated(input, buildRecorderMessages, validatePatch, 'patch', 'Recorder'),
         requestSummary: input => requestValidated(input, buildSummaryMessages, validateState, 'state', 'summary'),
+        async requestDecision(input) {
+            throwIfAborted(input.signal);
+            const response = await adapter.requestProfile(input.profileId, buildAdjudicatorMessages(input), 400, { extractData: true, includePreset: true, stream: false, signal: input.signal }, {});
+            throwIfAborted(input.signal);
+            return extractJsonObject(response.content);
+        },
     };
 }

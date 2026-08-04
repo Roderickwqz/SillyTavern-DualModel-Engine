@@ -45,7 +45,12 @@ export function createOrchestrator(deps) {
         if (!deps.hasProfile(config.recorderProfileId)) { diagnostic({ reason: 'missing-recorder-profile', profileId: config.recorderProfileId }); return { ignored: true, reason: 'missing-recorder-profile' }; }
         const preset = deps.getPreset(config.rulePresetId);
         activeChatId = current.chatId; generation = capture(type, current, envelope, config, preset); if (!generation) { diagnostic({ reason: 'missing-source-branch' }); return { ignored: true, reason: 'missing-source-branch' }; }
-        const hardRuleText = deps.formatReusableChecks?.(generation.reusableChecks) ?? '';
+        let adjudication = { injectedText: '' };
+        try {
+            adjudication = await deps.adjudicator?.resolveBeforeGeneration?.({ strategy: generation.effectiveConfig.adjudication, playerText: generation.playerText, baseSnapshot: generation.baseSnapshot, branchId: generation.branchId, baseBranchId: generation.baseBranchId, userMessageId: generation.userMessageId, generation }) ?? adjudication;
+            if (adjudication.check && !generation.pendingRuleRecords.some(record => record.checkId === adjudication.check.checkId)) generation.pendingRuleRecords.push(adjudication.check);
+        } catch (error) { generation.formalD20Blocked = true; diagnostic({ requestId: generation.requestId, reason: 'adjudication-failed', error }); }
+        const hardRuleText = [deps.formatReusableChecks?.(generation.reusableChecks) ?? '', adjudication.injectedText ?? ''].filter(Boolean).join('\n');
         try { await deps.promptInjector.refresh({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection, hardRuleText }); } catch (error) { generation = null; diagnostic({ reason: 'prompt-refresh-failed', error }); return { ignored: true, reason: 'prompt-refresh-failed' }; }
         return { ok: true, requestId: generation.requestId };
     }
