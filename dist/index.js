@@ -7168,6 +7168,10 @@ function validEnvelope(envelope) {
 function getNamespace(message, swipeId) {
   return message?.swipe_info?.[swipeId]?.extra?.[NAMESPACE] ?? null;
 }
+function restoreObject(target, snapshot) {
+  for (const key of Object.keys(target)) delete target[key];
+  Object.assign(target, clone2(snapshot));
+}
 function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashText: textHash }) {
   function loadEnvelope() {
     const envelope = adapter.getContext?.()?.chatMetadata?.[NAMESPACE];
@@ -7305,8 +7309,15 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     const capturedBranch = branch;
     const metadataBefore = clone2(envelope);
     const extraBefore = clone2(message.extra);
-    const swipesBefore = clone2(message.swipe_info);
+    const branchBefore = clone2(branch);
+    const currentTransaction = (latest) => latest?.chatId === chatId && latest.chat === capturedChat && latest.chatMetadata === capturedMetadata && latest.chatMetadata?.[NAMESPACE] === envelope && latest.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId) === message && message.swipe_info?.[activeRef.swipeId] === capturedSwipe && capturedSwipe?.extra?.[NAMESPACE]?.branch === capturedBranch;
+    const rollback = () => {
+      restoreObject(envelope, metadataBefore);
+      restoreObject(capturedBranch, branchBefore);
+      message.extra = clone2(extraBefore);
+    };
     try {
+      if (!currentTransaction(adapter.getContext?.())) return result("stale-chat");
       branch.segments.at(-1).checks ??= [];
       branch.segments.at(-1).checks.push(clone2(record));
       message.extra ??= {};
@@ -7314,19 +7325,17 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
       envelope.headRevision += 1;
       await adapter.saveChat();
       const after = adapter.getContext?.();
-      if (after?.chatId !== chatId || after.chat !== capturedChat || after.chatMetadata !== capturedMetadata || after.chatMetadata?.[NAMESPACE] !== envelope || after.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId) !== message || message.swipe_info?.[activeRef.swipeId] !== capturedSwipe || capturedSwipe?.extra?.[NAMESPACE]?.branch !== capturedBranch) {
-        if (capturedMetadata[NAMESPACE] === envelope) capturedMetadata[NAMESPACE] = metadataBefore;
-        message.extra = extraBefore;
-        message.swipe_info = swipesBefore;
+      if (!currentTransaction(after)) {
+        rollback();
         return result("stale-chat");
       }
       return { ok: true, headRevision: envelope.headRevision, record: clone2(record) };
     } catch (error) {
-      const latest = adapter.getContext?.();
-      if (latest?.chatId !== chatId || latest.chat !== capturedChat || latest.chatMetadata !== capturedMetadata || latest.chatMetadata?.[NAMESPACE] !== envelope) return result("stale-chat", error);
-      context.chatMetadata[NAMESPACE] = metadataBefore;
-      message.extra = extraBefore;
-      message.swipe_info = swipesBefore;
+      if (!currentTransaction(adapter.getContext?.())) {
+        rollback();
+        return result("stale-chat", error);
+      }
+      rollback();
       return result("save-failed", error);
     }
   }
@@ -7346,10 +7355,16 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     const capturedBranch = branch;
     const metadataBefore = clone2(envelope);
     const extraBefore = clone2(message.extra);
-    const swipesBefore = clone2(message.swipe_info);
+    const branchBefore = clone2(branch);
+    const currentTransaction = (latest) => latest?.chatId === chatId && latest.chat === capturedChat && latest.chatMetadata === capturedMetadata && latest.chatMetadata?.[NAMESPACE] === envelope && latest.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId) === message && message.swipe_info?.[activeRef.swipeId] === capturedSwipe && capturedSwipe?.extra?.[NAMESPACE]?.branch === capturedBranch;
+    const rollback = () => {
+      restoreObject(envelope, metadataBefore);
+      restoreObject(capturedBranch, branchBefore);
+      message.extra = clone2(extraBefore);
+    };
     try {
       const latest = adapter.getContext?.();
-      if (latest?.chatId !== chatId || latest.chat !== capturedChat || latest.chatMetadata?.[NAMESPACE] !== envelope || envelope.headRevision !== expectedHeadRevision || envelope.stateVersion !== baseVersion) return result("stale-chat");
+      if (!currentTransaction(latest) || envelope.headRevision !== expectedHeadRevision || envelope.stateVersion !== baseVersion) return result("stale-chat");
       const prior = branch.segments.at(-1);
       const segment = { requestId: prior.requestId, userMessageId: prior.userMessageId ?? null, assistantTextHash: prior.assistantTextHash, source, patch: clone2(patch ?? { operations: [] }), checks: record ? [clone2(record)] : [], postSnapshot: clone2(nextState) };
       branch.segments.push(segment);
@@ -7360,19 +7375,17 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
       envelope.taskStatus = { state: "idle", requestId: null };
       await adapter.saveChat();
       const after = adapter.getContext?.();
-      if (after?.chatId !== chatId || after.chat !== capturedChat || after.chatMetadata !== capturedMetadata || after.chatMetadata?.[NAMESPACE] !== envelope || after.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId) !== message || message.swipe_info?.[activeRef.swipeId] !== capturedSwipe || capturedSwipe?.extra?.[NAMESPACE]?.branch !== capturedBranch) {
-        if (capturedMetadata[NAMESPACE] === envelope) capturedMetadata[NAMESPACE] = metadataBefore;
-        message.extra = extraBefore;
-        message.swipe_info = swipesBefore;
+      if (!currentTransaction(after)) {
+        rollback();
         return result("stale-chat");
       }
       return { ok: true, stateVersion: envelope.stateVersion, headRevision: envelope.headRevision, record: record ? clone2(record) : void 0 };
     } catch (error) {
-      const latest = adapter.getContext?.();
-      if (latest?.chatId !== chatId || latest.chat !== capturedChat || latest.chatMetadata !== capturedMetadata || latest.chatMetadata?.[NAMESPACE] !== envelope) return result("stale-chat", error);
-      context.chatMetadata[NAMESPACE] = metadataBefore;
-      message.extra = extraBefore;
-      message.swipe_info = swipesBefore;
+      if (!currentTransaction(adapter.getContext?.())) {
+        rollback();
+        return result("stale-chat", error);
+      }
+      rollback();
       return result("save-failed", error);
     }
   }

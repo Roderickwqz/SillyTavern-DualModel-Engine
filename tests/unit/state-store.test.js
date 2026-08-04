@@ -37,6 +37,93 @@ function commitInput(current, overrides = {}) {
     };
 }
 
+function committedBranch() {
+    return { branchId: 'b1', status: 'committed', segments: [{ checks: [], postSnapshot: { version: 2, value: 2 } }] };
+}
+
+function currentBranchArgs(kind, activeRef) {
+    return kind === 'audit'
+        ? { chatId: 'chat-a', expectedHeadRevision: 7, activeRef, record: { checkId: 'race-check', kind: 'manual' } }
+        : { chatId: 'chat-a', expectedHeadRevision: 7, baseVersion: 2, activeRef, nextState: { version: 3, value: 9 }, patch: { operations: [] } };
+}
+
+function replaceTransactionIdentity(context, kind) {
+    if (kind === 'context') return structuredClone(context);
+    if (kind === 'envelope') { context.chatMetadata.dualModelEngine = structuredClone(context.chatMetadata.dualModelEngine); return context; }
+    if (kind === 'message') { context.chat[0] = structuredClone(context.chat[0]); return context; }
+    if (kind === 'swipe') { context.chat[0].swipe_info[0] = structuredClone(context.chat[0].swipe_info[0]); return context; }
+    context.chat[0].swipe_info[0].extra.dualModelEngine.branch = structuredClone(context.chat[0].swipe_info[0].extra.dualModelEngine.branch);
+    return context;
+}
+
+function transactionIdentity(context, kind) {
+    if (kind === 'context') return context;
+    if (kind === 'envelope') return context.chatMetadata.dualModelEngine;
+    if (kind === 'message') return context.chat[0];
+    if (kind === 'swipe') return context.chat[0].swipe_info[0];
+    return context.chat[0].swipe_info[0].extra.dualModelEngine.branch;
+}
+
+function beginCurrentBranchRace({ replacement, reject = false }) {
+    const current = message(committedBranch());
+    const context = { chatId: 'chat-a', chatMetadata: { dualModelEngine: envelope({ activeRef: { messageId: 'm1', swipeId: 0, branchId: 'b1' } }) }, chat: [current] };
+    const captured = { envelope: context.chatMetadata.dualModelEngine, message: current, swipe: current.swipe_info[0], branch: current.swipe_info[0].extra.dualModelEngine.branch };
+    const before = { envelope: structuredClone(captured.envelope), messageExtra: structuredClone(captured.message.extra), swipe: structuredClone(captured.swipe), branch: structuredClone(captured.branch) };
+    const replacementBefore = structuredClone(transactionIdentity(context, replacement));
+    const replacementContext = replaceTransactionIdentity(structuredClone(context), replacement);
+    let active = context;
+    const saveChat = vi.fn(async () => {
+        active = replacementContext;
+        if (reject) throw new Error('disk');
+    });
+    const store = createStateStore({ adapter: { getContext: () => active, saveChat }, makeId: () => 'x', hashText: async () => 'hash' });
+    return { active: () => active, before, captured, context, identity: () => transactionIdentity(active, replacement), replacementBefore, saveChat, store };
+}
+
+for (const operation of ['audit', 'mutation']) {
+    for (const replacement of ['envelope', 'message', 'swipe', 'branch']) {
+        it(`${operation} rejects a pre-save same-value ${replacement} replacement without saving`, async () => {
+            const current = message(committedBranch());
+            const context = { chatId: 'chat-a', chatMetadata: { dualModelEngine: envelope({ activeRef: { messageId: 'm1', swipeId: 0, branchId: 'b1' } }) }, chat: [current] };
+            const captured = { envelope: context.chatMetadata.dualModelEngine, message: current, swipe: current.swipe_info[0], branch: current.swipe_info[0].extra.dualModelEngine.branch };
+            const before = { envelope: structuredClone(captured.envelope), messageExtra: structuredClone(captured.message.extra), swipe: structuredClone(captured.swipe), branch: structuredClone(captured.branch) }; const replacementBefore = structuredClone(transactionIdentity(context, replacement)); let active = context; let reads = 0;
+            const saveChat = vi.fn().mockResolvedValue(undefined);
+            const store = createStateStore({ adapter: { getContext: () => { reads += 1; if (reads === 2) active = replaceTransactionIdentity(active, replacement); return active; }, saveChat }, makeId: () => 'x', hashText: async () => 'hash' });
+            const activeRef = context.chatMetadata.dualModelEngine.activeRef;
+            await expect(store[operation === 'audit' ? 'commitCurrentBranchAudit' : 'commitCurrentBranchMutation'](currentBranchArgs(operation, activeRef))).resolves.toEqual({ ok: false, reason: 'stale-chat' });
+            expect(saveChat).not.toHaveBeenCalled();
+            expect(captured.envelope).toEqual(before.envelope); expect(captured.message.extra).toEqual(before.messageExtra); expect(captured.swipe).toEqual(before.swipe); expect(captured.branch).toEqual(before.branch);
+            expect(transactionIdentity(active, replacement)).not.toBe(captured[replacement]); expect(transactionIdentity(active, replacement)).toEqual(replacementBefore);
+        });
+    }
+
+    for (const replacement of ['context', 'envelope', 'message', 'swipe', 'branch']) {
+        it(`${operation} leaves a post-save ${replacement} replacement untouched and restores captured objects`, async () => {
+            const race = beginCurrentBranchRace({ replacement });
+            const activeRef = race.context.chatMetadata.dualModelEngine.activeRef;
+            await expect(race.store[operation === 'audit' ? 'commitCurrentBranchAudit' : 'commitCurrentBranchMutation'](currentBranchArgs(operation, activeRef))).resolves.toEqual({ ok: false, reason: 'stale-chat' });
+            expect(race.saveChat).toHaveBeenCalledOnce();
+            expect(race.captured.envelope).toEqual(race.before.envelope);
+            expect(race.captured.message.extra).toEqual(race.before.messageExtra);
+            expect(race.captured.swipe).toEqual(race.before.swipe);
+            expect(race.captured.branch).toEqual(race.before.branch);
+            expect(race.identity()).not.toBe(replacement === 'context' ? race.context : race.captured[replacement]);
+            expect(race.identity()).toEqual(race.replacementBefore);
+        });
+    }
+
+    it(`${operation} leaves an envelope replacement untouched when save rejects and restores captured objects`, async () => {
+        const race = beginCurrentBranchRace({ replacement: 'envelope', reject: true });
+        const activeRef = race.context.chatMetadata.dualModelEngine.activeRef;
+        await expect(race.store[operation === 'audit' ? 'commitCurrentBranchAudit' : 'commitCurrentBranchMutation'](currentBranchArgs(operation, activeRef))).resolves.toEqual({ ok: false, reason: 'stale-chat', error: expect.any(Error) });
+        expect(race.saveChat).toHaveBeenCalledOnce();
+        expect(race.captured.envelope).toEqual(race.before.envelope);
+        expect(race.captured.message.extra).toEqual(race.before.messageExtra);
+        expect(race.captured.swipe).toEqual(race.before.swipe);
+        expect(race.captured.branch).toEqual(race.before.branch);
+    });
+}
+
 it('rejects stale head revisions before hashing, mutation, or save', async () => {
     const { store, current, saveChat, context } = setup();
     const result = await store.commitSegment(commitInput(current, { expectedHeadRevision: 6 }));
