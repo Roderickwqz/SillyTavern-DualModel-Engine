@@ -6,7 +6,7 @@ DualModel Engine is a Git-installable SillyTavern extension for local, one-to-on
 
 - SillyTavern **1.18.0 or later**; this extension is for one local user, one active browser tab, and one-to-one character chats.
 - Group chats are detected and remain read-only: the extension never writes DualModel Engine data to them.
-- No server, database, remote storage, credential form, or runtime CDN is used. Installers receive the committed bundle and do not run npm at runtime.
+- No separate extension backend, database, remote storage, credential form, or runtime CDN is used. The extension reuses SillyTavern's same-origin storage API; installers receive the committed bundle and do not run npm at runtime.
 - The Narrator always uses SillyTavern's current main connection. The Recorder uses a selected Connection Profile and never changes the Narrator connection.
 
 ## Install and configure
