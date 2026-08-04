@@ -1,9 +1,18 @@
 import * as esbuild from 'esbuild';
+import { rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const watch = process.argv.includes('--watch');
+const outdir = join(dirname(fileURLToPath(import.meta.url)), 'dist');
+
+if (!watch) {
+    await rm(outdir, { recursive: true, force: true });
+}
+
 const context = await esbuild.context({
     entryPoints: { index: 'src/index.js', style: 'src/ui/style.css' },
-    outdir: 'dist',
+    outdir,
     bundle: true,
     splitting: true,
     format: 'esm',
