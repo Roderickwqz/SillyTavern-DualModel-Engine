@@ -98,6 +98,12 @@ describe('bootstrap', () => {
         expect(adapter.unregisterTool).toHaveBeenCalledWith('DualModelResolveD20Check'); expect(adapter.unregisterTool).not.toHaveBeenCalledWith('DualModelApplyD20Damage'); expect(adapter.off).toHaveBeenCalledTimes(4); expect(listeners).toEqual(new Map());
     });
 
+    it('preserves a first real tool registration failure without unregistering an unregistered tool', async () => {
+        const error = new Error('first registration'); const adapter = { events: { CHAT_CHANGED: 'chat', GENERATION_AFTER_COMMANDS: 'before', GENERATION_ENDED: 'ended', GENERATION_STOPPED: 'stopped' }, getContext: () => ({ chatId: 'a', groupId: null, chat: [], chatMetadata: { dualModelEngine: { stateVersion: 0, headRevision: 0, activeSnapshot: { version: 0 }, preset: { id: 'narrative' } } } }), getSettings: () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'narrative' }), listProfiles: () => [{ id: 'recorder' }], on: vi.fn(), off: vi.fn(), registerTool: vi.fn(() => { throw error; }), unregisterTool: vi.fn(), saveChat: vi.fn() };
+        await expect(bootstrap({ adapter, dependencies: { promptInjector: { refresh: vi.fn(), clear: vi.fn() } } })).rejects.toBe(error);
+        expect(adapter.unregisterTool).not.toHaveBeenCalled(); expect(adapter.off).toHaveBeenCalledTimes(4);
+    });
+
     it.each(['bind', 'initialize'])('continues best-effort cleanup and preserves the %s failure object', async stage => {
         const error = new Error(stage); const listeners = new Map(); const registry = { register: vi.fn(), unregister: vi.fn(() => { throw new Error('unregister'); }) }; const rollbackManager = { bind: vi.fn(() => { if (stage === 'bind') throw error; }), destroy: vi.fn(() => { throw new Error('destroy'); }) };
         const store = { loadEnvelope: () => { if (stage === 'initialize') throw error; return { stateVersion: 0, headRevision: 0, activeSnapshot: { version: 0 }, preset: { id: 'narrative' } }; }, listRuleRecords: () => [] };
