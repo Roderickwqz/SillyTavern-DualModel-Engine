@@ -22,12 +22,14 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
     const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState });
     const queue = resolved.queue ?? createChatTaskQueue();
+    let orchestrator;
     const rollbackManager = resolved.rollbackManager ?? createRollbackManager({
         adapter: runtimeAdapter, store, queue,
         confirm: resolved.confirmRecalculation ?? (async () => false),
-        replayTurn: resolved.replayTurn ?? (async () => ({ ok: false, reason: 'replay-unavailable' })),
+        replayTurn: resolved.replayTurn ?? (input => orchestrator?.replayTurn(input) ?? Promise.resolve({ ok: false, reason: 'replay-unavailable' })),
+        isWritable: resolved.isWritable ?? (() => { const current = runtimeAdapter.getContext(); return !current.groupId && Boolean((resolved.getConfig ?? (() => resolveConfig({ globalConfig: runtimeAdapter.getSettings?.() })) )().enabled); }),
     });
-    const orchestrator = createOrchestrator({
+    orchestrator = createOrchestrator({
         adapter: runtimeAdapter, store, validator, modelService,
         promptInjector: resolved.promptInjector ?? createPromptInjector({ adapter: runtimeAdapter }), queue, rollbackManager,
         getConfig: resolved.getConfig ?? (() => {

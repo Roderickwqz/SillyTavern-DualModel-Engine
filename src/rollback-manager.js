@@ -1,10 +1,11 @@
 function clone(value) { return structuredClone(value); }
 
-export function createRollbackManager({ adapter, store, queue, confirm = async () => false, replayTurn = async () => ({ ok: false }) }) {
+export function createRollbackManager({ adapter, store, queue, confirm = async () => false, replayTurn = async () => ({ ok: false }), isWritable = () => true }) {
     const pendingSwipeSources = new Map();
-    let replacement = null; let taskSequence = 0; const handlers = [];
+    const selectedSwipes = new Map(); let replacement = null; let taskSequence = 0; const handlers = [];
     const context = () => adapter.getContext();
     function serialize(name, task) {
+        if (!isWritable()) return Promise.resolve({ ok: false, reason: 'read-only' });
         const chatId = context().chatId;
         return queue.enqueue(chatId, `branch-${name}-${++taskSequence}`, async signal => {
             signal.throwIfAborted();
@@ -17,6 +18,7 @@ export function createRollbackManager({ adapter, store, queue, confirm = async (
         return { message, messageId: message?.extra?.dualModelEngine?.messageId };
     }
     function prepareSwipeGeneration(messageIndex, type) {
+        if (!isWritable()) return { ok: false, reason: 'read-only' };
         const { message } = stableAt(messageIndex); const sourceSwipeId = pendingSwipeSources.get(messageIndex) ?? (message?.swipe_id ?? 0);
         pendingSwipeSources.delete(messageIndex); const source = store.getBranch?.(message, sourceSwipeId);
         if (!source) return { ok: false, reason: 'missing-source-branch' };
@@ -64,10 +66,27 @@ export function createRollbackManager({ adapter, store, queue, confirm = async (
     function invalidateForDelete(messageIndex) { const { message, messageId } = stableAt(messageIndex); const length = context().chat.length; return serialize('invalidate-delete', signal => { if (context().chat.length !== length || (message && (context().chat[messageIndex] !== message || message.extra?.dualModelEngine?.messageId !== messageId))) return { ok: false, reason: 'stale-delete-boundary' }; return invalidateAndRecalculate(messageIndex, { includeAllFromStart: true }, signal); }); }
     async function repairOrphanedHead() { const audit = await store.auditActiveRef(); if (audit?.ok) return { ok: true, repaired: false }; if (audit?.reason === 'assistant-text-mismatch' && audit.messageIndex >= 0) return serialize('repair-edited-head', () => store.invalidateFrom(audit.messageIndex, { includeStartSelectedOnly: true })); return recoverAfterDelete(); }
     function bind() {
+        if (handlers.length) return;
         const events = adapter.events ?? {}; const on = (name, fn) => { if (name) { adapter.on(name, fn); handlers.push([name, fn]); } };
-        on(events.MESSAGE_SWIPED, index => { const { message } = stableAt(index); const swipe = message?.swipe_id ?? 0; return restoreSwipe(index, swipe); });
-        on(events.MESSAGE_EDITED, invalidateForEdit); on(events.MESSAGE_DELETED, index => replacement?.chatId === context().chatId ? ((replacement.deleted = true), { ok: true, ignored: 'regenerate-replacement' }) : invalidateForDelete(index));
+        refresh();
+        on(events.MESSAGE_SWIPED, index => {
+            if (!isWritable()) return { ok: false, reason: 'read-only' };
+            const { message } = stableAt(index); const previousSwipeId = selectedSwipes.get(index) ?? 0; const swipe = message?.swipe_id ?? 0;
+            const previous = store.getBranch?.(message, previousSwipeId); const current = store.getBranch?.(message, swipe); selectedSwipes.set(index, swipe);
+            if (pendingSwipeSources.get(index) === swipe) { pendingSwipeSources.delete(index); return restoreSwipe(index, swipe); }
+            if (!current || (swipe !== previousSwipeId && current.branchId === previous?.branchId)) { pendingSwipeSources.set(index, previousSwipeId); return { ok: true, pendingGeneration: true, sourceSwipeId: previousSwipeId }; }
+            pendingSwipeSources.delete(index); return restoreSwipe(index, swipe);
+        });
+        on(events.MESSAGE_EDITED, invalidateForEdit);
+        on(events.MESSAGE_DELETED, async index => { if (!isWritable()) return { ok: false, reason: 'read-only' }; if (replacement?.chatId === context().chatId) { replacement.deleted = true; refresh(); return { ok: true, ignored: 'regenerate-replacement' }; } const audit = await store.auditActiveRef(); const value = audit?.ok ? await invalidateForDelete(index) : await recoverAfterDelete(); refresh(); return value; });
+        on(events.MESSAGE_SWIPE_DELETED, event => {
+            if (!isWritable() || !event || !Number.isInteger(event.messageId) || !Number.isInteger(event.swipeId)) return { ok: false, reason: 'invalid-swipe-delete' };
+            const index = event.messageId; const { message, messageId } = stableAt(index);
+            if (selectedSwipes.get(index) !== event.swipeId) return serialize('remove-swipe', () => (!message || !context().chat.includes(message) || message.extra?.dualModelEngine?.messageId !== messageId) ? { ok: false, reason: 'stale-message' } : store.removeBranch(message, event.swipeId));
+            selectedSwipes.set(index, event.newSwipeId); return restoreSwipe(index, event.newSwipeId);
+        });
     }
+    function refresh() { selectedSwipes.clear(); pendingSwipeSources.clear(); (context().chat ?? []).forEach((message, index) => { if (!message?.is_user && !message?.is_system) selectedSwipes.set(index, message.swipe_id ?? 0); }); }
     function destroy() { while (handlers.length) { const [name, fn] = handlers.pop(); try { adapter.off(name, fn); } catch { /* best effort */ } } }
-    return { prepareSwipeGeneration, completeReplacement, abortReplacement, repairOrphanedHead, restoreSwipe, recoverAfterDelete, invalidateForEdit, invalidateForDelete, buildRecalculationPlan, recalculate, bind, destroy };
+    return { prepareSwipeGeneration, completeReplacement, abortReplacement, repairOrphanedHead, restoreSwipe, recoverAfterDelete, invalidateForEdit, invalidateForDelete, buildRecalculationPlan, recalculate, refresh, bind, destroy };
 }

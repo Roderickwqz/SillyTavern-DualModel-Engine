@@ -229,7 +229,7 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
             const message = context.chat[index]; const swipeId = message?.swipe_id ?? 0;
             const branch = getBranch(message, swipeId); const snapshot = branch?.status === 'committed' ? branch.segments?.at(-1)?.postSnapshot : null;
             const messageId = message?.extra?.[NAMESPACE]?.messageId;
-            if (snapshot && messageId && branch.branchId) return { snapshot: clone(snapshot), activeRef: { messageId, swipeId, branchId: branch.branchId } };
+            if (isPlainObject(snapshot) && isRevision(snapshot.version) && messageId && branch.branchId) return { snapshot: clone(snapshot), activeRef: { messageId, swipeId, branchId: branch.branchId } };
         }
         return { snapshot: clone(envelope.initialSnapshot), activeRef: null };
     }
@@ -277,7 +277,7 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
 
     async function restoreInitialSnapshot() {
         const context = adapter.getContext?.(); const envelope = context?.chatMetadata?.[NAMESPACE];
-        if (!validEnvelope(envelope) || !envelope.initialSnapshot) return result('invalid-envelope');
+        if (!validEnvelope(envelope) || !isPlainObject(envelope.initialSnapshot) || !isRevision(envelope.initialSnapshot.version)) return result('invalid-envelope');
         const before = clone(envelope);
         try { envelope.activeSnapshot = clone(envelope.initialSnapshot); envelope.stateVersion = envelope.initialSnapshot.version; envelope.activeRef = null; envelope.headRevision += 1; await adapter.saveChat(); return { ok: true, snapshot: clone(envelope.activeSnapshot) }; }
         catch (error) { context.chatMetadata[NAMESPACE] = before; return result('save-failed', error); }

@@ -11,3 +11,18 @@ it('restores the selected swipe final segment and invalidates only descendants',
     expect(store.restoreBranch).toHaveBeenCalledWith(message, 1);
     expect(store.invalidateFrom).toHaveBeenCalledWith(1, { includeStartSelectedOnly: true });
 });
+
+it('records a blank host-cloned swipe source and follows rapid 0 to 1 to 0 selection', async () => {
+    const calls = {}; const first = { branchId: 'one', baseSnapshot: { version: 1 }, baseStateVersion: 1, segments: [] };
+    const message = { swipe_id: 0, extra: { dualModelEngine: { messageId: 'm' } }, swipe_info: [{ extra: { dualModelEngine: { branch: first } } }, { extra: { dualModelEngine: { branch: first } } }] };
+    const store = { getBranch: (_message, id) => message.swipe_info[id].extra.dualModelEngine.branch, restoreBranch: vi.fn() };
+    const manager = createRollbackManager({ adapter: { events: { MESSAGE_SWIPED: 'swipe' }, on: (name, fn) => { calls[name] = fn; }, off: vi.fn(), getContext: () => ({ chatId: 'a', chat: [message] }) }, store, queue: { enqueue: (_id, _name, fn) => fn({ throwIfAborted() {} }) } });
+    manager.bind(); message.swipe_id = 1; expect(calls.swipe(0)).toMatchObject({ pendingGeneration: true, sourceSwipeId: 0 });
+    message.swipe_id = 0; await calls.swipe(0); expect(store.restoreBranch).toHaveBeenCalledWith(message, 0);
+});
+
+it('does not queue or persist event mutations in read-only chats', async () => {
+    const enqueue = vi.fn(); const manager = createRollbackManager({ adapter: { getContext: () => ({ chatId: 'a', chat: [] }) }, store: {}, queue: { enqueue }, isWritable: () => false });
+    await expect(manager.invalidateForDelete(0)).resolves.toEqual({ ok: false, reason: 'read-only' });
+    expect(enqueue).not.toHaveBeenCalled();
+});

@@ -6673,7 +6673,7 @@ function createOrchestrator(deps) {
     const prepared = ["swipe", "regenerate"].includes(type) ? deps.rollbackManager?.prepareSwipeGeneration?.(current.chat.length - 1, type) ?? deps.prepareSwipeGeneration?.({ type, target, envelope }) : null;
     if (prepared?.ok === false) return null;
     const branch = type === "continue" ? existing?.branchId : null;
-    return { type, chatId: current.chatId, expectedHeadRevision: envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (["swipe", "regenerate"].includes(type) ? existing?.branchId ?? null : null), effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === "continue" ? target?.mes ?? "" : null, playerText: previousUser?.mes ?? "", userMessageId: previousUser ? messageId(previousUser) : null };
+    return { type, chatId: current.chatId, expectedHeadRevision: prepared?.expectedHeadRevision ?? envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (["swipe", "regenerate"].includes(type) ? existing?.branchId ?? null : null), reusableChecks: clone(prepared?.reusableChecks ?? []), effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === "continue" ? target?.mes ?? "" : null, playerText: previousUser?.mes ?? "", userMessageId: previousUser ? messageId(previousUser) : null };
   }
   async function beforeGeneration(type) {
     if (!supported.has(type)) return { ignored: true, reason: "unsupported-generation-type" };
@@ -6734,18 +6734,47 @@ function createOrchestrator(deps) {
     applied.value.version = captured.baseVersion + 1;
     return deps.store.commitSegment({ chatId: captured.chatId, message, messageId: captured.assistantMessageId, branchId: captured.branchId, swipeId: captured.swipeId, expectedHeadRevision: captured.expectedHeadRevision, baseStateVersion: captured.baseVersion, baseSnapshot: captured.baseSnapshot, requestId: captured.requestId, userMessageId: captured.userMessageId, patch: response.patch, checks: clone(captured.checks), assistantText, nextState: applied.value, isContinue: captured.type === "continue" });
   }
+  async function replayTurn({ messageIndex, swipeId, baseSnapshot, signal }) {
+    const current = context();
+    const config = clone(deps.getConfig());
+    if (current.groupId || !config.enabled) return { ok: false, reason: "read-only" };
+    if (!deps.hasProfile(config.recorderProfileId)) return { ok: false, reason: "missing-recorder-profile" };
+    const preset = deps.getPreset(config.rulePresetId);
+    if (!preset) return { ok: false, reason: "missing-preset" };
+    const message = current.chat[messageIndex];
+    if (!message || message.is_user || message.is_system || (message.swipe_id ?? 0) !== swipeId) return { ok: false, reason: "stale-message" };
+    const branch = deps.store.getBranch(message, swipeId);
+    if (!branch?.branchId) return { ok: false, reason: "missing-source-branch" };
+    const envelope = envelopeValue(deps.store.loadEnvelope());
+    if (!envelope) return { ok: false, reason: "missing-envelope" };
+    const previousUser = current.chat.slice(0, messageIndex).findLast((item) => item?.is_user);
+    const checks = clone(branch.segments?.flatMap((segment) => segment.checks ?? []) ?? []);
+    try {
+      const response = await deps.modelService.requestPatch({ profileId: config.recorderProfileId, baseVersion: baseSnapshot.version, oldState: baseSnapshot, playerText: previousUser?.mes ?? "", assistantText: message.mes ?? "", checks, signal });
+      const validation = deps.validator.validatePatch(config.rulePresetId, response.patch, { expectedVersion: baseSnapshot.version, allowedPaths: preset.allowedPaths, lockedPaths: [...preset.lockedPaths, ...preset.ruleLockedPaths ?? []] });
+      if (!validation.ok) return { ok: false, reason: "invalid-patch" };
+      const applied = deps.applyPatch({ state: baseSnapshot, patch: response.patch, policy: preset, validateState: (state) => deps.validator.validateState(config.rulePresetId, state) });
+      if (!applied.ok) return { ok: false, reason: "invalid-state" };
+      applied.value.version = baseSnapshot.version + 1;
+      const committed = await deps.store.commitSegment({ chatId: current.chatId, message, messageId: messageId(message), branchId: branch.branchId, swipeId, expectedHeadRevision: envelope.headRevision, baseStateVersion: baseSnapshot.version, baseSnapshot, requestId: deps.makeId?.() ?? crypto.randomUUID(), userMessageId: previousUser ? messageId(previousUser) : null, patch: response.patch, checks, assistantText: message.mes ?? "", nextState: applied.value, isContinue: false });
+      return committed.ok ? { ok: true, snapshot: clone(applied.value), stateVersion: applied.value.version } : committed;
+    } catch (error) {
+      return { ok: false, reason: "replay-failed", error };
+    }
+  }
   async function afterGeneration() {
     if (!generation) return { ignored: true, reason: "no-matching-generation" };
     const located = locate(context(), generation);
     const captured = generation;
     generation = null;
     if (!located.ok) {
+      await Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => void 0);
       diagnostic({ requestId: captured.requestId, ...located });
       return located;
     }
     captured.assistantMessageId = messageId(located.message);
     captured.swipeId = located.message.swipe_id ?? 0;
-    captured.checks = clone(deps.getChecks(captured));
+    captured.checks = [...new Map([...captured.reusableChecks, ...deps.getChecks(captured)].filter((record) => record?.checkId).map((record) => [record.checkId, record])).values()].map(clone);
     let failed = false;
     const fail = async (detail) => {
       if (failed) return;
@@ -6758,6 +6787,7 @@ function createOrchestrator(deps) {
     try {
       queued = deps.queue.enqueue(captured.chatId, captured.requestId, (signal) => process(captured, located.message, signal));
     } catch (error) {
+      await Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => void 0);
       await fail({ reason: "queue-enqueue-failed", error });
       return { ok: false, reason: "queue-enqueue-failed" };
     }
@@ -6794,6 +6824,7 @@ function createOrchestrator(deps) {
     const previous = activeChatId;
     generationStopped("chat-changed");
     if (previous) deps.queue.cancelChat(previous, "chat-changed");
+    deps.rollbackManager?.refresh?.();
     return initializeChat();
   }, beforeGeneration: (type, _options, dryRun) => dryRun ? void 0 : beforeGeneration(type), generationEnded: afterGeneration, generationStopped: () => generationStopped() };
   function cleanup() {
@@ -6845,7 +6876,7 @@ function createOrchestrator(deps) {
     const error = cleanup();
     if (error) throw error;
   }
-  return { start, stop, initializeChat, beforeGeneration, afterGeneration, getStatus: () => ({ activeChatId, generation: Boolean(generation), queue: activeChatId ? deps.queue.getStatus(activeChatId) : { state: "idle", requestId: null } }) };
+  return { start, stop, initializeChat, beforeGeneration, afterGeneration, replayTurn, getStatus: () => ({ activeChatId, generation: Boolean(generation), queue: activeChatId ? deps.queue.getStatus(activeChatId) : { state: "idle", requestId: null } }) };
 }
 
 // src/constants.js
@@ -7123,7 +7154,7 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
       const branch = getBranch(message, swipeId);
       const snapshot = branch?.status === "committed" ? branch.segments?.at(-1)?.postSnapshot : null;
       const messageId = message?.extra?.[NAMESPACE]?.messageId;
-      if (snapshot && messageId && branch.branchId) return { snapshot: clone2(snapshot), activeRef: { messageId, swipeId, branchId: branch.branchId } };
+      if (isPlainObject(snapshot) && isRevision(snapshot.version) && messageId && branch.branchId) return { snapshot: clone2(snapshot), activeRef: { messageId, swipeId, branchId: branch.branchId } };
     }
     return { snapshot: clone2(envelope.initialSnapshot), activeRef: null };
   }
@@ -7188,7 +7219,7 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
   async function restoreInitialSnapshot() {
     const context = adapter.getContext?.();
     const envelope = context?.chatMetadata?.[NAMESPACE];
-    if (!validEnvelope(envelope) || !envelope.initialSnapshot) return result("invalid-envelope");
+    if (!validEnvelope(envelope) || !isPlainObject(envelope.initialSnapshot) || !isRevision(envelope.initialSnapshot.version)) return result("invalid-envelope");
     const before = clone2(envelope);
     try {
       envelope.activeSnapshot = clone2(envelope.initialSnapshot);
@@ -7764,13 +7795,15 @@ function createChatTaskQueue({ onStatus = () => {
 function clone3(value) {
   return structuredClone(value);
 }
-function createRollbackManager({ adapter, store, queue, confirm = async () => false, replayTurn = async () => ({ ok: false }) }) {
+function createRollbackManager({ adapter, store, queue, confirm = async () => false, replayTurn = async () => ({ ok: false }), isWritable = () => true }) {
   const pendingSwipeSources = /* @__PURE__ */ new Map();
+  const selectedSwipes = /* @__PURE__ */ new Map();
   let replacement = null;
   let taskSequence = 0;
   const handlers = [];
   const context = () => adapter.getContext();
   function serialize(name, task) {
+    if (!isWritable()) return Promise.resolve({ ok: false, reason: "read-only" });
     const chatId = context().chatId;
     return queue.enqueue(chatId, `branch-${name}-${++taskSequence}`, async (signal) => {
       signal.throwIfAborted();
@@ -7783,6 +7816,7 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
     return { message, messageId: message?.extra?.dualModelEngine?.messageId };
   }
   function prepareSwipeGeneration(messageIndex, type) {
+    if (!isWritable()) return { ok: false, reason: "read-only" };
     const { message } = stableAt(messageIndex);
     const sourceSwipeId = pendingSwipeSources.get(messageIndex) ?? (message?.swipe_id ?? 0);
     pendingSwipeSources.delete(messageIndex);
@@ -7872,6 +7906,7 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
     return recoverAfterDelete();
   }
   function bind() {
+    if (handlers.length) return;
     const events = adapter.events ?? {};
     const on = (name, fn) => {
       if (name) {
@@ -7879,13 +7914,54 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
         handlers.push([name, fn]);
       }
     };
+    refresh();
     on(events.MESSAGE_SWIPED, (index) => {
+      if (!isWritable()) return { ok: false, reason: "read-only" };
       const { message } = stableAt(index);
+      const previousSwipeId = selectedSwipes.get(index) ?? 0;
       const swipe = message?.swipe_id ?? 0;
+      const previous = store.getBranch?.(message, previousSwipeId);
+      const current = store.getBranch?.(message, swipe);
+      selectedSwipes.set(index, swipe);
+      if (pendingSwipeSources.get(index) === swipe) {
+        pendingSwipeSources.delete(index);
+        return restoreSwipe(index, swipe);
+      }
+      if (!current || swipe !== previousSwipeId && current.branchId === previous?.branchId) {
+        pendingSwipeSources.set(index, previousSwipeId);
+        return { ok: true, pendingGeneration: true, sourceSwipeId: previousSwipeId };
+      }
+      pendingSwipeSources.delete(index);
       return restoreSwipe(index, swipe);
     });
     on(events.MESSAGE_EDITED, invalidateForEdit);
-    on(events.MESSAGE_DELETED, (index) => replacement?.chatId === context().chatId ? (replacement.deleted = true, { ok: true, ignored: "regenerate-replacement" }) : invalidateForDelete(index));
+    on(events.MESSAGE_DELETED, async (index) => {
+      if (!isWritable()) return { ok: false, reason: "read-only" };
+      if (replacement?.chatId === context().chatId) {
+        replacement.deleted = true;
+        refresh();
+        return { ok: true, ignored: "regenerate-replacement" };
+      }
+      const audit = await store.auditActiveRef();
+      const value = audit?.ok ? await invalidateForDelete(index) : await recoverAfterDelete();
+      refresh();
+      return value;
+    });
+    on(events.MESSAGE_SWIPE_DELETED, (event) => {
+      if (!isWritable() || !event || !Number.isInteger(event.messageId) || !Number.isInteger(event.swipeId)) return { ok: false, reason: "invalid-swipe-delete" };
+      const index = event.messageId;
+      const { message, messageId } = stableAt(index);
+      if (selectedSwipes.get(index) !== event.swipeId) return serialize("remove-swipe", () => !message || !context().chat.includes(message) || message.extra?.dualModelEngine?.messageId !== messageId ? { ok: false, reason: "stale-message" } : store.removeBranch(message, event.swipeId));
+      selectedSwipes.set(index, event.newSwipeId);
+      return restoreSwipe(index, event.newSwipeId);
+    });
+  }
+  function refresh() {
+    selectedSwipes.clear();
+    pendingSwipeSources.clear();
+    (context().chat ?? []).forEach((message, index) => {
+      if (!message?.is_user && !message?.is_system) selectedSwipes.set(index, message.swipe_id ?? 0);
+    });
   }
   function destroy() {
     while (handlers.length) {
@@ -7896,7 +7972,7 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
       }
     }
   }
-  return { prepareSwipeGeneration, completeReplacement, abortReplacement, repairOrphanedHead, restoreSwipe, recoverAfterDelete, invalidateForEdit, invalidateForDelete, buildRecalculationPlan, recalculate, bind, destroy };
+  return { prepareSwipeGeneration, completeReplacement, abortReplacement, repairOrphanedHead, restoreSwipe, recoverAfterDelete, invalidateForEdit, invalidateForDelete, buildRecalculationPlan, recalculate, refresh, bind, destroy };
 }
 
 // schemas/state.schema.json
@@ -7989,14 +8065,19 @@ async function bootstrap({ adapter, dependencies } = {}) {
   const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
   const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState });
   const queue = resolved.queue ?? createChatTaskQueue();
+  let orchestrator;
   const rollbackManager = resolved.rollbackManager ?? createRollbackManager({
     adapter: runtimeAdapter,
     store,
     queue,
     confirm: resolved.confirmRecalculation ?? (async () => false),
-    replayTurn: resolved.replayTurn ?? (async () => ({ ok: false, reason: "replay-unavailable" }))
+    replayTurn: resolved.replayTurn ?? ((input) => orchestrator?.replayTurn(input) ?? Promise.resolve({ ok: false, reason: "replay-unavailable" })),
+    isWritable: resolved.isWritable ?? (() => {
+      const current = runtimeAdapter.getContext();
+      return !current.groupId && Boolean((resolved.getConfig ?? (() => resolveConfig({ globalConfig: runtimeAdapter.getSettings?.() })))().enabled);
+    })
   });
-  const orchestrator = createOrchestrator({
+  orchestrator = createOrchestrator({
     adapter: runtimeAdapter,
     store,
     validator,
