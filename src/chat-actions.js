@@ -11,7 +11,7 @@ function same(deps, captured) {
     const context = deps.adapter.getContext?.(); const envelope = envelopeOf(deps);
     return Boolean(context?.chatId === captured.context.chatId && context.chat === captured.chat && context.chatMetadata === captured.metadata && envelope === captured.envelope && envelope.headRevision === captured.headRevision && envelope.stateVersion === captured.stateVersion && JSON.stringify(envelope.activeRef) === JSON.stringify(captured.ref) && JSON.stringify(envelope.preset) === JSON.stringify(captured.preset));
 }
-function browserDownload(name, value) {
+export function browserDownload(name, value) {
     const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
     const url = globalThis.URL.createObjectURL(new globalThis.Blob([text], { type: 'application/json' }));
     const anchor = document.createElement('a'); anchor.href = url; anchor.download = name; anchor.click(); globalThis.queueMicrotask(() => globalThis.URL.revokeObjectURL(url));
@@ -21,7 +21,7 @@ function validateDamage(deps, input) {
     const ok = Boolean(input && typeof input.target === 'string' && input.target.trim() && typeof input.expression === 'string' && input.expression.trim());
     return ok ? { ok: true, errors: [] } : { ok: false, errors: [{ message: 'Damage target and expression are required' }] };
 }
-function rawExport(envelope, records) {
+export function rawExport(envelope, records) {
     if (!envelope) return { schemaVersion: undefined, preset: undefined, stateVersion: undefined, activeSnapshot: undefined, activeRef: undefined, records };
     // This is deliberately a whitelist: profile IDs and any future credentials stay local.
     return { schemaVersion: envelope.schemaVersion, preset: structuredClone(envelope.preset), stateVersion: envelope.stateVersion, activeSnapshot: structuredClone(envelope.activeSnapshot), activeRef: structuredClone(envelope.activeRef), records: structuredClone(records) };

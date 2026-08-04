@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { createChatActions } from '../../src/chat-actions.js';
+import { browserDownload, createChatActions, rawExport } from '../../src/chat-actions.js';
 
 function host(overrides = {}) {
     const envelope = { schemaVersion: 1, stateVersion: 1, headRevision: 2, preset: { id: 'd20', version: 1 }, activeSnapshot: { version: 1, actors: { player: { abilities: { dexterity: 10 }, proficientSkills: [], proficiencyBonus: 2, hp: { current: 8, max: 10, temporary: 2 } } } }, activeRef: { messageId: 'm', swipeId: 0, branchId: 'b' } };
@@ -80,4 +80,18 @@ it('exports custom JSON once and redacts raw credentials', async () => {
     expect(h.deps.download).toHaveBeenNthCalledWith(1, 'dualmodel-preset-custom.json', '{"id":"custom"}');
     expect(h.deps.download.mock.calls[1][1]).not.toHaveProperty('credentials');
     expect(h.deps.download.mock.calls[1][1]).not.toHaveProperty('recorderProfileId');
+});
+
+it('creates and revokes a browser download URL and raw export is whitelisted', async () => {
+    const create = vi.spyOn(globalThis.URL, 'createObjectURL').mockReturnValue('blob:test'); const revoke = vi.spyOn(globalThis.URL, 'revokeObjectURL'); const click = vi.spyOn(globalThis.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    browserDownload('x.json', { x: 1 }); await Promise.resolve();
+    expect(create).toHaveBeenCalledOnce(); expect(click).toHaveBeenCalledOnce(); expect(revoke).toHaveBeenCalledWith('blob:test');
+    expect(rawExport({ schemaVersion: 1, recorderProfileId: 'secret', credentials: { token: 'secret' }, preset: { id: 'p' } }, [])).not.toHaveProperty('credentials');
+    create.mockRestore(); revoke.mockRestore(); click.mockRestore();
+});
+
+it('does not commit a ledger record when the store reports stale', async () => {
+    const h = host(); h.store.commitCurrentBranchAudit.mockResolvedValue({ ok: false, reason: 'stale-chat' });
+    await h.actions.reroll(); expect(h.ledger.commit).not.toHaveBeenCalled();
+    h.store.commitCurrentBranchMutation.mockResolvedValue({ ok: false, reason: 'stale-chat' }); await h.actions.applyDamage({ target: 'player', expression: '1d6', damageType: 'fire' }); expect(h.ledger.commit).not.toHaveBeenCalled();
 });
