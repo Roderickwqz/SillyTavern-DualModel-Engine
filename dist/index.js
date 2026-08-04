@@ -9766,7 +9766,7 @@ function createManualPatchCommitter({ adapter, store, queue, orchestrator, valid
   };
 }
 async function bootstrap({ adapter, dependencies } = {}) {
-  const runtimeAdapter = adapter ?? (await import("./st-runtime-SR4MNLUA.js")).createRuntimeAdapter();
+  const runtimeAdapter = adapter ?? (await import("./st-runtime-WJIEU62H.js")).createRuntimeAdapter();
   const resolved = dependencies ?? {};
   const recordDiagnostic = resolved.recordDiagnostic ?? createDiagnosticRecorder(runtimeAdapter);
   const presets = [narrativePreset, d20LitePreset];

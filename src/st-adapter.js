@@ -1,5 +1,34 @@
+async function unavailableStrictPersistence() {
+    throw new Error('Strict chat persistence is unavailable');
+}
+
+export function createStrictChatSaver({ getContext, getRequestHeaders, compressRequest, fetch: fetchImpl = globalThis.fetch }) {
+    return async function saveStrictCharacterChat() {
+        const context = getContext?.();
+        if (context?.groupId) throw new Error('Strict chat persistence does not support group chat saves');
+        const character = context?.characters?.[context?.characterId];
+        if (!character || !context?.chatId || !Array.isArray(context?.chat) || !context?.chatMetadata) throw new Error('Strict chat persistence is unavailable');
+        if (typeof getRequestHeaders !== 'function' || typeof compressRequest !== 'function' || typeof fetchImpl !== 'function') throw new Error('Strict chat persistence is unavailable');
+        const request = await compressRequest({
+            method: 'POST',
+            cache: 'no-cache',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                ch_name: character.name,
+                file_name: context.chatId,
+                chat: [{ chat_metadata: context.chatMetadata, user_name: 'unused', character_name: 'unused' }, ...context.chat],
+                avatar_url: character.avatar,
+                force: false,
+            }),
+        });
+        const response = await fetchImpl('/api/chats/save', request);
+        if (!response?.ok) throw new Error(response?.statusText || 'Strict chat persistence failed');
+    };
+}
+
 export function createSTAdapter(host) {
     const namespace = 'dualModelEngine';
+    const saveStrictChat = typeof host.strictSaveChat === 'function' ? () => host.strictSaveChat() : unavailableStrictPersistence;
     const getCharacter = () => {
         const context = host.getContext?.();
         return context?.characters?.[context?.characterId] ?? context?.character ?? null;
@@ -18,7 +47,7 @@ export function createSTAdapter(host) {
         unregisterTool: typeof host.unregisterTool === 'function' ? name => host.unregisterTool(name) : undefined,
         probeMainTool: typeof host.probeMainTool === 'function' ? params => host.probeMainTool(params) : undefined,
         getMainApiModelLabel: typeof host.getMainApiModelLabel === 'function' ? () => host.getMainApiModelLabel() : () => null,
-        saveChat: () => host.getContext().saveMetadata(),
+        saveChat: saveStrictChat,
         saveSettings: () => host.saveSettingsDebounced?.(),
         getSettings: () => host.getSettings?.() ?? {},
         getGlobalSettings: () => host.getSettings?.() ?? {},
@@ -43,13 +72,13 @@ export function createSTAdapter(host) {
             if (identity && (context.chatId !== identity.chatId || context.chat !== identity.chat || metadata !== identity.metadata || metadata[namespace] !== identity.namespace)) return { ok: false, reason: 'stale-chat' };
             const had = Object.hasOwn(metadata, namespace); const before = structuredClone(metadata[namespace]); metadata[namespace] ??= {}; metadata[namespace].configOverrides = structuredClone(value);
             const transaction = metadata[namespace]; if (identity) identity.namespace = transaction;
-            try { await context.saveMetadata?.(); if (identity && (host.getContext?.()?.chatId !== identity.chatId || host.getContext?.()?.chat !== identity.chat || host.getContext?.()?.chatMetadata !== metadata || metadata[namespace] !== transaction)) return { ok: false, reason: 'stale-chat' }; return { ok: true }; }
+            try { await saveStrictChat(); if (identity && (host.getContext?.()?.chatId !== identity.chatId || host.getContext?.()?.chat !== identity.chat || host.getContext?.()?.chatMetadata !== metadata || metadata[namespace] !== transaction)) return { ok: false, reason: 'stale-chat' }; return { ok: true }; }
             catch (error) { if (host.getContext?.()?.chatMetadata === metadata && metadata[namespace] === transaction) { if (had) metadata[namespace] = before; else delete metadata[namespace]; } throw error; }
         },
         listPresetReferences: typeof host.listPresetReferences === 'function' ? id => host.listPresetReferences(id) : undefined,
         countTokens: text => host.countTokens(text),
         canInjectPrompt: typeof host.setExtensionPrompt === 'function',
-        canPersist: typeof host.getContext?.().saveMetadata === 'function',
+        canPersist: typeof host.strictSaveChat === 'function',
         canRegisterTools: typeof host.registerTool === 'function',
         canProbeMainTools: typeof host.probeMainTool === 'function',
     };

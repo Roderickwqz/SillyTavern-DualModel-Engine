@@ -1,15 +1,43 @@
 import "./chunk-TRTQSARU.js";
 
 // src/st-runtime.js
-import { eventSource, event_types, setExtensionPrompt, generateRawData, isGenerating, main_api, getGeneratingModel } from "/script.js";
+import { eventSource, event_types, setExtensionPrompt, generateRawData, isGenerating, main_api, getGeneratingModel, getRequestHeaders } from "/script.js";
 import { getContext } from "/scripts/extensions.js";
 import { ConnectionManagerRequestService } from "/scripts/extensions/shared.js";
 import { ToolManager } from "/scripts/tool-calling.js";
 import { getTokenCountAsync } from "/scripts/tokenizers.js";
+import { compressRequest } from "/scripts/request-compression.js";
 
 // src/st-adapter.js
+async function unavailableStrictPersistence() {
+  throw new Error("Strict chat persistence is unavailable");
+}
+function createStrictChatSaver({ getContext: getContext2, getRequestHeaders: getRequestHeaders2, compressRequest: compressRequest2, fetch: fetchImpl = globalThis.fetch }) {
+  return async function saveStrictCharacterChat() {
+    const context = getContext2?.();
+    if (context?.groupId) throw new Error("Strict chat persistence does not support group chat saves");
+    const character = context?.characters?.[context?.characterId];
+    if (!character || !context?.chatId || !Array.isArray(context?.chat) || !context?.chatMetadata) throw new Error("Strict chat persistence is unavailable");
+    if (typeof getRequestHeaders2 !== "function" || typeof compressRequest2 !== "function" || typeof fetchImpl !== "function") throw new Error("Strict chat persistence is unavailable");
+    const request = await compressRequest2({
+      method: "POST",
+      cache: "no-cache",
+      headers: getRequestHeaders2(),
+      body: JSON.stringify({
+        ch_name: character.name,
+        file_name: context.chatId,
+        chat: [{ chat_metadata: context.chatMetadata, user_name: "unused", character_name: "unused" }, ...context.chat],
+        avatar_url: character.avatar,
+        force: false
+      })
+    });
+    const response = await fetchImpl("/api/chats/save", request);
+    if (!response?.ok) throw new Error(response?.statusText || "Strict chat persistence failed");
+  };
+}
 function createSTAdapter(host) {
   const namespace = "dualModelEngine";
+  const saveStrictChat = typeof host.strictSaveChat === "function" ? () => host.strictSaveChat() : unavailableStrictPersistence;
   const getCharacter = () => {
     const context = host.getContext?.();
     return context?.characters?.[context?.characterId] ?? context?.character ?? null;
@@ -27,7 +55,7 @@ function createSTAdapter(host) {
     unregisterTool: typeof host.unregisterTool === "function" ? (name) => host.unregisterTool(name) : void 0,
     probeMainTool: typeof host.probeMainTool === "function" ? (params) => host.probeMainTool(params) : void 0,
     getMainApiModelLabel: typeof host.getMainApiModelLabel === "function" ? () => host.getMainApiModelLabel() : () => null,
-    saveChat: () => host.getContext().saveMetadata(),
+    saveChat: saveStrictChat,
     saveSettings: () => host.saveSettingsDebounced?.(),
     getSettings: () => host.getSettings?.() ?? {},
     getGlobalSettings: () => host.getSettings?.() ?? {},
@@ -79,7 +107,7 @@ function createSTAdapter(host) {
       const transaction = metadata[namespace];
       if (identity) identity.namespace = transaction;
       try {
-        await context.saveMetadata?.();
+        await saveStrictChat();
         if (identity && (host.getContext?.()?.chatId !== identity.chatId || host.getContext?.()?.chat !== identity.chat || host.getContext?.()?.chatMetadata !== metadata || metadata[namespace] !== transaction)) return { ok: false, reason: "stale-chat" };
         return { ok: true };
       } catch (error) {
@@ -93,7 +121,7 @@ function createSTAdapter(host) {
     listPresetReferences: typeof host.listPresetReferences === "function" ? (id) => host.listPresetReferences(id) : void 0,
     countTokens: (text) => host.countTokens(text),
     canInjectPrompt: typeof host.setExtensionPrompt === "function",
-    canPersist: typeof host.getContext?.().saveMetadata === "function",
+    canPersist: typeof host.strictSaveChat === "function",
     canRegisterTools: typeof host.registerTool === "function",
     canProbeMainTools: typeof host.probeMainTool === "function"
   };
@@ -148,6 +176,7 @@ function createRuntimeAdapter() {
     eventSource,
     eventTypes: event_types,
     getContext,
+    strictSaveChat: createStrictChatSaver({ getContext, getRequestHeaders, compressRequest }),
     setExtensionPrompt,
     saveSettingsDebounced: () => getContext().saveSettingsDebounced?.(),
     getSettings: () => getContext().extensionSettings.dualModelEngine ??= {},

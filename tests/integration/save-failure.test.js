@@ -1,5 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { bootstrap } from '../../src/index.js';
+import { createSTAdapter, createStrictChatSaver } from '../../src/st-adapter.js';
+import { createStateStore } from '../../src/state-store.js';
 import { createAcceptanceHost } from '../fixtures/fake-host.js';
 
 it('keeps the canonical plugin persistence projection byte-identical when a Recorder save fails', async () => {
@@ -30,4 +32,21 @@ it('does not mutate the current branch when an explicit reroll save fails', asyn
     expect(host.snapshotPluginData()).toBe(before);
     host.failAllSaves(false);
     await app.stop();
+});
+
+it('rolls back state-store memory when strict SillyTavern persistence rejects a save', async () => {
+    const message = { extra: { dualModelEngine: { messageId: 'm1' } }, swipe_id: 0, swipe_info: [{ extra: { dualModelEngine: { messageId: 'm1' } } }] };
+    const context = {
+        groupId: null, characterId: 0, chatId: 'chat.jsonl', characters: [{ name: 'Ava', avatar: 'ava.png' }], chat: [message],
+        chatMetadata: { dualModelEngine: { schemaVersion: 1, stateVersion: 0, headRevision: 0, activeSnapshot: { version: 0 }, activeRef: null, taskStatus: { state: 'idle', requestId: null }, lastCommittedRequestId: null } },
+    };
+    const fetch = vi.fn().mockResolvedValue({ ok: false, statusText: 'Conflict' });
+    const adapter = createSTAdapter({ getContext: () => context, strictSaveChat: createStrictChatSaver({ getContext: () => context, getRequestHeaders: () => ({}), compressRequest: async request => request, fetch }) });
+    const store = createStateStore({ adapter, makeId: () => 'generated', hashText: async text => `hash:${text}` });
+    const before = structuredClone(context);
+
+    await expect(store.commitSegment({ chatId: 'chat.jsonl', message, messageId: 'm1', branchId: 'b1', swipeId: 0, expectedHeadRevision: 0, baseStateVersion: 0, requestId: 'r1', userMessageId: 'u1', baseSnapshot: { version: 0 }, patch: { operations: [] }, checks: [], assistantText: 'answer', nextState: { version: 1 }, isContinue: false })).resolves.toMatchObject({ ok: false, reason: 'save-failed', error: expect.any(Error) });
+
+    expect(context).toEqual(before);
+    expect(fetch).toHaveBeenCalledOnce();
 });
