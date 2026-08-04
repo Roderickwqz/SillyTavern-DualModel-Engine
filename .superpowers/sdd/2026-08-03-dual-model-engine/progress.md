@@ -52,4 +52,4 @@ Task 11: blocker resolved by user-authorized override; official host contracts a
 Task 11: complete (commits fd497be..933b4fb, comprehensive review clean; 203 tests)
 Task 12: fix round 1/5 (real missing-Web-Crypto behavior, independent deeply frozen D20 preset data, pre-RNG advantage validation, and schema boundary coverage fixed; commits aa8ab20..b20bd56)
 Task 12: complete (commits 933b4fb..b20bd56, review clean; 242 tests)
-Task 13: fix round 4 complete — real D20 success/failure transactions now verify authoritative old state, rule locks, store-before-ledger ordering, conflict/save rollback, and invalid-tool discard; bootstrap failure and stop retry cleanup matrix is covered. Verification: 271 tests, lint, build, distribution check.
+Task 13: fix round 5 complete — afterGeneration is single-entry while settling a captured tool tail, and ending/closed generation guards now run before tool validation so late malformed calls cannot poison accepted work. Verification: focused transaction/tool tests, full suite, lint, build, distribution check.

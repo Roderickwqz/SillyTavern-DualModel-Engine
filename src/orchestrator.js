@@ -96,6 +96,7 @@ export function createOrchestrator(deps) {
     }
     async function afterGeneration() {
         if (!generation) return { ignored: true, reason: 'no-matching-generation' };
+        if (generation.generationEnding) return { ignored: true, reason: 'generation-ending' };
         const captured = generation; captured.generationEnding = true;
         const located = locate(context(), captured);
         const toolOutcome = await Promise.race([captured.ruleToolTail?.catch(() => undefined) ?? Promise.resolve(), captured.cancelled.then(() => 'cancelled')]);

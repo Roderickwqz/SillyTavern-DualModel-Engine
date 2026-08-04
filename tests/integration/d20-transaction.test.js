@@ -15,7 +15,7 @@ import { d20TestState } from '../fixtures/d20.js';
 const damage = { target: 'player', expression: '1d6', damageType: 'fire', reason: 'trap' };
 const patch = { base_version: 0, operations: [{ op: 'add', path: '/inventory/-', value: 'recorded', reason: 'record' }] };
 function validator(name) { const ajv = new Ajv(); const fn = ajv.compile({ $ref: `#/$defs/${name}`, ...d20Schema }); return input => ({ ok: fn(input), errors: fn.errors ?? [] }); }
-function host({ saveChat = vi.fn(async () => {}), responsePatch = patch, commit } = {}) {
+function host({ saveChat = vi.fn(async () => {}), responsePatch = patch, commit, resolveDamage } = {}) {
     const user = { is_user: true, mes: 'go', extra: { dualModelEngine: { messageId: 'u1' } } };
     const context = { chatId: 'chat-a', groupId: null, chat: [user], chatMetadata: { dualModelEngine: { schemaVersion: 1, stateVersion: 0, headRevision: 0, activeSnapshot: d20TestState(), activeRef: null, taskStatus: { state: 'idle', requestId: null }, lastCommittedRequestId: null, preset: { id: 'd20-lite' } } } };
     const definitions = new Map(); const adapter = { events: {}, getContext: () => context, saveChat, registerTool: definition => definitions.set(definition.name, definition) };
@@ -24,7 +24,8 @@ function host({ saveChat = vi.fn(async () => {}), responsePatch = patch, commit 
     const originalCommit = store.commitSegment.bind(store); store.commitSegment = async input => { order.push('store'); return originalCommit(input); };
     const originalLedgerCommit = ledger.commit.bind(ledger); ledger.commit = records => { order.push('ledger'); return originalLedgerCommit(records); };
     const deps = { adapter, store, queue, ledger, validator: stateValidator, applyPatch: applyValidatedPatch, getConfig: () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'd20-lite', adjudication: 'automatic-tool', injectionBudget: 1 }), getPreset: () => d20LitePreset, hasProfile: () => true, ensureMessageId: message => (message.extra.dualModelEngine ??= {}).messageId ??= 'a1', makeId: (() => { let i = 0; return () => `r${++i}`; })(), promptInjector: { refresh: vi.fn(async () => {}), clear: vi.fn() }, modelService: { requestPatch: vi.fn(async _input => ({ patch: responsePatch })) }, getChecks: () => [], recordDiagnostic: vi.fn() };
-    const orchestrator = createOrchestrator(deps); const registry = createToolRegistry({ adapter, getConfig: deps.getConfig, getActiveGeneration: orchestrator.getActiveGeneration, validateCheck: validator('checkInput'), validateDamage: validator('damageInput'), ledger, resolveCheck: async () => ({ total: 1 }), resolveDamage: async (_input, state) => { const next = structuredClone(state); next.actors.player.hp.current = 9; next.actors.player.hp.temporary = 0; return { state: next, audit: { total: 4, hpAfter: 9 } }; } }); registry.register();
+    const defaultResolveDamage = async (_input, state) => { const next = structuredClone(state); next.actors.player.hp.current = 9; next.actors.player.hp.temporary = 0; return { state: next, audit: { total: 4, hpAfter: 9 } }; };
+    const orchestrator = createOrchestrator(deps); const registry = createToolRegistry({ adapter, getConfig: deps.getConfig, getActiveGeneration: orchestrator.getActiveGeneration, validateCheck: validator('checkInput'), validateDamage: validator('damageInput'), ledger, resolveCheck: async () => ({ total: 1 }), resolveDamage: resolveDamage ?? defaultResolveDamage }); registry.register();
     return { context, definitions, deps, store, ledger, order, orchestrator, addAssistant() { context.chat.push({ is_user: false, mes: 'answer', extra: {}, swipe_id: 0, swipe_info: [{ extra: {} }] }); } };
 }
 
@@ -53,4 +54,16 @@ it('rolls back real store metadata and message branches when save rejects after 
 it('discards a valid staged effect after a later invalid tool input without committing', async () => {
     const subject = host(); await subject.orchestrator.beforeGeneration('normal'); await subject.definitions.get('DualModelApplyD20Damage').action(damage); await expect(subject.definitions.get('DualModelApplyD20Damage').action({ ...damage, expression: 'bad' })).rejects.toThrow(); subject.addAssistant(); await subject.orchestrator.afterGeneration();
     expect(subject.ledger.list()).toEqual([]); expect(subject.context.chatMetadata.dualModelEngine.activeSnapshot.actors.player.hp.current).toBe(10);
+});
+
+it('queues only one transaction when afterGeneration is entered twice while accepted damage is pending', async () => {
+    let release; const subject = host({ resolveDamage: async (_input, state) => new Promise(resolve => { release = () => { const next = structuredClone(state); next.actors.player.hp.current = 9; next.actors.player.hp.temporary = 0; resolve({ state: next, audit: { total: 4 } }); }; }) }); await subject.orchestrator.beforeGeneration('normal'); const pending = subject.definitions.get('DualModelApplyD20Damage').action(damage); await vi.waitFor(() => expect(release).toBeTypeOf('function')); subject.addAssistant(); const first = subject.orchestrator.afterGeneration();
+    await expect(subject.orchestrator.afterGeneration()).resolves.toEqual({ ignored: true, reason: 'generation-ending' }); release(); await pending; await first; await subject.deps.queue.waitForIdle('chat-a'); await vi.waitFor(() => expect(subject.ledger.list()).toHaveLength(1));
+    expect(subject.deps.modelService.requestPatch).toHaveBeenCalledOnce(); expect(subject.order).toEqual(['store', 'ledger']);
+});
+
+it('does not let a late invalid tool call poison an accepted transaction that is ending', async () => {
+    let release; const subject = host({ resolveDamage: async (_input, state) => new Promise(resolve => { release = () => { const next = structuredClone(state); next.actors.player.hp.current = 9; next.actors.player.hp.temporary = 0; resolve({ state: next, audit: { total: 4 } }); }; }) }); await subject.orchestrator.beforeGeneration('normal'); const pending = subject.definitions.get('DualModelApplyD20Damage').action(damage); await vi.waitFor(() => expect(release).toBeTypeOf('function')); subject.addAssistant(); const ending = subject.orchestrator.afterGeneration();
+    await expect(subject.definitions.get('DualModelApplyD20Damage').action({ ...damage, expression: 'invalid' })).rejects.toThrow('closing'); release(); await pending; await ending; await subject.deps.queue.waitForIdle('chat-a'); await vi.waitFor(() => expect(subject.ledger.list()).toHaveLength(1));
+    expect(subject.deps.modelService.requestPatch).toHaveBeenCalledOnce(); expect(subject.order).toEqual(['store', 'ledger']);
 });

@@ -6786,6 +6786,7 @@ function createOrchestrator(deps) {
   }
   async function afterGeneration() {
     if (!generation) return { ignored: true, reason: "no-matching-generation" };
+    if (generation.generationEnding) return { ignored: true, reason: "generation-ending" };
     const captured = generation;
     captured.generationEnding = true;
     const located = locate(context(), captured);
@@ -8376,6 +8377,7 @@ function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateC
     action: async (input) => {
       const generation = getActiveGeneration();
       if (!generation) throw new Error("No active generation");
+      if (generation.generationEnding || generation.closed) throw closedGeneration();
       const validation = validateCheck(input);
       if (!validation.ok) {
         discard(generation);
@@ -8411,6 +8413,7 @@ function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateC
     action: async (input) => {
       const generation = getActiveGeneration();
       if (!generation) throw new Error("No active generation");
+      if (generation.generationEnding || generation.closed) throw closedGeneration();
       const validation = validateDamage(input);
       if (!validation.ok) {
         discard(generation);

@@ -38,6 +38,7 @@ export function createToolRegistry({ adapter, getConfig, getActiveGeneration, va
         formatMessage: input => `D20: ${input.actor} — ${input.action}`,
         action: async input => {
             const generation = getActiveGeneration(); if (!generation) throw new Error('No active generation');
+            if (generation.generationEnding || generation.closed) throw closedGeneration();
             const validation = validateCheck(input); if (!validation.ok) { discard(generation); throw new Error(JSON.stringify(validation.errors)); }
             const key = `check:${signature(input, generation.userMessageId)}`;
             return sameCheck(generation, key, async () => {
@@ -56,6 +57,7 @@ export function createToolRegistry({ adapter, getConfig, getActiveGeneration, va
         formatMessage: input => `Damage: ${input.target} — ${input.expression}`,
         action: async input => {
             const generation = getActiveGeneration(); if (!generation) throw new Error('No active generation');
+            if (generation.generationEnding || generation.closed) throw closedGeneration();
             const validation = validateDamage(input); if (!validation.ok) { discard(generation); throw new Error(JSON.stringify(validation.errors)); }
             return enqueue(generation, async () => {
                 const state = structuredClone(generation.pendingRuleEffects.at(-1)?.nextState ?? generation.baseSnapshot);
