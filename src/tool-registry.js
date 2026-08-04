@@ -1,0 +1,81 @@
+import d20Schema from '../schemas/d20.schema.json';
+
+const checkSchema = { $ref: '#/$defs/checkInput', ...d20Schema };
+const damageSchema = { $ref: '#/$defs/damageInput', ...d20Schema };
+export { checkSchema as d20ToolInputSchema, damageSchema as d20DamageInputSchema };
+
+export function checkSignature(input, userMessageId) { return JSON.stringify([userMessageId, input.actor, input.action.trim(), input.ability, input.skill, input.dc, input.advantage]); }
+export async function stageCheckRecord({ generation, input, ledger, resolveCheck, signal, isActive = () => !generation.closed }) {
+    signal?.throwIfAborted?.(); if (!isActive()) throw staleGeneration();
+    const signature = checkSignature(input, generation.userMessageId);
+    const existing = generation.pendingRuleRecords.find(record => record.kind === 'check' && record.signature === signature);
+    if (existing) return existing;
+    const reusable = generation.baseBranchId && ledger.findReusable({ baseBranchId: generation.baseBranchId, signature });
+    if (reusable) { generation.pendingRuleRecords.push(reusable); return reusable; }
+    if (generation.ruleReplayMode === 'reuse-only') throw new Error('Ordinary regeneration cannot create or reroll a formal check; use explicit reroll');
+    const result = await resolveCheck(input, structuredClone(generation.pendingRuleEffects.at(-1)?.nextState ?? generation.baseSnapshot)); signal?.throwIfAborted?.(); if (!isActive()) throw staleGeneration();
+    const record = ledger.createRecord({ kind: 'check', branchId: generation.branchId, signature, request: structuredClone(input), result: structuredClone(result) });
+    generation.pendingRuleRecords.push(record); return record;
+}
+function activeIdentity(getActiveGeneration, expected) { return getActiveGeneration() === expected; }
+function staleGeneration() { return new Error('active generation changed'); }
+function closedGeneration() { const error = new Error('active generation is closing'); error.code = 'generation-closed'; return error; }
+
+export function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateCheck, validateDamage, resolveCheck, resolveDamage, ledger }) {
+    const names = ['DualModelResolveD20Check', 'DualModelApplyD20Damage'];
+    const supportsD20 = preset => typeof preset?.readActor === 'function' && typeof preset?.writeActor === 'function';
+    const enabled = () => { const generation = getActiveGeneration(); const config = generation?.effectiveConfig ?? getConfig(); return Boolean(generation) && config?.enabled && supportsD20(generation.preset) && config.adjudication === 'automatic-tool'; };
+    const authorized = generation => generation?.effectiveConfig?.enabled && !generation.formalD20Blocked && supportsD20(generation.preset) && generation.effectiveConfig.adjudication === 'automatic-tool';
+    const discard = generation => { generation.ruleToolFailed = true; generation.pendingRuleRecords.length = 0; generation.pendingRuleEffects.length = 0; };
+    const enqueue = (generation, work) => {
+        if (generation.generationEnding || generation.closed) return Promise.reject(closedGeneration());
+        generation.ruleToolTail ??= Promise.resolve();
+        const run = generation.ruleToolTail.catch(() => undefined).then(async () => {
+            if (!activeIdentity(getActiveGeneration, generation)) throw staleGeneration();
+            if (generation.closed) throw closedGeneration();
+            if (!authorized(generation)) throw new Error('Rule tool is not authorized for this generation');
+            return work();
+        });
+        generation.ruleToolTail = run.catch(() => undefined);
+        return run.catch(error => { if (error?.code !== 'generation-closed') discard(generation); throw error; });
+    };
+    const sameCheck = (generation, key, work) => {
+        generation.ruleToolInflight ??= new Map();
+        if (!generation.ruleToolInflight.has(key)) {
+            generation.ruleToolInflight.set(key, enqueue(generation, work).finally(() => generation.ruleToolInflight.delete(key)));
+        }
+        return generation.ruleToolInflight.get(key);
+    };
+    const checkDefinition = {
+        name: names[0], displayName: 'Resolve D20 Check', description: 'Resolve a formal story check using authoritative character state. Never provide dice or modifiers.', parameters: checkSchema, shouldRegister: enabled, stealth: false,
+        formatMessage: input => `D20: ${input.actor} — ${input.action}`,
+        action: async input => {
+            const generation = getActiveGeneration(); if (!generation) throw new Error('No active generation');
+            if (generation.generationEnding || generation.closed) throw closedGeneration();
+            const validation = validateCheck(input); if (!validation.ok) { discard(generation); throw new Error(JSON.stringify(validation.errors)); }
+            const key = `check:${checkSignature(input, generation.userMessageId)}`;
+            return sameCheck(generation, key, async () => {
+                const record = await stageCheckRecord({ generation, input, ledger, resolveCheck });
+                if (!activeIdentity(getActiveGeneration, generation) || generation.closed) throw generation.closed ? closedGeneration() : staleGeneration();
+                return record;
+            });
+        },
+    };
+    const damageDefinition = {
+        name: names[1], displayName: 'Apply D20 Damage', description: 'Roll and apply authoritative damage to a target. Never provide rolled values or HP totals.', parameters: damageSchema, shouldRegister: enabled, stealth: false,
+        formatMessage: input => `Damage: ${input.target} — ${input.expression}`,
+        action: async input => {
+            const generation = getActiveGeneration(); if (!generation) throw new Error('No active generation');
+            if (generation.generationEnding || generation.closed) throw closedGeneration();
+            const validation = validateDamage(input); if (!validation.ok) { discard(generation); throw new Error(JSON.stringify(validation.errors)); }
+            return enqueue(generation, async () => {
+                const state = structuredClone(generation.pendingRuleEffects.at(-1)?.nextState ?? generation.baseSnapshot);
+                const resolved = await resolveDamage(input, state); if (!activeIdentity(getActiveGeneration, generation) || generation.closed) throw generation.closed ? closedGeneration() : staleGeneration();
+                const record = ledger.createRecord({ kind: 'damage', branchId: generation.branchId, request: structuredClone(input), result: structuredClone(resolved.audit) });
+                generation.pendingRuleRecords.push(record); generation.pendingRuleEffects.push({ record, nextState: structuredClone(resolved.state) }); return record;
+            });
+        },
+    };
+    const registered = new Set();
+    return { register() { for (const definition of [checkDefinition, damageDefinition]) try { adapter.registerTool(definition); registered.add(definition.name); } catch (error) { let cleanupError; for (const name of [...registered]) try { adapter.unregisterTool(name); registered.delete(name); } catch (failure) { cleanupError ??= failure; } throw error ?? cleanupError; } }, unregister() { let first; for (const name of [...registered]) try { adapter.unregisterTool(name); registered.delete(name); } catch (error) { first ??= error; } if (first) throw first; } };
+}

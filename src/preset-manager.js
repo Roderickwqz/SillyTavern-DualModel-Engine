@@ -1,0 +1,42 @@
+import Ajv from 'ajv';
+import presetSchema from '../schemas/preset.schema.json';
+import { DATA_SCHEMA_VERSION, PRESET_LIMITS } from './constants.js';
+import { decodePointer } from './json-patch.js';
+import { createCustomRuleAdapter } from './rules/custom.js';
+
+const forbidden = new Set(['$ref', '$dynamicRef', '$recursiveRef', 'pattern', 'patternProperties', 'format', 'allOf', 'anyOf', 'oneOf', 'not']);
+const dangerous = new Set(['__proto__', 'constructor', 'prototype']);
+const clone = value => structuredClone(value);
+function inspectObject(value) { if (!value || typeof value !== 'object') return; for (const [key, child] of Object.entries(value)) { if (dangerous.has(key)) throw new Error(`Unsafe key: ${key}`); inspectObject(child); } }
+function inspectSchema(node, depth = 0, counters = { properties: 0 }) { if (depth > PRESET_LIMITS.maxDepth) throw new Error(`Schema depth exceeds ${PRESET_LIMITS.maxDepth}`); if (!node || typeof node !== 'object') return; for (const key of Object.keys(node)) if (forbidden.has(key)) throw new Error(`Unsupported schema keyword: ${key}`); if (node.properties) counters.properties += Object.keys(node.properties).length; if (counters.properties > PRESET_LIMITS.maxProperties) throw new Error(`Schema properties exceed ${PRESET_LIMITS.maxProperties}`); if ((node.type === 'array' || (Array.isArray(node.type) && node.type.includes('array'))) && (!Number.isInteger(node.maxItems) || node.maxItems > PRESET_LIMITS.maxItems)) throw new Error(`Array maxItems must be at most ${PRESET_LIMITS.maxItems}`); for (const child of Object.values(node)) inspectSchema(child, depth + 1, counters); }
+function overlaps(a, b) { return a === '' || b === '' || a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`); }
+function validatePointers(preset) {
+    for (const path of [...preset.allowedPaths, ...preset.lockedPaths, ...preset.injection.map(x => x.path), ...preset.ui.map(x => x.path)]) decodePointer(path);
+    for (const a of preset.allowedPaths) for (const b of preset.lockedPaths) if (overlaps(a, b)) throw new Error(`Conflicting allowed and locked paths: ${a}, ${b}`);
+    if (preset.d20) for (const field of ['actorsPath', 'abilitiesPath', 'proficiencyBonusPath', 'proficientSkillsPath', 'hpPath', 'conditionsPath']) {
+        const path = preset.d20[field];
+        try { if (path === '' || typeof path !== 'string' || !path.startsWith('/')) throw new Error(); decodePointer(path); }
+        catch { throw new Error(`Invalid D20 path: ${field}`); }
+    }
+}
+
+export function createPresetManager({ settings, builtInPresets = [], registerPreset, unregisterPreset = () => {}, save, getReferences = () => [], stateStore }) {
+    if (!Array.isArray(settings.customPresets)) settings.customPresets = [];
+    const envelopeValidator = new Ajv({ allErrors: true, strict: false }).compile(presetSchema);
+    const builtIns = new Map(builtInPresets.map(p => [p.id, p])); const compiled = new Map();
+    function validate(raw) { inspectObject(raw); if (!envelopeValidator(raw)) throw new Error(`Invalid preset: ${(envelopeValidator.errors ?? []).map(e => e.message).join(', ')}`); inspectSchema(raw.stateSchema); validatePointers(raw); if (!raw.stateSchema.required?.includes('version') || raw.stateSchema.properties?.version?.type !== 'integer') throw new Error('State schema must require integer version'); if (raw.initialState.version !== 0) throw new Error('Initial state version must be 0'); if (raw.compatibleDataVersions.minimum > raw.compatibleDataVersions.maximum || raw.compatibleDataVersions.minimum > DATA_SCHEMA_VERSION || raw.compatibleDataVersions.maximum < DATA_SCHEMA_VERSION) throw new Error('Incompatible data version'); const check = new Ajv({ allErrors: true, strict: false }).compile(raw.stateSchema); if (!check(raw.initialState)) throw new Error('Initial state does not match schema'); }
+    function getPreset(id) { const value = compiled.get(id) ?? builtIns.get(id); if (!value) throw new Error(`Preset not found: ${id}`); return value; }
+    function compile(raw) { validate(raw); const value = createCustomRuleAdapter(raw); if (value.validateInvariants?.(raw.initialState).length) throw new Error('Initial state violates preset invariants'); return value; }
+    for (const raw of settings.customPresets) { const value = compile(raw); if (builtIns.has(raw.id) || compiled.has(raw.id)) throw new Error(`Duplicate preset ID: ${raw.id}`); compiled.set(raw.id, value); }
+    const registeredAtStartup = [];
+    try { for (const value of compiled.values()) { registerPreset(value); registeredAtStartup.push(value.id); } }
+    catch (error) { for (const id of registeredAtStartup) unregisterPreset(id); throw error; }
+    return {
+        async importPreset(text) { if (typeof text !== 'string') throw new TypeError('Preset text must be a string'); if (new TextEncoder().encode(text).byteLength > PRESET_LIMITS.maxBytes) throw new Error(`Preset exceeds ${PRESET_LIMITS.maxBytes} bytes`); let raw; try { raw = JSON.parse(text); } catch { throw new Error('Invalid preset JSON'); } inspectObject(raw); if (builtIns.has(raw?.id) || compiled.has(raw?.id)) throw new Error(`Duplicate preset ID: ${raw?.id}`); const value = compile(raw); registerPreset(value); const before = clone(settings.customPresets); settings.customPresets = [...before, clone(raw)]; compiled.set(raw.id, value); try { await save(); return { ok: true, preset: value }; } catch (error) { settings.customPresets = before; compiled.delete(raw.id); unregisterPreset(raw.id); throw error; } },
+        exportPreset(id) { const raw = settings.customPresets.find(item => item.id === id); if (!raw) throw new Error(`Custom preset not found: ${id}`); return JSON.stringify(clone(raw), null, 2); },
+        listPresets() { return [...builtIns.values()].map(item => ({ id: item.id, name: item.name, presetVersion: item.presetVersion, builtIn: true })).concat(settings.customPresets.map(item => ({ id: item.id, name: item.name, presetVersion: item.presetVersion, builtIn: false }))); }, getPreset,
+        bindCharacter(character, id) { const preset = getPreset(id); character.data ??= {}; character.data.extensions ??= {}; character.data.extensions.dualModelEngine ??= {}; character.data.extensions.dualModelEngine.rulePresetId = preset.id; character.data.extensions.dualModelEngine.presetVersion = preset.presetVersion; },
+        async bindChat(metadata, id, { confirmedReset = false } = {}) { const preset = getPreset(id); const current = metadata?.dualModelEngine?.preset; if (current?.id === preset.id && current.version === preset.presetVersion) return { ok: true, unchanged: true }; const summary = stateStore.describePresetReset?.(preset) ?? { targetPreset: preset.id }; if (!confirmedReset) return { ok: false, reason: 'preset-reset-required', summary, ...(builtIns.has(id) ? {} : { exportRawData: this.exportPreset.bind(this, id) }) }; return stateStore.resetForPreset(preset); },
+        async deletePreset(id) { if (builtIns.has(id)) throw new Error(`Built-in preset cannot be deleted: ${id}`); if (!compiled.has(id)) throw new Error(`Custom preset not found: ${id}`); const references = getReferences(id); if (references.length) throw new Error(`Preset is still referenced: ${JSON.stringify(references)}`); const before = clone(settings.customPresets); const existing = compiled.get(id); settings.customPresets = before.filter(item => item.id !== id); compiled.delete(id); try { await save(); unregisterPreset(id); } catch (error) { settings.customPresets = before; compiled.set(id, existing); throw error; } },
+    };
+}

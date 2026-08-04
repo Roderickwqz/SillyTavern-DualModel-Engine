@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "scene": { "location": "inn", "time": "night" },
+  "characters": { "Mira": { "attitude": "calm", "trust": 75, "injuries": [] } },
+  "inventory": [],
+  "quests": [],
+  "world_facts": [],
+  "promises": [],
+  "secrets": [],
+  "open_threads": [],
+  "director_hints": []
+}

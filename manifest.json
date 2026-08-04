@@ -1,0 +1,13 @@
+{
+  "display_name": "DualModel Engine",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "dist/index.js",
+  "css": "dist/style.css",
+  "author": "Roderickwqz",
+  "version": "1.0.0",
+  "homePage": "https://github.com/Roderickwqz/SillyTavern-DualModel-Engine",
+  "auto_update": true,
+  "minimum_client_version": "1.18.0"
+}

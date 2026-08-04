@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["base_version", "operations"],
+  "additionalProperties": false,
+  "properties": {
+    "base_version": { "type": "integer", "minimum": 0 },
+    "operations": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": ["op", "path", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "op": { "enum": ["add", "replace", "remove"] },
+          "path": { "type": "string", "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$", "maxLength": 500 },
+          "value": true,
+          "reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "allOf": [
+          { "if": { "properties": { "op": { "enum": ["add", "replace"] } } }, "then": { "required": ["value"] } }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["version", "scene", "characters", "inventory", "quests", "world_facts", "promises", "secrets", "open_threads", "director_hints", "actors"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "integer", "minimum": 0 },
+    "scene": { "type": "object", "required": ["location", "time"], "additionalProperties": false, "properties": { "location": { "type": "string", "maxLength": 500 }, "time": { "type": "string", "maxLength": 500 } } },
+    "characters": { "type": "object", "maxProperties": 100, "additionalProperties": { "type": "object", "required": ["attitude", "trust", "injuries"], "additionalProperties": false, "properties": { "attitude": { "type": "string", "maxLength": 200 }, "trust": { "type": "integer", "minimum": 0, "maximum": 100 }, "injuries": { "type": "array", "maxItems": 50, "items": { "type": "string", "maxLength": 300 } } } } },
+    "inventory": { "type": "array", "maxItems": 500, "items": { "type": "string", "maxLength": 300 } },
+    "quests": { "type": "array", "maxItems": 200, "items": { "type": "string", "maxLength": 500 } },
+    "world_facts": { "type": "array", "maxItems": 500, "items": { "type": "string", "maxLength": 500 } },
+    "promises": { "type": "array", "maxItems": 200, "items": { "type": "string", "maxLength": 500 } },
+    "secrets": { "type": "array", "maxItems": 200, "items": { "type": "string", "maxLength": 500 } },
+    "open_threads": { "type": "array", "maxItems": 200, "items": { "type": "string", "maxLength": 500 } },
+    "director_hints": { "type": "array", "maxItems": 100, "items": { "type": "string", "maxLength": 500 } },
+    "actors": {
+      "type": "object", "maxProperties": 100,
+      "additionalProperties": {
+        "type": "object", "required": ["abilities", "proficiencyBonus", "proficientSkills", "hp", "conditions"], "additionalProperties": false,
+        "properties": {
+          "abilities": { "type": "object", "required": ["strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"], "additionalProperties": false, "properties": { "strength": { "type": "integer", "minimum": 1, "maximum": 30 }, "dexterity": { "type": "integer", "minimum": 1, "maximum": 30 }, "constitution": { "type": "integer", "minimum": 1, "maximum": 30 }, "intelligence": { "type": "integer", "minimum": 1, "maximum": 30 }, "wisdom": { "type": "integer", "minimum": 1, "maximum": 30 }, "charisma": { "type": "integer", "minimum": 1, "maximum": 30 } } },
+          "proficiencyBonus": { "type": "integer", "minimum": 0, "maximum": 10 },
+          "proficientSkills": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 100 } },
+          "hp": { "type": "object", "required": ["current", "max", "temporary"], "additionalProperties": false, "properties": { "current": { "type": "integer", "minimum": 0, "maximum": 1000000 }, "max": { "type": "integer", "minimum": 0, "maximum": 1000000 }, "temporary": { "type": "integer", "minimum": 0, "maximum": 1000000 } } },
+          "conditions": { "type": "array", "maxItems": 100, "items": { "type": "string", "maxLength": 200 } }
+        }
+      }
+    }
+  }
+}

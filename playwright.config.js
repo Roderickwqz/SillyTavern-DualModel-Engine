@@ -1,0 +1,9 @@
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+    testDir: 'tests/e2e',
+    testMatch: '**/*.spec.js',
+    timeout: 30_000,
+    use: { baseURL: process.env.SILLYTAVERN_URL ?? 'http://127.0.0.1:8000' },
+    webServer: undefined,
+});
