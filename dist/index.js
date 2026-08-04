@@ -6736,7 +6736,7 @@ function createOrchestrator(deps) {
     const applied = deps.applyPatch({ state: captured.baseSnapshot, patch: response.patch, policy: captured.preset, validateState: (state) => deps.validator.validateState(captured.effectiveConfig.rulePresetId, state) });
     if (!applied.ok) throw new Error(JSON.stringify(applied.errors));
     applied.value.version = captured.baseVersion + 1;
-    return deps.store.commitSegment({ chatId: captured.chatId, message, messageId: captured.assistantMessageId, branchId: captured.branchId, swipeId: captured.swipeId, expectedHeadRevision: captured.expectedHeadRevision, baseStateVersion: captured.baseVersion, baseSnapshot: captured.baseSnapshot, requestId: captured.requestId, userMessageId: captured.userMessageId, patch: response.patch, checks: clone(captured.checks), assistantText, nextState: applied.value, isContinue: captured.type === "continue" });
+    return deps.store.commitSegment({ chatId: captured.chatId, message, messageId: captured.assistantMessageId, branchId: captured.branchId, swipeId: captured.swipeId, expectedHeadRevision: captured.expectedHeadRevision, baseStateVersion: captured.baseVersion, baseSnapshot: captured.baseSnapshot, requestId: captured.requestId, userMessageId: captured.userMessageId, patch: response.patch, checks: clone(captured.checks), assistantText, nextState: applied.value, isContinue: captured.type === "continue", signal });
   }
   async function replayTurn({ messageIndex, swipeId, baseSnapshot, signal }) {
     const current = context();
@@ -6768,7 +6768,7 @@ function createOrchestrator(deps) {
       const applied = deps.applyPatch({ state: baseSnapshot, patch: response.patch, policy: preset, validateState: (state) => deps.validator.validateState(config.rulePresetId, state) });
       if (!applied.ok) return { ok: false, reason: "invalid-state" };
       applied.value.version = baseSnapshot.version + 1;
-      const committed = await deps.store.commitSegment({ chatId: current.chatId, message: latestMessage, messageId: capturedMessageId, branchId: branch.branchId, swipeId, expectedHeadRevision: envelope.headRevision, baseStateVersion: baseSnapshot.version, baseSnapshot, requestId: deps.makeId?.() ?? crypto.randomUUID(), userMessageId: capturedUserId, patch: response.patch, checks, assistantText: capturedText, nextState: applied.value, isContinue: false });
+      const committed = await deps.store.commitSegment({ chatId: current.chatId, message: latestMessage, messageId: capturedMessageId, branchId: branch.branchId, swipeId, expectedHeadRevision: envelope.headRevision, baseStateVersion: baseSnapshot.version, baseSnapshot, requestId: deps.makeId?.() ?? crypto.randomUUID(), userMessageId: capturedUserId, patch: response.patch, checks, assistantText: capturedText, nextState: applied.value, isContinue: false, signal });
       return committed.ok ? { ok: true, snapshot: clone(applied.value), stateVersion: applied.value.version } : committed;
     } catch (error) {
       return { ok: false, reason: "replay-failed", error };
@@ -7087,6 +7087,7 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     const envelopeAfterHash = contextAfterHash?.chatMetadata?.[NAMESPACE];
     const staleAfterHash = validCommitContext(input, contextAfterHash, envelopeAfterHash, capturedChat);
     if (staleAfterHash) return result(staleAfterHash);
+    input.signal?.throwIfAborted?.();
     const metadataBefore = clone2(envelopeAfterHash);
     const messageExtraBefore = clone2(input.message.extra);
     const swipesBefore = clone2(input.message.swipe_info);

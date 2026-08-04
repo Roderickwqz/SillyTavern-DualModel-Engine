@@ -69,6 +69,12 @@ it('persists a new branch from its base snapshot, clones caller data, and increm
     expect(saveChat).toHaveBeenCalledTimes(1);
 });
 
+it('does not mutate after a delayed hash when its commit signal is aborted', async () => {
+    let resolveHash; const hashText = vi.fn(() => new Promise(resolve => { resolveHash = resolve; })); const { context, current, saveChat } = setup(); const store = createStateStore({ adapter: { getContext: () => context, saveChat }, makeId: () => 'generated', hashText }); const controller = new AbortController(); const before = structuredClone(context);
+    const pending = store.commitSegment(commitInput(current, { signal: controller.signal })); await vi.waitFor(() => expect(hashText).toHaveBeenCalledOnce()); controller.abort(); resolveHash('hash:answer');
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' }); expect(context).toEqual(before); expect(saveChat).not.toHaveBeenCalled();
+});
+
 it('marks only the still-matching branch failed transactionally', async () => {
     const { store, current, context, saveChat } = setup();
     await store.commitSegment(commitInput(current));

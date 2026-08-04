@@ -120,6 +120,7 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         const envelopeAfterHash = contextAfterHash?.chatMetadata?.[NAMESPACE];
         const staleAfterHash = validCommitContext(input, contextAfterHash, envelopeAfterHash, capturedChat);
         if (staleAfterHash) return result(staleAfterHash);
+        input.signal?.throwIfAborted?.();
 
         const metadataBefore = clone(envelopeAfterHash);
         const messageExtraBefore = clone(input.message.extra);
