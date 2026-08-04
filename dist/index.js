@@ -9354,7 +9354,7 @@ function createUIController(deps) {
       root.querySelector('[data-dme-role="patch-preview"]').textContent = JSON.stringify(result2.operations ?? tab.preview(before, parsed.value), null, 2);
       status = result2.reason ?? (result2.ok ? "State saved" : "State not saved");
     });
-    const damageInput = () => ({ target: root.querySelector('[data-dme-role="damage-target"]')?.value ?? "", expression: root.querySelector('[data-dme-role="damage-expression"]')?.value ?? "", type: root.querySelector('[data-dme-role="damage-type"]')?.value ?? "", reason: root.querySelector('[data-dme-role="damage-reason"]')?.value ?? "" });
+    const damageInput = () => ({ target: root.querySelector('[data-dme-role="damage-target"]')?.value ?? "", expression: root.querySelector('[data-dme-role="damage-expression"]')?.value ?? "", damageType: root.querySelector('[data-dme-role="damage-type"]')?.value ?? "", reason: root.querySelector('[data-dme-role="damage-reason"]')?.value ?? "" });
     const actions = { recalculate: deps.recalculateCurrentBranch ?? (() => deps.rollbackManager?.recalculate?.(deps.currentInvalidIndex?.()) ?? { ok: false, reason: "unavailable" }), reroll: deps.rerollSelectedCheck, "apply-damage": () => deps.applyManualDamage?.(damageInput()), resummarize: deps.resummarizeCurrentBranch, "import-preset": deps.importPresetFromPicker, "export-preset": deps.downloadPreset ?? exportRawData, "export-raw": deps.downloadRawData };
     if (actions[action]) return safe(actions[action]);
     if (action === "export-preset" && exportRawData) {
@@ -9522,18 +9522,24 @@ function createChatActions(deps) {
     applyDamage: async (input) => {
       const inputValidation = validateDamage(deps, input);
       if (!inputValidation?.ok) return { ok: false, reason: "invalid-damage", errors: inputValidation?.errors ?? [] };
-      return transaction("damage", async (captured) => {
-        const preset = deps.preset(captured.preset.id);
-        if (!preset?.readActor || !preset?.writeActor) return { ok: false, reason: "rules-unavailable" };
-        let resolved;
-        try {
-          resolved = createRuleEngine({ preset, nextUint32: deps.nextUint32 }).applyDamage(input, captured.envelope.activeSnapshot);
-        } catch (error) {
-          return { ok: false, reason: "invalid-damage", errors: [{ message: safeText(error?.message ?? error) }] };
-        }
-        resolved.state.version = captured.stateVersion + 1;
-        const valid = deps.validateState(captured.preset.id, resolved.state);
-        if (!valid.ok) return { ok: false, reason: "invalid-state", errors: valid.errors };
+      const captured = current(deps);
+      if (!captured) return { ok: false, reason: "not-writable" };
+      const preset = deps.preset(captured.preset.id);
+      if (!preset?.readActor || !preset?.writeActor) return { ok: false, reason: "rules-unavailable" };
+      let resolved;
+      try {
+        resolved = createRuleEngine({ preset, nextUint32: deps.nextUint32 }).applyDamage(input, captured.envelope.activeSnapshot);
+      } catch (error) {
+        return { ok: false, reason: "invalid-damage", errors: [{ message: safeText(error?.message ?? error) }] };
+      }
+      resolved.state.version = captured.stateVersion + 1;
+      const valid = deps.validateState(captured.preset.id, resolved.state);
+      if (!valid.ok) return { ok: false, reason: "invalid-state", errors: valid.errors };
+      const preview = { damage: structuredClone(resolved.damage), hpBefore: preset.readActor(captured.envelope.activeSnapshot, input.target)?.hp?.current, hpAfter: preset.readActor(resolved.state, input.target)?.hp?.current };
+      if (!await deps.confirm({ action: "apply-damage", preview })) return { ok: false, reason: "cancelled" };
+      return deps.queue.enqueue(captured.context.chatId, `damage-${deps.makeId()}`, async (signal) => {
+        signal.throwIfAborted();
+        if (!same(deps, captured)) return { ok: false, reason: "stale" };
         const record = deps.ledger.createRecord({ kind: "damage", branchId: captured.ref.branchId, request: structuredClone(input), result: structuredClone(resolved.damage) });
         const committed = await deps.store.commitCurrentBranchMutation({ chatId: captured.context.chatId, expectedHeadRevision: captured.headRevision, baseVersion: captured.stateVersion, activeRef: captured.ref, nextState: resolved.state, patch: { operations: [] }, source: "manual-damage", record });
         if (committed?.ok) deps.ledger.commit([committed.record ?? record]);
@@ -9613,6 +9619,22 @@ function diffState(before, after, path = "") {
   const operations = [];
   for (const key of /* @__PURE__ */ new Set([...Object.keys(before), ...Object.keys(after)])) operations.push(...diffState(before[key], after[key], `${path}/${pointer(key)}`));
   return operations;
+}
+function pickPresetFile() {
+  if (typeof document === "undefined") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/json,.json";
+    input.hidden = true;
+    const finish = (value) => {
+      input.remove();
+      resolve(value);
+    };
+    input.addEventListener("change", () => finish(input.files?.[0] ?? null), { once: true });
+    document.body.append(input);
+    input.click();
+  });
 }
 async function bootstrap({ adapter, dependencies } = {}) {
   const runtimeAdapter = adapter ?? (await import("./st-runtime-SR4MNLUA.js")).createRuntimeAdapter();
@@ -9753,7 +9775,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
     const content = details.content instanceof globalThis.HTMLElement ? details.content : Object.assign(document.createElement("div"), { textContent: details.message ?? JSON.stringify(details) });
     return await new context.Popup(content, context.POPUP_TYPE?.CONFIRM, "", {}).show() === context.POPUP_RESULT?.AFFIRMATIVE;
   });
-  const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: (id) => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), validateDamage: validate2(damageValidator), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex: resolved.currentInvalidIndex, pickFile: resolved.pickPresetFile, selectedCheck: resolved.selectedCheck, download: resolved.download });
+  const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: (id) => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), validateDamage: validate2(damageValidator), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex: resolved.currentInvalidIndex, pickFile: resolved.pickPresetFile ?? pickPresetFile, selectedCheck: resolved.selectedCheck, download: resolved.download });
   let ui;
   try {
     orchestrator.start();
@@ -9791,19 +9813,33 @@ async function bootstrap({ adapter, dependencies } = {}) {
         const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE];
         return presetManager.getPreset(envelope?.preset?.id)?.ui ?? [];
       },
-      listChecks: () => ledger.list(),
-      listHistory: () => (runtimeAdapter.getContext?.()?.chat ?? []).flatMap((message) => (message.swipe_info ?? []).flatMap((swipe) => swipe?.extra?.[NAMESPACE]?.branch?.segments ?? [])).map((segment) => ({ ...segment, status: segment.status ?? "committed" })),
-      listDiagnostics: () => runtimeAdapter.getSettings?.()?.[NAMESPACE]?.diagnostics ?? [],
+      listChecks: () => {
+        const ref = (store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE])?.activeRef;
+        return ref ? ledger.list().filter((record) => record.branchId === ref.branchId) : [];
+      },
+      listHistory: () => (runtimeAdapter.getContext?.()?.chat ?? []).flatMap((message) => (message.swipe_info ?? []).flatMap((swipe) => {
+        const branch = swipe?.extra?.[NAMESPACE]?.branch;
+        return (branch?.segments ?? []).map((segment) => ({ ...segment, status: branch.status ?? segment.status ?? "committed" }));
+      })),
+      listDiagnostics: () => {
+        const settings2 = runtimeAdapter.getSettings?.() ?? {};
+        return settings2.diagnostics ?? settings2[NAMESPACE]?.diagnostics ?? [];
+      },
       commitManualPatch: async (input) => {
         const context = runtimeAdapter.getContext?.();
         const envelope = store.loadEnvelope?.().value;
         if (!context?.chatId || context.groupId || orchestrator.getActiveGeneration?.()) return { ok: false, reason: "not-writable" };
-        const captured = { chatId: context.chatId, chat: context.chat, metadata: context.chatMetadata, ref: structuredClone(envelope?.activeRef), head: envelope?.headRevision };
+        const message = context.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === envelope?.activeRef?.messageId);
+        const swipe = message?.swipe_info?.[envelope?.activeRef?.swipeId];
+        const branch = swipe?.extra?.[NAMESPACE]?.branch;
+        const captured = { chatId: context.chatId, chat: context.chat, metadata: context.chatMetadata, envelope, preset: structuredClone(envelope?.preset), ref: structuredClone(envelope?.activeRef), head: envelope?.headRevision, message, swipe, branch };
         return queue.enqueue(captured.chatId, `editor-${makeId()}`, async (signal) => {
           signal.throwIfAborted();
           const latest = runtimeAdapter.getContext?.();
           const value = store.loadEnvelope?.().value;
-          if (latest?.chatId !== captured.chatId || latest.chat !== captured.chat || latest.chatMetadata !== captured.metadata || JSON.stringify(value?.activeRef) !== JSON.stringify(captured.ref) || value?.headRevision !== captured.head || value?.stateVersion !== input.baseVersion) return { ok: false, reason: "stale" };
+          const latestMessage = latest?.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === captured.ref?.messageId);
+          const latestSwipe = latestMessage?.swipe_info?.[captured.ref?.swipeId];
+          if (latest?.groupId || orchestrator.getActiveGeneration?.() || latest?.chatId !== captured.chatId || latest.chat !== captured.chat || latest.chatMetadata !== captured.metadata || value !== captured.envelope || JSON.stringify(value?.preset) !== JSON.stringify(captured.preset) || JSON.stringify(value?.activeRef) !== JSON.stringify(captured.ref) || value?.headRevision !== captured.head || value?.stateVersion !== input.baseVersion || latestMessage !== captured.message || latestSwipe !== captured.swipe || latestSwipe?.extra?.[NAMESPACE]?.branch !== captured.branch) return { ok: false, reason: "stale" };
           const nextState = structuredClone(input.nextState);
           nextState.version = input.baseVersion + 1;
           const valid = validator.validateState(value.preset?.id, nextState);

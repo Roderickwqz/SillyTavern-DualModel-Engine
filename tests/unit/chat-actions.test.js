@@ -40,6 +40,14 @@ it('rejects invalid manual damage before RNG and commits HP and record together'
     expect(h.store.commitCurrentBranchMutation).toHaveBeenCalledWith(expect.objectContaining({ source: 'manual-damage', record: expect.objectContaining({ kind: 'damage' }), nextState: expect.objectContaining({ version: 2 }) }));
 });
 
+it('stages damage once, confirms its HP preview, then commits that exact result', async () => {
+    const h = host();
+    await h.actions.applyDamage({ target: 'player', expression: '1d6', damageType: 'fire', reason: 'test' });
+    expect(h.deps.confirm).toHaveBeenCalledWith(expect.objectContaining({ action: 'apply-damage', preview: expect.objectContaining({ hpBefore: 8, hpAfter: 8 }) }));
+    expect(h.deps.nextUint32).toHaveBeenCalledTimes(1);
+    expect(h.store.commitCurrentBranchMutation).toHaveBeenCalledWith(expect.objectContaining({ nextState: expect.objectContaining({ actors: expect.objectContaining({ player: expect.objectContaining({ hp: expect.objectContaining({ current: 8, temporary: 0 }) }) }) }) }));
+});
+
 it('resummary sends the pinned capture and does not commit a stale candidate', async () => {
     const h = host();
     h.deps.queue.enqueue = async (_id, _key, task) => { h.envelope.preset = { id: 'other', version: 1 }; return task(new AbortController().signal); };

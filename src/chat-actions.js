@@ -55,13 +55,17 @@ export function createChatActions(deps) {
         applyDamage: async input => {
             const inputValidation = validateDamage(deps, input);
             if (!inputValidation?.ok) return { ok: false, reason: 'invalid-damage', errors: inputValidation?.errors ?? [] };
-            return transaction('damage', async captured => {
-                const preset = deps.preset(captured.preset.id); if (!preset?.readActor || !preset?.writeActor) return { ok: false, reason: 'rules-unavailable' };
-                let resolved;
-                try { resolved = createRuleEngine({ preset, nextUint32: deps.nextUint32 }).applyDamage(input, captured.envelope.activeSnapshot); }
-                catch (error) { return { ok: false, reason: 'invalid-damage', errors: [{ message: safeText(error?.message ?? error) }] }; }
-                resolved.state.version = captured.stateVersion + 1;
-                const valid = deps.validateState(captured.preset.id, resolved.state); if (!valid.ok) return { ok: false, reason: 'invalid-state', errors: valid.errors };
+            const captured = current(deps); if (!captured) return { ok: false, reason: 'not-writable' };
+            const preset = deps.preset(captured.preset.id); if (!preset?.readActor || !preset?.writeActor) return { ok: false, reason: 'rules-unavailable' };
+            let resolved;
+            try { resolved = createRuleEngine({ preset, nextUint32: deps.nextUint32 }).applyDamage(input, captured.envelope.activeSnapshot); }
+            catch (error) { return { ok: false, reason: 'invalid-damage', errors: [{ message: safeText(error?.message ?? error) }] }; }
+            resolved.state.version = captured.stateVersion + 1;
+            const valid = deps.validateState(captured.preset.id, resolved.state); if (!valid.ok) return { ok: false, reason: 'invalid-state', errors: valid.errors };
+            const preview = { damage: structuredClone(resolved.damage), hpBefore: preset.readActor(captured.envelope.activeSnapshot, input.target)?.hp?.current, hpAfter: preset.readActor(resolved.state, input.target)?.hp?.current };
+            if (!await deps.confirm({ action: 'apply-damage', preview })) return { ok: false, reason: 'cancelled' };
+            return deps.queue.enqueue(captured.context.chatId, `damage-${deps.makeId()}`, async signal => {
+                signal.throwIfAborted(); if (!same(deps, captured)) return { ok: false, reason: 'stale' };
                 const record = deps.ledger.createRecord({ kind: 'damage', branchId: captured.ref.branchId, request: structuredClone(input), result: structuredClone(resolved.damage) });
                 const committed = await deps.store.commitCurrentBranchMutation({ chatId: captured.context.chatId, expectedHeadRevision: captured.headRevision, baseVersion: captured.stateVersion, activeRef: captured.ref, nextState: resolved.state, patch: { operations: [] }, source: 'manual-damage', record });
                 if (committed?.ok) deps.ledger.commit([committed.record ?? record]); return committed;

@@ -35,6 +35,15 @@ function diffState(before, after, path = '') {
     for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) operations.push(...diffState(before[key], after[key], `${path}/${pointer(key)}`));
     return operations;
 }
+function pickPresetFile() {
+    if (typeof document === 'undefined') return Promise.resolve(null);
+    return new Promise(resolve => {
+        const input = document.createElement('input'); input.type = 'file'; input.accept = 'application/json,.json'; input.hidden = true;
+        const finish = value => { input.remove(); resolve(value); };
+        input.addEventListener('change', () => finish(input.files?.[0] ?? null), { once: true });
+        document.body.append(input); input.click();
+    });
+}
 
 export async function bootstrap({ adapter, dependencies } = {}) {
     const runtimeAdapter = adapter ?? (await import('./st-runtime.js')).createRuntimeAdapter();
@@ -119,7 +128,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     });
     const canRegisterTools = typeof runtimeAdapter.registerTool === 'function';
     const confirmAction = resolved.showConfirm ?? (async details => { const context = runtimeAdapter.getContext?.(); if (typeof context?.Popup !== 'function') return globalThis.window?.confirm(details.message ?? details.content?.textContent ?? 'Confirm') ?? false; const content = details.content instanceof globalThis.HTMLElement ? details.content : Object.assign(document.createElement('div'), { textContent: details.message ?? JSON.stringify(details) }); return (await new context.Popup(content, context.POPUP_TYPE?.CONFIRM, '', {}).show()) === context.POPUP_RESULT?.AFFIRMATIVE; });
-    const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: id => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), validateDamage: validate(damageValidator), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex: resolved.currentInvalidIndex, pickFile: resolved.pickPresetFile, selectedCheck: resolved.selectedCheck, download: resolved.download });
+    const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: id => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), validateDamage: validate(damageValidator), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex: resolved.currentInvalidIndex, pickFile: resolved.pickPresetFile ?? pickPresetFile, selectedCheck: resolved.selectedCheck, download: resolved.download });
     let ui;
     try {
         orchestrator.start();
@@ -140,16 +149,17 @@ export async function bootstrap({ adapter, dependencies } = {}) {
             diffState,
             getPresetPolicy: () => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; const preset = presetManager.getPreset(envelope?.preset?.id); return { allowedPaths: preset?.allowedPaths ?? [], lockedPaths: preset?.lockedPaths?.filter(path => path !== '/version') ?? [], ruleLockedPaths: preset?.ruleLockedPaths ?? [] }; },
             getPresetUiFields: () => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; return presetManager.getPreset(envelope?.preset?.id)?.ui ?? []; },
-            listChecks: () => ledger.list(),
-            listHistory: () => (runtimeAdapter.getContext?.()?.chat ?? []).flatMap(message => (message.swipe_info ?? []).flatMap(swipe => swipe?.extra?.[NAMESPACE]?.branch?.segments ?? [])).map(segment => ({ ...segment, status: segment.status ?? 'committed' })),
-            listDiagnostics: () => runtimeAdapter.getSettings?.()?.[NAMESPACE]?.diagnostics ?? [],
+            listChecks: () => { const ref = (store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE])?.activeRef; return ref ? ledger.list().filter(record => record.branchId === ref.branchId) : []; },
+            listHistory: () => (runtimeAdapter.getContext?.()?.chat ?? []).flatMap(message => (message.swipe_info ?? []).flatMap(swipe => { const branch = swipe?.extra?.[NAMESPACE]?.branch; return (branch?.segments ?? []).map(segment => ({ ...segment, status: branch.status ?? segment.status ?? 'committed' })); })),
+            listDiagnostics: () => { const settings = runtimeAdapter.getSettings?.() ?? {}; return settings.diagnostics ?? settings[NAMESPACE]?.diagnostics ?? []; },
             commitManualPatch: async input => {
                 const context = runtimeAdapter.getContext?.(); const envelope = store.loadEnvelope?.().value;
                 if (!context?.chatId || context.groupId || orchestrator.getActiveGeneration?.()) return { ok: false, reason: 'not-writable' };
-                const captured = { chatId: context.chatId, chat: context.chat, metadata: context.chatMetadata, ref: structuredClone(envelope?.activeRef), head: envelope?.headRevision };
+                const message = context.chat?.find(item => item?.extra?.[NAMESPACE]?.messageId === envelope?.activeRef?.messageId); const swipe = message?.swipe_info?.[envelope?.activeRef?.swipeId]; const branch = swipe?.extra?.[NAMESPACE]?.branch;
+                const captured = { chatId: context.chatId, chat: context.chat, metadata: context.chatMetadata, envelope, preset: structuredClone(envelope?.preset), ref: structuredClone(envelope?.activeRef), head: envelope?.headRevision, message, swipe, branch };
                 return queue.enqueue(captured.chatId, `editor-${makeId()}`, async signal => {
-                    signal.throwIfAborted(); const latest = runtimeAdapter.getContext?.(); const value = store.loadEnvelope?.().value;
-                    if (latest?.chatId !== captured.chatId || latest.chat !== captured.chat || latest.chatMetadata !== captured.metadata || JSON.stringify(value?.activeRef) !== JSON.stringify(captured.ref) || value?.headRevision !== captured.head || value?.stateVersion !== input.baseVersion) return { ok: false, reason: 'stale' };
+                    signal.throwIfAborted(); const latest = runtimeAdapter.getContext?.(); const value = store.loadEnvelope?.().value; const latestMessage = latest?.chat?.find(item => item?.extra?.[NAMESPACE]?.messageId === captured.ref?.messageId); const latestSwipe = latestMessage?.swipe_info?.[captured.ref?.swipeId];
+                    if (latest?.groupId || orchestrator.getActiveGeneration?.() || latest?.chatId !== captured.chatId || latest.chat !== captured.chat || latest.chatMetadata !== captured.metadata || value !== captured.envelope || JSON.stringify(value?.preset) !== JSON.stringify(captured.preset) || JSON.stringify(value?.activeRef) !== JSON.stringify(captured.ref) || value?.headRevision !== captured.head || value?.stateVersion !== input.baseVersion || latestMessage !== captured.message || latestSwipe !== captured.swipe || latestSwipe?.extra?.[NAMESPACE]?.branch !== captured.branch) return { ok: false, reason: 'stale' };
                     const nextState = structuredClone(input.nextState); nextState.version = input.baseVersion + 1;
                     const valid = validator.validateState(value.preset?.id, nextState); if (!valid.ok) return { ok: false, reason: 'invalid-state', errors: valid.errors };
                     return store.commitCurrentBranchMutation({ chatId: captured.chatId, expectedHeadRevision: captured.head, baseVersion: input.baseVersion, activeRef: captured.ref, nextState, patch: { base_version: input.baseVersion, operations: input.operations }, source: input.source });

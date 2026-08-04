@@ -11,3 +11,10 @@ function dependencies() {
 beforeEach(() => { document.body.innerHTML = '<div id="extensions_settings2"></div>'; });
 it('renders stale untrusted audit text without executable elements', () => { const box = document.createElement('div'); renderAudit(box, [{ kind: 'check', status: 'stale', action: '<img src=x>', reason: '<script>x</script>' }]); expect(box.textContent).toContain('<img src=x>'); expect(box.querySelector('img,script')).toBeNull(); });
 it.each([['recalculate', x => x.rollbackManager.recalculate], ['reroll', x => x.rerollSelectedCheck], ['apply-damage', x => x.applyManualDamage], ['resummarize', x => x.resummarizeCurrentBranch], ['import-preset', x => x.importPresetFromPicker], ['export-preset', x => x.downloadPreset], ['export-raw', x => x.downloadRawData]])('routes %s once', async (action, spy) => { const deps = dependencies(); const ui = createUIController(deps); await ui.mount(); document.querySelector(`[data-dme-action="${action}"]`).click(); await Promise.resolve(); expect(spy(deps)).toHaveBeenCalledOnce(); });
+
+it('uses schema-compatible damageType input', async () => {
+    const deps = dependencies(); const ui = createUIController(deps); await ui.mount();
+    document.querySelector('[data-dme-role="damage-type"]').value = 'fire';
+    document.querySelector('[data-dme-action="apply-damage"]').click(); await Promise.resolve();
+    expect(deps.applyManualDamage).toHaveBeenCalledWith(expect.objectContaining({ damageType: 'fire' }));
+});
