@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sillytavern_dualmodel_engine"
+version = "0.1.0"
+description = "project package"
+readme = "docs/README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["sillytavern_dualmodel_engine*"]

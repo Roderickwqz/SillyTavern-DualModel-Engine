@@ -1,0 +1,2 @@
+# Extra module paths (repo-relative). One per line.
+# Binds to docs/project/modules/<id>.md (optional: path → id). Creates <id>.md from code if missing.

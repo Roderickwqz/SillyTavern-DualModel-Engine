@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": "python3 .harness/scripts/cursor_memory_hook.py",
+        "matcher": "Write|StrReplace|Edit|NotebookEdit|apply_patch",
+        "timeout": 10
+      }
+    ]
+  }
+}

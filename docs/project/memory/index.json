@@ -1,0 +1,38 @@
+{
+  "items": [
+    {
+      "id": "C001",
+      "file": "docs/project/memory/constraints.md",
+      "title": "Overview directory is fixed",
+      "type": "constraint",
+      "scope": [
+        "docs/project/overview/"
+      ],
+      "tags": [
+        "documentation",
+        "overview",
+        "harness"
+      ],
+      "summary": "docs/project/overview/ may contain only instructions.md, project.md, and goal.md; no other files or subdirectories.",
+      "status": "active",
+      "added": "2026-06-02"
+    },
+    {
+      "id": "C002",
+      "file": "docs/project/memory/constraints.md",
+      "title": "Ideas are on-request only",
+      "type": "constraint",
+      "scope": [
+        "docs/ideas/"
+      ],
+      "tags": [
+        "documentation",
+        "ideas",
+        "harness"
+      ],
+      "summary": "Do not read docs/ideas/ unless the user explicitly requests a specific idea file.",
+      "status": "active",
+      "added": "2026-06-03"
+    }
+  ]
+}
