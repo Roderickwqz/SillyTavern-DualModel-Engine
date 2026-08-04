@@ -20,6 +20,7 @@ import { createRuleEngine } from './rule-engine.js';
 import { createWebCryptoUint32 } from './dice-engine.js';
 import { createPresetManager } from './preset-manager.js';
 import { createUIController } from './ui/controller.js';
+import { createChatActions } from './chat-actions.js';
 import d20Schema from '../schemas/d20.schema.json';
 import adjudicatorSchema from '../schemas/adjudicator.schema.json';
 import { NAMESPACE } from './constants.js';
@@ -58,7 +59,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     });
     const decisionAjv = new Ajv({ allErrors: true, strict: false });
     const decisionValidator = decisionAjv.compile({ $ref: '#/$defs/decision', ...adjudicatorSchema });
-    const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState, validateDecision: value => ({ ok: Boolean(decisionValidator(value)), errors: structuredClone(decisionValidator.errors ?? []) }) });
+    const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: (patch, input) => validator.validatePatch(input?.presetId, patch, input?.policy), validateState: (state, input) => validator.validateState(input?.presetId, state), validateDecision: value => ({ ok: Boolean(decisionValidator(value)), errors: structuredClone(decisionValidator.errors ?? []) }) });
     const queue = resolved.queue ?? createChatTaskQueue();
     const getEffectiveConfig = resolved.getConfig ?? (() => {
         const envelope = store.loadEnvelope?.();
@@ -117,6 +118,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         resolveDamage: async (input, state) => { const preset = orchestrator.getActiveGeneration()?.preset ?? d20LitePreset; const engine = createRuleEngine({ nextUint32, preset }); const hpBefore = preset.readActor(state, input.target)?.hp?.current; const result = engine.applyDamage(input, state); return { state: result.state, audit: { rolls: result.damage.rolls, raw: result.damage.rawTotal, total: result.damage.total, absorbed: result.damage.absorbed, hpBefore, hpAfter: preset.readActor(result.state, input.target)?.hp?.current } }; },
     });
     const canRegisterTools = typeof runtimeAdapter.registerTool === 'function';
+    const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: id => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), config: getEffectiveConfig, rollbackManager, confirm: resolved.showConfirm ?? (async () => true), currentInvalidIndex: resolved.currentInvalidIndex, pickFile: resolved.pickPresetFile, selectedCheck: resolved.selectedCheck });
     let ui;
     try {
         orchestrator.start();
@@ -149,6 +151,14 @@ export async function bootstrap({ adapter, dependencies } = {}) {
                     return store.commitCurrentBranchMutation({ chatId: captured.chatId, expectedHeadRevision: captured.head, baseVersion: input.baseVersion, activeRef: captured.ref, nextState, patch: { base_version: input.baseVersion, operations: input.operations }, source: input.source });
                 });
             },
+            rollbackManager,
+            currentInvalidIndex: resolved.currentInvalidIndex,
+            rerollSelectedCheck: chatActions.reroll,
+            applyManualDamage: input => chatActions.applyDamage(input),
+            resummarizeCurrentBranch: chatActions.resummarize,
+            importPresetFromPicker: chatActions.importPreset,
+            downloadPreset: () => chatActions.exportPreset((store.loadEnvelope?.().value ?? {}).preset?.id),
+            downloadRawData: chatActions.exportRaw,
             bindCharacterPreset: async id => {
                 const character = runtimeAdapter.getCurrentCharacter?.(); if (!character) throw new Error('Current character is unavailable');
                 character.data ??= {}; character.data.extensions ??= {}; const had = Object.hasOwn(character.data.extensions, NAMESPACE); const before = structuredClone(character.data.extensions[NAMESPACE]);

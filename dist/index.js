@@ -6695,16 +6695,16 @@ function createOrchestrator(deps) {
     return next;
   }
   async function initializeChat() {
-    const current = context();
-    activeChatId = current.chatId;
+    const current2 = context();
+    activeChatId = current2.chatId;
     const config = deps.getConfig();
-    if (current.groupId || !config.enabled) {
+    if (current2.groupId || !config.enabled) {
       try {
         deps.promptInjector.clear();
       } catch (error) {
         diagnostic({ reason: "prompt-clear-failed", error });
       }
-      return { enabled: false, reason: current.groupId ? "group-chat" : "disabled" };
+      return { enabled: false, reason: current2.groupId ? "group-chat" : "disabled" };
     }
     try {
       await deps.rollbackManager?.repairOrphanedHead?.();
@@ -6751,12 +6751,12 @@ function createOrchestrator(deps) {
     }
     return { enabled: true };
   }
-  function capture(type, current, envelope, config, preset) {
-    const target = ["swipe", "continue", "regenerate"].includes(type) ? current.chat.findLast(isFinalAssistant) : null;
+  function capture(type, current2, envelope, config, preset) {
+    const target = ["swipe", "continue", "regenerate"].includes(type) ? current2.chat.findLast(isFinalAssistant) : null;
     const targetId = target ? messageId(target) : null;
-    const previousUser = current.chat.findLast((m) => m.is_user);
+    const previousUser = current2.chat.findLast((m) => m.is_user);
     const existing = deps.store.getBranch?.(target, target?.swipe_id ?? 0);
-    const prepared = ["swipe", "regenerate"].includes(type) ? deps.rollbackManager?.prepareSwipeGeneration?.(current.chat.length - 1, type) ?? deps.prepareSwipeGeneration?.({ type, target, envelope }) : null;
+    const prepared = ["swipe", "regenerate"].includes(type) ? deps.rollbackManager?.prepareSwipeGeneration?.(current2.chat.length - 1, type) ?? deps.prepareSwipeGeneration?.({ type, target, envelope }) : null;
     if (prepared?.ok === false) return null;
     const branch = type === "continue" ? existing?.branchId : null;
     const abortController = new AbortController();
@@ -6764,13 +6764,13 @@ function createOrchestrator(deps) {
     const cancelled = new Promise((resolve) => {
       cancel = resolve;
     });
-    return { type, chatId: current.chatId, expectedHeadRevision: prepared?.expectedHeadRevision ?? envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (["swipe", "regenerate"].includes(type) ? existing?.branchId ?? null : null), baseSwipeId: prepared?.baseSwipeId ?? (["swipe", "regenerate"].includes(type) ? target?.swipe_id ?? 0 : null), reusableChecks: clone(prepared?.reusableChecks ?? []), pendingRuleRecords: [], pendingRuleEffects: [], ruleReplayMode: ["swipe", "regenerate"].includes(type) ? "reuse-only" : null, effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === "continue" ? target?.mes ?? "" : null, playerText: previousUser?.mes ?? "", userMessageId: previousUser ? messageId(previousUser) : null, abortController, cancelled, cancel };
+    return { type, chatId: current2.chatId, expectedHeadRevision: prepared?.expectedHeadRevision ?? envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (["swipe", "regenerate"].includes(type) ? existing?.branchId ?? null : null), baseSwipeId: prepared?.baseSwipeId ?? (["swipe", "regenerate"].includes(type) ? target?.swipe_id ?? 0 : null), reusableChecks: clone(prepared?.reusableChecks ?? []), pendingRuleRecords: [], pendingRuleEffects: [], ruleReplayMode: ["swipe", "regenerate"].includes(type) ? "reuse-only" : null, effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === "continue" ? target?.mes ?? "" : null, playerText: previousUser?.mes ?? "", userMessageId: previousUser ? messageId(previousUser) : null, abortController, cancelled, cancel };
   }
   async function beforeGeneration(type) {
     if (!supported.has(type)) return { ignored: true, reason: "unsupported-generation-type" };
     if (generation) return { ignored: true, reason: "tool-recursion" };
     await deps.queue.waitForIdle(activeChatId ?? context().chatId);
-    const current = context();
+    const current2 = context();
     const loaded = deps.store.loadEnvelope();
     const envelope = envelopeValue(loaded);
     const config = clone(deps.getConfig());
@@ -6778,9 +6778,9 @@ function createOrchestrator(deps) {
       diagnostic({ reason: "missing-envelope" });
       return { ignored: true, reason: "missing-envelope" };
     }
-    if (current.groupId || !config.enabled) {
+    if (current2.groupId || !config.enabled) {
       deps.promptInjector.clear();
-      return { ignored: true, reason: current.groupId ? "group-chat" : "disabled" };
+      return { ignored: true, reason: current2.groupId ? "group-chat" : "disabled" };
     }
     if (!deps.hasProfile(config.recorderProfileId)) {
       diagnostic({ reason: "missing-recorder-profile", profileId: config.recorderProfileId });
@@ -6792,8 +6792,8 @@ function createOrchestrator(deps) {
       return { ignored: true, reason: "missing-preset" };
     }
     const pinnedConfig = { ...config, rulePresetId: envelope.preset.id, presetVersion: envelope.preset.version };
-    activeChatId = current.chatId;
-    generation = capture(type, current, envelope, pinnedConfig, preset);
+    activeChatId = current2.chatId;
+    generation = capture(type, current2, envelope, pinnedConfig, preset);
     if (!generation) {
       diagnostic({ reason: "missing-source-branch" });
       return { ignored: true, reason: "missing-source-branch" };
@@ -6843,10 +6843,10 @@ function createOrchestrator(deps) {
   function isFinalAssistant(message) {
     return !message?.is_user && !message?.is_system && !message?.extra?.tool_invocations && !message?.extra?.tool_call_id && !message?.extra?.tool_calls && !message?.tool_calls;
   }
-  function locate(current, captured) {
-    if (current.chatId !== captured.chatId) return { ok: false, reason: "stale-chat" };
-    const index = ["swipe", "continue"].includes(captured.type) ? current.chat.findIndex((m) => m.extra?.dualModelEngine?.messageId === captured.targetMessageId && isFinalAssistant(m)) : current.chat.findLastIndex(isFinalAssistant);
-    return index < 0 ? { ok: false, reason: "missing-final-message" } : { ok: true, message: current.chat[index], messageIndex: index };
+  function locate(current2, captured) {
+    if (current2.chatId !== captured.chatId) return { ok: false, reason: "stale-chat" };
+    const index = ["swipe", "continue"].includes(captured.type) ? current2.chat.findIndex((m) => m.extra?.dualModelEngine?.messageId === captured.targetMessageId && isFinalAssistant(m)) : current2.chat.findLastIndex(isFinalAssistant);
+    return index < 0 ? { ok: false, reason: "missing-final-message" } : { ok: true, message: current2.chat[index], messageIndex: index };
   }
   async function process(captured, _message, signal) {
     const now = context();
@@ -6857,7 +6857,7 @@ function createOrchestrator(deps) {
     if (captured.type === "continue" && (!message.mes.startsWith(captured.assistantText) || message.mes.length < captured.assistantText.length)) return { ok: false, reason: "stale-message" };
     const checks = clone(captured.checks);
     const authoritativeState = captured.pendingRuleEffects.at(-1)?.nextState ?? captured.baseSnapshot;
-    const response = await deps.modelService.requestPatch({ profileId: captured.effectiveConfig.recorderProfileId, baseVersion: captured.baseVersion, oldState: authoritativeState, playerText: captured.playerText, assistantText, checks, signal });
+    const response = await deps.modelService.requestPatch({ profileId: captured.effectiveConfig.recorderProfileId, presetId: captured.preset.id, policy: { expectedVersion: captured.baseVersion, allowedPaths: captured.preset.allowedPaths, lockedPaths: [...captured.preset.lockedPaths, ...captured.preset.ruleLockedPaths ?? []] }, baseVersion: captured.baseVersion, oldState: authoritativeState, playerText: captured.playerText, assistantText, checks, signal });
     signal?.throwIfAborted?.();
     const validation = deps.validator.validatePatch(captured.effectiveConfig.rulePresetId, response.patch, { expectedVersion: captured.baseVersion, allowedPaths: captured.preset.allowedPaths, lockedPaths: [...captured.preset.lockedPaths, ...captured.preset.ruleLockedPaths ?? []] });
     if (!validation.ok) throw new Error(JSON.stringify(validation.errors));
@@ -6870,11 +6870,11 @@ function createOrchestrator(deps) {
     return committed;
   }
   async function replayTurn({ messageIndex, swipeId, baseSnapshot, signal }) {
-    const current = context();
+    const current2 = context();
     const config = clone(deps.getConfig());
-    if (current.groupId || !config.enabled) return { ok: false, reason: "read-only" };
+    if (current2.groupId || !config.enabled) return { ok: false, reason: "read-only" };
     if (!deps.hasProfile(config.recorderProfileId)) return { ok: false, reason: "missing-recorder-profile" };
-    const message = current.chat[messageIndex];
+    const message = current2.chat[messageIndex];
     if (!message || message.is_user || message.is_system || (message.swipe_id ?? 0) !== swipeId) return { ok: false, reason: "stale-message" };
     const branch = deps.store.getBranch(message, swipeId);
     if (!branch?.branchId) return { ok: false, reason: "missing-source-branch" };
@@ -6883,24 +6883,24 @@ function createOrchestrator(deps) {
     const pinnedConfig = { ...config, rulePresetId: envelope.preset.id, presetVersion: envelope.preset.version };
     const preset = presetOrNull(pinnedConfig.rulePresetId);
     if (!preset) return { ok: false, reason: "missing-preset" };
-    const previousUser = current.chat.slice(0, messageIndex).findLast((item) => item?.is_user);
+    const previousUser = current2.chat.slice(0, messageIndex).findLast((item) => item?.is_user);
     const capturedMessageId = messageId(message);
     const capturedText = message.mes ?? "";
     const capturedUserId = previousUser ? messageId(previousUser) : null;
     const capturedUserText = previousUser?.mes ?? "";
     const checks = clone(branch.segments?.flatMap((segment) => segment.checks ?? []) ?? []);
     try {
-      const response = await deps.modelService.requestPatch({ profileId: pinnedConfig.recorderProfileId, baseVersion: baseSnapshot.version, oldState: baseSnapshot, playerText: capturedUserText, assistantText: capturedText, checks, signal });
+      const response = await deps.modelService.requestPatch({ profileId: pinnedConfig.recorderProfileId, presetId: preset.id, policy: { expectedVersion: baseSnapshot.version, allowedPaths: preset.allowedPaths, lockedPaths: [...preset.lockedPaths, ...preset.ruleLockedPaths ?? []] }, baseVersion: baseSnapshot.version, oldState: baseSnapshot, playerText: capturedUserText, assistantText: capturedText, checks, signal });
       const latest = context();
       const latestMessage = latest.chat?.find((item) => item?.extra?.dualModelEngine?.messageId === capturedMessageId);
       const latestUser = capturedUserId ? latest.chat?.find((item) => item?.extra?.dualModelEngine?.messageId === capturedUserId) : null;
-      if (latest.chatId !== current.chatId || !latestMessage || latestMessage.mes !== capturedText || (latestMessage.swipe_id ?? 0) !== swipeId || capturedUserId && (!latestUser || latestUser.mes !== capturedUserText)) return { ok: false, reason: "assistant-text-mismatch" };
+      if (latest.chatId !== current2.chatId || !latestMessage || latestMessage.mes !== capturedText || (latestMessage.swipe_id ?? 0) !== swipeId || capturedUserId && (!latestUser || latestUser.mes !== capturedUserText)) return { ok: false, reason: "assistant-text-mismatch" };
       const validation = deps.validator.validatePatch(pinnedConfig.rulePresetId, response.patch, { expectedVersion: baseSnapshot.version, allowedPaths: preset.allowedPaths, lockedPaths: [...preset.lockedPaths, ...preset.ruleLockedPaths ?? []] });
       if (!validation.ok) return { ok: false, reason: "invalid-patch" };
       const applied = deps.applyPatch({ state: baseSnapshot, patch: response.patch, policy: preset, validateState: (state) => deps.validator.validateState(pinnedConfig.rulePresetId, state) });
       if (!applied.ok) return { ok: false, reason: "invalid-state" };
       applied.value.version = baseSnapshot.version + 1;
-      const committed = await deps.store.commitSegment({ chatId: current.chatId, message: latestMessage, messageId: capturedMessageId, branchId: branch.branchId, swipeId, expectedHeadRevision: envelope.headRevision, baseStateVersion: baseSnapshot.version, baseSnapshot, requestId: deps.makeId?.() ?? crypto.randomUUID(), userMessageId: capturedUserId, patch: response.patch, checks, assistantText: capturedText, nextState: applied.value, isContinue: false, signal });
+      const committed = await deps.store.commitSegment({ chatId: current2.chatId, message: latestMessage, messageId: capturedMessageId, branchId: branch.branchId, swipeId, expectedHeadRevision: envelope.headRevision, baseStateVersion: baseSnapshot.version, baseSnapshot, requestId: deps.makeId?.() ?? crypto.randomUUID(), userMessageId: capturedUserId, patch: response.patch, checks, assistantText: capturedText, nextState: applied.value, isContinue: false, signal });
       return committed.ok ? { ok: true, snapshot: clone(applied.value), stateVersion: applied.value.version } : committed;
     } catch (error) {
       if (error?.name === "AbortError") throw error;
@@ -7113,9 +7113,9 @@ function isObject(value) {
 }
 function ensureMessageId(message, makeId = () => crypto.randomUUID()) {
   message.extra ??= {};
-  const current = namespace(message.extra);
-  current.messageId ??= makeId();
-  const messageId = current.messageId;
+  const current2 = namespace(message.extra);
+  current2.messageId ??= makeId();
+  const messageId = current2.messageId;
   for (const swipe of Array.isArray(message.swipe_info) ? message.swipe_info : []) {
     if (!isObject(swipe)) continue;
     swipe.extra ??= {};
@@ -7206,10 +7206,10 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     const swipe = message.swipe_info[swipeId];
     swipe.extra ??= {};
     swipe.extra[NAMESPACE] ??= {};
-    const current = swipe.extra[NAMESPACE];
-    current.messageId = message.extra[NAMESPACE].messageId;
-    if (!current.branch || replaceExisting && current.branch.branchId !== branchId) {
-      current.branch = {
+    const current2 = swipe.extra[NAMESPACE];
+    current2.messageId = message.extra[NAMESPACE].messageId;
+    if (!current2.branch || replaceExisting && current2.branch.branchId !== branchId) {
+      current2.branch = {
         branchId: branchId ?? makeId(),
         baseStateVersion,
         baseSnapshot: baseSnapshotCopy,
@@ -7217,8 +7217,8 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
         status: "pending"
       };
     }
-    message.extra[NAMESPACE] = clone2(current);
-    return current.branch;
+    message.extra[NAMESPACE] = clone2(current2);
+    return current2.branch;
   }
   function validCommitContext(input, context, envelope, capturedChat = null) {
     if (!context || context.chatId !== input.chatId) return "stale-chat";
@@ -7334,7 +7334,8 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     try {
       const latest = adapter.getContext?.();
       if (latest?.chatId !== chatId || latest.chat !== capturedChat || latest.chatMetadata?.[NAMESPACE] !== envelope || envelope.headRevision !== expectedHeadRevision || envelope.stateVersion !== baseVersion) return result("stale-chat");
-      const segment = { source, patch: clone2(patch ?? { operations: [] }), checks: record ? [clone2(record)] : [], postSnapshot: clone2(nextState) };
+      const prior = branch.segments.at(-1);
+      const segment = { requestId: prior.requestId, userMessageId: prior.userMessageId ?? null, assistantTextHash: prior.assistantTextHash, source, patch: clone2(patch ?? { operations: [] }), checks: record ? [clone2(record)] : [], postSnapshot: clone2(nextState) };
       branch.segments.push(segment);
       message.extra[NAMESPACE] = clone2(message.swipe_info[activeRef.swipeId].extra[NAMESPACE]);
       envelope.activeSnapshot = clone2(nextState);
@@ -8178,9 +8179,9 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
     return (context().chat ?? []).map(messageIdentity);
   }
   function changedBoundary() {
-    const current = snapshotChat();
-    const common = Math.min(messageSnapshot.length, current.length);
-    for (let index = 0; index < common; index += 1) if (messageSnapshot[index] !== current[index]) return index;
+    const current2 = snapshotChat();
+    const common = Math.min(messageSnapshot.length, current2.length);
+    for (let index = 0; index < common; index += 1) if (messageSnapshot[index] !== current2[index]) return index;
     return common;
   }
   function replacementDeletion(boundary) {
@@ -8216,9 +8217,9 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
     return serialize("recover-delete", recoverAfterDeleteNow);
   }
   async function abortReplacement() {
-    const current = context().chatId;
-    const shouldRecover = replacement?.deleted && replacement.chatId === current;
-    const deferred = replacement?.deleted && replacement.chatId !== current;
+    const current2 = context().chatId;
+    const shouldRecover = replacement?.deleted && replacement.chatId === current2;
+    const deferred = replacement?.deleted && replacement.chatId !== current2;
     replacement = null;
     return shouldRecover ? recoverAfterDelete() : { ok: true, recovered: false, deferred: Boolean(deferred) };
   }
@@ -8274,8 +8275,8 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
     const start = message?.is_user ? messageIndex + 1 : messageIndex;
     const startSwipeId = message?.swipe_id ?? 0;
     return serialize("invalidate-edit", (signal) => {
-      const current = context().chat[messageIndex];
-      if (!message || current !== message || current.extra?.dualModelEngine?.messageId !== messageId) return { ok: false, reason: "stale-message" };
+      const current2 = context().chat[messageIndex];
+      if (!message || current2 !== message || current2.extra?.dualModelEngine?.messageId !== messageId) return { ok: false, reason: "stale-message" };
       return invalidateAndRecalculate(start, { includeStartSelectedOnly: !message.is_user, ...!message.is_user ? { startSwipeId } : {} }, signal);
     });
   }
@@ -8310,13 +8311,13 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
         const previousSwipeId = selectedSwipes.get(index) ?? 0;
         const swipe = message?.swipe_id ?? 0;
         const previous = store.getBranch?.(message, previousSwipeId);
-        const current = store.getBranch?.(message, swipe);
+        const current2 = store.getBranch?.(message, swipe);
         selectedSwipes.set(index, swipe);
         if (pendingSwipeSources.get(index) === swipe) {
           pendingSwipeSources.delete(index);
           return restoreSwipe(index, swipe);
         }
-        if (!current || swipe !== previousSwipeId && current.branchId === previous?.branchId) {
+        if (!current2 || swipe !== previousSwipeId && current2.branchId === previous?.branchId) {
           pendingSwipeSources.set(index, previousSwipeId);
           return { ok: true, pendingGeneration: true, sourceSwipeId: previousSwipeId };
         }
@@ -9064,8 +9065,8 @@ function createPresetManager({ settings, builtInPresets = [], registerPreset, un
     },
     async bindChat(metadata, id, { confirmedReset = false } = {}) {
       const preset = getPreset(id);
-      const current = metadata?.dualModelEngine?.preset;
-      if (current?.id === preset.id && current.version === preset.presetVersion) return { ok: true, unchanged: true };
+      const current2 = metadata?.dualModelEngine?.preset;
+      if (current2?.id === preset.id && current2.version === preset.presetVersion) return { ok: true, unchanged: true };
       const summary = stateStore.describePresetReset?.(preset) ?? { targetPreset: preset.id };
       if (!confirmedReset) return { ok: false, reason: "preset-reset-required", summary, ...builtIns.has(id) ? {} : { exportRawData: this.exportPreset.bind(this, id) } };
       return stateStore.resetForPreset(preset);
@@ -9092,7 +9093,7 @@ function createPresetManager({ settings, builtInPresets = [], registerPreset, un
 }
 
 // src/ui/settings.html?raw
-var settings_default = '<section id="dualmodel-settings" class="dualmodel-panel" aria-label="DualModel Engine">\n  <h3>DualModel Engine</h3>\n  <fieldset data-scope="global"><legend>Global defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <label>Update policy <select data-dme-field="updatePolicy"><option value="after-each-reply">After each reply</option><option value="manual">Manual</option></select></label>\n    <label><input data-dme-field="showStatusBar" type="checkbox"> Show status bar</label>\n  </fieldset>\n  <fieldset data-scope="character" data-dme-role="character-settings"><legend>Current character defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n  </fieldset>\n  <fieldset data-scope="chat" data-dme-role="chat-settings"><legend>Current chat</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <output data-dme-role="chat-disabled-reason" aria-live="polite"></output>\n  </fieldset>\n  <output data-dme-role="task-status" aria-live="polite"></output>\n  <div role="tablist" aria-label="DualModel chat tools">\n    <button type="button" role="tab" aria-controls="dme-state" aria-selected="true" data-dme-tab="state">State</button><button type="button" role="tab" aria-controls="dme-checks" aria-selected="false" data-dme-tab="checks">Checks</button><button type="button" role="tab" aria-controls="dme-history" aria-selected="false" data-dme-tab="history">History</button><button type="button" role="tab" aria-controls="dme-rules" aria-selected="false" data-dme-tab="rules">Rules</button><button type="button" role="tab" aria-controls="dme-diagnostics" aria-selected="false" data-dme-tab="diagnostics">Diagnostics</button>\n  </div>\n  <aside data-dme-role="status-bar" aria-live="polite"></aside>\n  <section id="dme-state" role="tabpanel"><textarea data-dme-role="state-json"></textarea><pre data-dme-role="patch-preview"></pre><button type="button" data-dme-action="edit-state">Edit state</button><button type="button" data-dme-action="save-state">Save state</button></section>\n  <section id="dme-checks" role="tabpanel" hidden><div data-dme-role="checks-list"></div><button type="button" data-dme-action="reroll">Reroll</button><button type="button" data-dme-action="apply-damage">Apply damage</button></section>\n  <section id="dme-history" role="tabpanel" hidden><div data-dme-role="history-list"></div><button type="button" data-dme-action="recalculate">Recalculate</button><button type="button" data-dme-action="resummarize">Resummarize</button></section>\n  <section id="dme-rules" role="tabpanel" hidden><div data-dme-role="rules-list"></div><button type="button" data-dme-action="import-preset">Import</button><button type="button" data-dme-action="export-preset">Export</button></section>\n  <section id="dme-diagnostics" role="tabpanel" hidden><pre data-dme-role="diagnostics-json"></pre><button type="button" data-dme-action="export-raw">Export raw data</button></section>\n  <button type="button" data-dme-action="probe-tools">Probe tool calling</button>\n  <pre data-dme-role="diagnostic-reasons"></pre>\n</section>\n';
+var settings_default = '<section id="dualmodel-settings" class="dualmodel-panel" aria-label="DualModel Engine">\n  <h3>DualModel Engine</h3>\n  <fieldset data-scope="global"><legend>Global defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <label>Update policy <select data-dme-field="updatePolicy"><option value="after-each-reply">After each reply</option><option value="manual">Manual</option></select></label>\n    <label><input data-dme-field="showStatusBar" type="checkbox"> Show status bar</label>\n  </fieldset>\n  <fieldset data-scope="character" data-dme-role="character-settings"><legend>Current character defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n  </fieldset>\n  <fieldset data-scope="chat" data-dme-role="chat-settings"><legend>Current chat</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <output data-dme-role="chat-disabled-reason" aria-live="polite"></output>\n  </fieldset>\n  <output data-dme-role="task-status" aria-live="polite"></output>\n  <div role="tablist" aria-label="DualModel chat tools">\n    <button type="button" role="tab" aria-controls="dme-state" aria-selected="true" data-dme-tab="state">State</button><button type="button" role="tab" aria-controls="dme-checks" aria-selected="false" data-dme-tab="checks">Checks</button><button type="button" role="tab" aria-controls="dme-history" aria-selected="false" data-dme-tab="history">History</button><button type="button" role="tab" aria-controls="dme-rules" aria-selected="false" data-dme-tab="rules">Rules</button><button type="button" role="tab" aria-controls="dme-diagnostics" aria-selected="false" data-dme-tab="diagnostics">Diagnostics</button>\n  </div>\n  <aside data-dme-role="status-bar" aria-live="polite"></aside>\n  <section id="dme-state" role="tabpanel"><textarea data-dme-role="state-json"></textarea><pre data-dme-role="patch-preview"></pre><button type="button" data-dme-action="edit-state">Edit state</button><button type="button" data-dme-action="save-state">Save state</button></section>\n  <section id="dme-checks" role="tabpanel" hidden><div data-dme-role="checks-list"></div><label>Target <input data-dme-role="damage-target"></label><label>Damage <input data-dme-role="damage-expression"></label><label>Type <input data-dme-role="damage-type"></label><label>Reason <input data-dme-role="damage-reason"></label><button type="button" data-dme-action="reroll">Reroll</button><button type="button" data-dme-action="apply-damage">Apply damage</button></section>\n  <section id="dme-history" role="tabpanel" hidden><div data-dme-role="history-list"></div><button type="button" data-dme-action="recalculate">Recalculate</button><button type="button" data-dme-action="resummarize">Resummarize</button></section>\n  <section id="dme-rules" role="tabpanel" hidden><div data-dme-role="rules-list"></div><button type="button" data-dme-action="import-preset">Import</button><button type="button" data-dme-action="export-preset">Export</button></section>\n  <section id="dme-diagnostics" role="tabpanel" hidden><pre data-dme-role="diagnostics-json"></pre><button type="button" data-dme-action="export-raw">Export raw data</button></section>\n  <button type="button" data-dme-action="probe-tools">Probe tool calling</button>\n  <pre data-dme-role="diagnostic-reasons"></pre>\n</section>\n';
 
 // src/ui/state-tab.js
 function touches(operation, path) {
@@ -9342,7 +9343,8 @@ function createUIController(deps) {
       root.querySelector('[data-dme-role="patch-preview"]').textContent = JSON.stringify(result2.operations ?? tab.preview(before, parsed.value), null, 2);
       status = result2.reason ?? (result2.ok ? "State saved" : "State not saved");
     });
-    const actions = { recalculate: () => deps.rollbackManager?.recalculate?.(deps.currentInvalidIndex?.()), reroll: deps.rerollSelectedCheck, "apply-damage": deps.applyManualDamage, resummarize: deps.resummarizeCurrentBranch, "import-preset": deps.importPresetFromPicker, "export-preset": deps.downloadPreset ?? exportRawData, "export-raw": deps.downloadRawData };
+    const damageInput = () => ({ target: root.querySelector('[data-dme-role="damage-target"]')?.value ?? "", expression: root.querySelector('[data-dme-role="damage-expression"]')?.value ?? "", type: root.querySelector('[data-dme-role="damage-type"]')?.value ?? "", reason: root.querySelector('[data-dme-role="damage-reason"]')?.value ?? "" });
+    const actions = { recalculate: () => deps.rollbackManager?.recalculate?.(deps.currentInvalidIndex?.()), reroll: deps.rerollSelectedCheck, "apply-damage": () => deps.applyManualDamage?.(damageInput()), resummarize: deps.resummarizeCurrentBranch, "import-preset": deps.importPresetFromPicker, "export-preset": deps.downloadPreset ?? exportRawData, "export-raw": deps.downloadRawData };
     if (actions[action]) return safe(actions[action]);
     if (action === "export-preset" && exportRawData) {
       status = String(await exportRawData());
@@ -9416,6 +9418,106 @@ function createUIController(deps) {
   return { mount, render, setStatus, confirmAction, destroy };
 }
 
+// src/chat-actions.js
+function safeText(value) {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+function current(deps) {
+  const context = deps.adapter.getContext?.();
+  const loaded = deps.store.loadEnvelope?.();
+  const envelope = loaded?.value ?? loaded;
+  if (!context?.chatId || context.groupId || deps.orchestrator?.getActiveGeneration?.() || !envelope?.activeRef) return null;
+  return { context, envelope, ref: structuredClone(envelope.activeRef), chat: context.chat, metadata: context.chatMetadata, headRevision: envelope.headRevision, stateVersion: envelope.stateVersion, preset: structuredClone(envelope.preset) };
+}
+function same(deps, captured) {
+  const context = deps.adapter.getContext?.();
+  const loaded = deps.store.loadEnvelope?.();
+  const envelope = loaded?.value ?? loaded;
+  return Boolean(context?.chatId === captured.context.chatId && context.chat === captured.chat && context.chatMetadata === captured.metadata && envelope === captured.envelope && envelope.headRevision === captured.headRevision && envelope.stateVersion === captured.stateVersion && JSON.stringify(envelope.activeRef) === JSON.stringify(captured.ref) && JSON.stringify(envelope.preset) === JSON.stringify(captured.preset));
+}
+function download(name, value) {
+  const url = globalThis.URL.createObjectURL(new globalThis.Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  globalThis.queueMicrotask(() => globalThis.URL.revokeObjectURL(url));
+}
+function createChatActions(deps) {
+  async function transaction(label, work) {
+    const captured = current(deps);
+    if (!captured) return { ok: false, reason: "not-writable" };
+    return deps.queue.enqueue(captured.context.chatId, `${label}-${deps.makeId()}`, async (signal) => {
+      signal.throwIfAborted();
+      if (!same(deps, captured)) return { ok: false, reason: "stale" };
+      return work(captured, signal);
+    });
+  }
+  return {
+    recalculate: async () => {
+      const captured = current(deps);
+      if (!captured) return { ok: false, reason: "not-writable" };
+      const plan = deps.rollbackManager.buildRecalculationPlan?.(deps.currentInvalidIndex?.());
+      if (plan && !await deps.confirm({ action: "recalculate", plan })) return { ok: false, reason: "cancelled" };
+      return deps.rollbackManager.recalculate(deps.currentInvalidIndex?.());
+    },
+    reroll: () => transaction("reroll", async (captured) => {
+      const records = deps.ledger.list();
+      const old = deps.selectedCheck?.() ?? records.findLast((record2) => record2.branchId === captured.ref.branchId);
+      if (!old?.request) return { ok: false, reason: "missing-check" };
+      const preset = deps.preset(captured.envelope.preset.id);
+      if (!preset?.readActor) return { ok: false, reason: "rules-unavailable" };
+      const result2 = createRuleEngine({ preset, nextUint32: deps.nextUint32 }).resolveCheck(old.request, captured.envelope.activeSnapshot);
+      const record = deps.ledger.reroll(old, { kind: "check", branchId: captured.ref.branchId, signature: old.signature, request: structuredClone(old.request), result: result2 });
+      const committed = await deps.store.commitCurrentBranchAudit({ chatId: captured.context.chatId, expectedHeadRevision: captured.envelope.headRevision, activeRef: captured.ref, record });
+      if (committed.ok) deps.ledger.commit([record]);
+      return committed;
+    }),
+    applyDamage: (input) => transaction("damage", async (captured) => {
+      const preset = deps.preset(captured.envelope.preset.id);
+      if (!preset?.readActor || !preset?.writeActor) return { ok: false, reason: "rules-unavailable" };
+      const resolved = createRuleEngine({ preset, nextUint32: deps.nextUint32 }).applyDamage(input, captured.envelope.activeSnapshot);
+      resolved.state.version = captured.envelope.stateVersion + 1;
+      const valid = deps.validateState(captured.envelope.preset.id, resolved.state);
+      if (!valid.ok) return { ok: false, reason: "invalid-state", errors: valid.errors };
+      const record = deps.ledger.createRecord({ kind: "damage", branchId: captured.ref.branchId, request: structuredClone(input), result: structuredClone(resolved.damage) });
+      const committed = await deps.store.commitCurrentBranchMutation({ chatId: captured.context.chatId, expectedHeadRevision: captured.envelope.headRevision, baseVersion: captured.envelope.stateVersion, activeRef: captured.ref, nextState: resolved.state, patch: { operations: [] }, source: "manual-damage", record });
+      if (committed.ok) deps.ledger.commit([record]);
+      return committed;
+    }),
+    resummarize: async () => {
+      const captured = current(deps);
+      if (!captured) return { ok: false, reason: "not-writable" };
+      const candidate = await deps.modelService.requestSummary({ profileId: deps.config().recorderProfileId, state: captured.envelope.activeSnapshot, baseVersion: captured.envelope.stateVersion });
+      candidate.state.version = captured.envelope.stateVersion + 1;
+      const valid = deps.validateState(captured.envelope.preset.id, candidate.state);
+      if (!valid.ok) return { ok: false, reason: "invalid-state", errors: valid.errors };
+      if (!await deps.confirm({ action: "resummarize", candidate: safeText(candidate.state) })) return { ok: false, reason: "cancelled" };
+      return transaction("resummarize", (latest) => deps.store.commitCurrentBranchMutation({ chatId: latest.context.chatId, expectedHeadRevision: latest.envelope.headRevision, baseVersion: latest.envelope.stateVersion, activeRef: latest.ref, nextState: candidate.state, patch: { operations: [] }, source: "resummarize" }));
+    },
+    importPreset: async () => {
+      const file = await deps.pickFile?.();
+      if (!file) return { ok: false, reason: "cancelled" };
+      try {
+        return { ok: true, preset: deps.presetManager.importPreset(await file.text()) };
+      } catch (error) {
+        return { ok: false, reason: "invalid-preset", error: safeText(error) };
+      }
+    },
+    exportPreset: (id) => {
+      const preset = deps.presetManager.exportPreset(id);
+      download(`dualmodel-preset-${id}.json`, preset);
+      return { ok: true };
+    },
+    exportRaw: () => {
+      const env = deps.store.loadEnvelope?.().value;
+      const raw = { schemaVersion: env?.schemaVersion, preset: env?.preset, stateVersion: env?.stateVersion, activeSnapshot: env?.activeSnapshot, activeRef: env?.activeRef, records: deps.ledger.list() };
+      download("dualmodel-raw.json", raw);
+      return { ok: true };
+    }
+  };
+}
+
 // schemas/adjudicator.schema.json
 var adjudicator_schema_default = {
   $defs: {
@@ -9466,7 +9568,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
   });
   const decisionAjv = new import_ajv3.default({ allErrors: true, strict: false });
   const decisionValidator = decisionAjv.compile({ $ref: "#/$defs/decision", ...adjudicator_schema_default });
-  const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState, validateDecision: (value) => ({ ok: Boolean(decisionValidator(value)), errors: structuredClone(decisionValidator.errors ?? []) }) });
+  const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: (patch, input) => validator.validatePatch(input?.presetId, patch, input?.policy), validateState: (state, input) => validator.validateState(input?.presetId, state), validateDecision: (value) => ({ ok: Boolean(decisionValidator(value)), errors: structuredClone(decisionValidator.errors ?? []) }) });
   const queue = resolved.queue ?? createChatTaskQueue();
   const getEffectiveConfig = resolved.getConfig ?? (() => {
     const envelope = store.loadEnvelope?.();
@@ -9530,8 +9632,8 @@ async function bootstrap({ adapter, dependencies } = {}) {
     confirm: resolved.confirmRecalculation ?? (async () => false),
     replayTurn: resolved.replayTurn ?? ((input) => orchestrator?.replayTurn(input) ?? Promise.resolve({ ok: false, reason: "replay-unavailable" })),
     isWritable: resolved.isWritable ?? (() => {
-      const current = runtimeAdapter.getContext();
-      return !current.groupId && Boolean(getEffectiveConfig().enabled);
+      const current2 = runtimeAdapter.getContext();
+      return !current2.groupId && Boolean(getEffectiveConfig().enabled);
     })
   });
   orchestrator = createOrchestrator({
@@ -9572,6 +9674,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
     }
   });
   const canRegisterTools = typeof runtimeAdapter.registerTool === "function";
+  const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: (id) => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), config: getEffectiveConfig, rollbackManager, confirm: resolved.showConfirm ?? (async () => true), currentInvalidIndex: resolved.currentInvalidIndex, pickFile: resolved.pickPresetFile, selectedCheck: resolved.selectedCheck });
   let ui;
   try {
     orchestrator.start();
@@ -9626,6 +9729,14 @@ async function bootstrap({ adapter, dependencies } = {}) {
           return store.commitCurrentBranchMutation({ chatId: captured.chatId, expectedHeadRevision: captured.head, baseVersion: input.baseVersion, activeRef: captured.ref, nextState, patch: { base_version: input.baseVersion, operations: input.operations }, source: input.source });
         });
       },
+      rollbackManager,
+      currentInvalidIndex: resolved.currentInvalidIndex,
+      rerollSelectedCheck: chatActions.reroll,
+      applyManualDamage: (input) => chatActions.applyDamage(input),
+      resummarizeCurrentBranch: chatActions.resummarize,
+      importPresetFromPicker: chatActions.importPreset,
+      downloadPreset: () => chatActions.exportPreset((store.loadEnvelope?.().value ?? {}).preset?.id),
+      downloadRawData: chatActions.exportRaw,
       bindCharacterPreset: async (id) => {
         const character = runtimeAdapter.getCurrentCharacter?.();
         if (!character) throw new Error("Current character is unavailable");

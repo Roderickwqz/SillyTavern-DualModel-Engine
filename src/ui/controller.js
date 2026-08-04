@@ -113,7 +113,8 @@ export function createUIController(deps) {
             const policy = deps.getPresetPolicy?.() ?? {}; const result = await tab.saveStateEdit(before, parsed.value, [...(policy.lockedPaths ?? []), ...(policy.ruleLockedPaths ?? [])], [...(policy.allowedPaths ?? []), ...(policy.lockedPaths ?? []), ...(policy.ruleLockedPaths ?? [])]);
             root.querySelector('[data-dme-role="patch-preview"]').textContent = JSON.stringify(result.operations ?? tab.preview(before, parsed.value), null, 2); status = result.reason ?? (result.ok ? 'State saved' : 'State not saved');
         });
-        const actions = { recalculate: () => deps.rollbackManager?.recalculate?.(deps.currentInvalidIndex?.()), reroll: deps.rerollSelectedCheck, 'apply-damage': deps.applyManualDamage, resummarize: deps.resummarizeCurrentBranch, 'import-preset': deps.importPresetFromPicker, 'export-preset': deps.downloadPreset ?? exportRawData, 'export-raw': deps.downloadRawData };
+        const damageInput = () => ({ target: root.querySelector('[data-dme-role="damage-target"]')?.value ?? '', expression: root.querySelector('[data-dme-role="damage-expression"]')?.value ?? '', type: root.querySelector('[data-dme-role="damage-type"]')?.value ?? '', reason: root.querySelector('[data-dme-role="damage-reason"]')?.value ?? '' });
+        const actions = { recalculate: () => deps.rollbackManager?.recalculate?.(deps.currentInvalidIndex?.()), reroll: deps.rerollSelectedCheck, 'apply-damage': () => deps.applyManualDamage?.(damageInput()), resummarize: deps.resummarizeCurrentBranch, 'import-preset': deps.importPresetFromPicker, 'export-preset': deps.downloadPreset ?? exportRawData, 'export-raw': deps.downloadRawData };
         if (actions[action]) return safe(actions[action]);
         if (action === 'export-preset' && exportRawData) { status = String(await exportRawData()); await render(); return; }
         if (action !== 'probe-tools' || probePending) return;

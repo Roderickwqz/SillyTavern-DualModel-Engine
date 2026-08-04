@@ -193,7 +193,8 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         try {
             const latest = adapter.getContext?.();
             if (latest?.chatId !== chatId || latest.chat !== capturedChat || latest.chatMetadata?.[NAMESPACE] !== envelope || envelope.headRevision !== expectedHeadRevision || envelope.stateVersion !== baseVersion) return result('stale-chat');
-            const segment = { source, patch: clone(patch ?? { operations: [] }), checks: record ? [clone(record)] : [], postSnapshot: clone(nextState) };
+            const prior = branch.segments.at(-1);
+            const segment = { requestId: prior.requestId, userMessageId: prior.userMessageId ?? null, assistantTextHash: prior.assistantTextHash, source, patch: clone(patch ?? { operations: [] }), checks: record ? [clone(record)] : [], postSnapshot: clone(nextState) };
             branch.segments.push(segment); message.extra[NAMESPACE] = clone(message.swipe_info[activeRef.swipeId].extra[NAMESPACE]);
             envelope.activeSnapshot = clone(nextState); envelope.stateVersion = nextState.version; envelope.headRevision += 1; envelope.taskStatus = { state: 'idle', requestId: null };
             await adapter.saveChat(); return { ok: true, stateVersion: envelope.stateVersion, headRevision: envelope.headRevision, record: record ? clone(record) : undefined };
