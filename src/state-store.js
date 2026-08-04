@@ -236,7 +236,9 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
 
     async function invalidateFrom(startIndex, options = {}) {
         const context = adapter.getContext?.(); const envelope = context?.chatMetadata?.[NAMESPACE];
-        if (!validEnvelope(envelope) || !Array.isArray(context?.chat) || !Number.isInteger(startIndex)) return result('invalid-context');
+        if (!validEnvelope(envelope) || !Array.isArray(context?.chat) || !Number.isInteger(startIndex) || startIndex < 0 || startIndex > context.chat.length) return result('invalid-context');
+        if (!isPlainObject(options) || (options.includeAllFromStart !== undefined && typeof options.includeAllFromStart !== 'boolean')
+            || (options.includeStartSelectedOnly !== undefined && typeof options.includeStartSelectedOnly !== 'boolean')) return result('invalid-options');
         const metadataBefore = clone(envelope); const messagesBefore = new Map();
         const boundary = findLastValidSnapshot(startIndex - 1);
         if (!boundary) return result('invalid-envelope');
@@ -267,6 +269,10 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         const context = adapter.getContext?.(); const envelope = context?.chatMetadata?.[NAMESPACE];
         if (!validEnvelope(envelope) || !context?.chat?.includes(message)) return result('stale-message');
         if (!Number.isInteger(swipeId) || swipeId < 0 || !message.swipe_info?.[swipeId]) return result('stale-swipe');
+        const namespace = getNamespace(message, swipeId); const branch = namespace?.branch;
+        if (typeof message.extra?.[NAMESPACE]?.messageId !== 'string' || !message.extra[NAMESPACE].messageId
+            || typeof namespace?.messageId !== 'string' || !namespace.messageId
+            || typeof branch?.branchId !== 'string' || !branch.branchId) return result('invalid-identity');
         const metadataBefore = clone(envelope); const extraBefore = clone(message.extra); const swipesBefore = clone(message.swipe_info);
         try {
             delete message.swipe_info[swipeId].extra?.[NAMESPACE]?.branch;

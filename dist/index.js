@@ -7189,7 +7189,8 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
   async function invalidateFrom(startIndex, options = {}) {
     const context = adapter.getContext?.();
     const envelope = context?.chatMetadata?.[NAMESPACE];
-    if (!validEnvelope(envelope) || !Array.isArray(context?.chat) || !Number.isInteger(startIndex)) return result("invalid-context");
+    if (!validEnvelope(envelope) || !Array.isArray(context?.chat) || !Number.isInteger(startIndex) || startIndex < 0 || startIndex > context.chat.length) return result("invalid-context");
+    if (!isPlainObject(options) || options.includeAllFromStart !== void 0 && typeof options.includeAllFromStart !== "boolean" || options.includeStartSelectedOnly !== void 0 && typeof options.includeStartSelectedOnly !== "boolean") return result("invalid-options");
     const metadataBefore = clone2(envelope);
     const messagesBefore = /* @__PURE__ */ new Map();
     const boundary = findLastValidSnapshot(startIndex - 1);
@@ -7228,6 +7229,9 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     const envelope = context?.chatMetadata?.[NAMESPACE];
     if (!validEnvelope(envelope) || !context?.chat?.includes(message)) return result("stale-message");
     if (!Number.isInteger(swipeId) || swipeId < 0 || !message.swipe_info?.[swipeId]) return result("stale-swipe");
+    const namespace2 = getNamespace(message, swipeId);
+    const branch = namespace2?.branch;
+    if (typeof message.extra?.[NAMESPACE]?.messageId !== "string" || !message.extra[NAMESPACE].messageId || typeof namespace2?.messageId !== "string" || !namespace2.messageId || typeof branch?.branchId !== "string" || !branch.branchId) return result("invalid-identity");
     const metadataBefore = clone2(envelope);
     const extraBefore = clone2(message.extra);
     const swipesBefore = clone2(message.swipe_info);
