@@ -6636,6 +6636,11 @@ function createOrchestrator(deps) {
       }
       return { enabled: false, reason: current.groupId ? "group-chat" : "disabled" };
     }
+    try {
+      await deps.rollbackManager?.repairOrphanedHead?.();
+    } catch (error) {
+      diagnostic({ reason: "orphan-repair-failed", error });
+    }
     const loaded = deps.store.loadEnvelope();
     let envelope = envelopeValue(loaded);
     const configuredPreset = deps.getPreset(config.rulePresetId);
@@ -6665,7 +6670,7 @@ function createOrchestrator(deps) {
     const targetId = target ? messageId(target) : null;
     const previousUser = current.chat.findLast((m) => m.is_user);
     const existing = deps.store.getBranch?.(target, target?.swipe_id ?? 0);
-    const prepared = ["swipe", "regenerate"].includes(type) ? deps.prepareSwipeGeneration?.({ type, target, envelope }) : null;
+    const prepared = ["swipe", "regenerate"].includes(type) ? deps.rollbackManager?.prepareSwipeGeneration?.(current.chat.length - 1, type) ?? deps.prepareSwipeGeneration?.({ type, target, envelope }) : null;
     if (prepared?.ok === false) return null;
     const branch = type === "continue" ? existing?.branchId : null;
     return { type, chatId: current.chatId, expectedHeadRevision: envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (["swipe", "regenerate"].includes(type) ? existing?.branchId ?? null : null), effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === "continue" ? target?.mes ?? "" : null, playerText: previousUser?.mes ?? "", userMessageId: previousUser ? messageId(previousUser) : null };
@@ -6758,15 +6763,20 @@ function createOrchestrator(deps) {
     }
     void queued.then(async (result2) => {
       if (result2?.ok) {
+        deps.rollbackManager?.completeReplacement?.();
         try {
           const env = envelopeValue(deps.store.loadEnvelope());
           await deps.promptInjector.refresh({ state: env.activeSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection });
         } catch (error) {
           diagnostic({ requestId: captured.requestId, reason: "prompt-refresh-failed", error });
         }
-      } else if (conflicts.has(result2?.reason)) diagnostic({ requestId: captured.requestId, ...result2 });
-      else await fail({ reason: result2?.reason ?? "task-failed", result: result2 });
+      } else {
+        if (deps.rollbackManager?.abortReplacement) await deps.rollbackManager.abortReplacement();
+        if (conflicts.has(result2?.reason)) diagnostic({ requestId: captured.requestId, ...result2 });
+        else await fail({ reason: result2?.reason ?? "task-failed", result: result2 });
+      }
     }).catch(async (error) => {
+      if (deps.rollbackManager?.abortReplacement) await deps.rollbackManager.abortReplacement();
       if (error?.name === "AbortError") return diagnostic({ requestId: captured.requestId, reason: "cancelled" });
       await fail({ reason: "recorder-failed", error });
     }).catch(() => void 0);
@@ -6775,7 +6785,10 @@ function createOrchestrator(deps) {
   function generationStopped(reason = "host-stopped") {
     const stopped = generation;
     generation = null;
-    if (stopped) diagnostic({ requestId: stopped.requestId, reason });
+    if (stopped) {
+      diagnostic({ requestId: stopped.requestId, reason });
+      void Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => void 0);
+    }
   }
   const handlers = { chatChanged: () => {
     const previous = activeChatId;
@@ -6791,6 +6804,11 @@ function createOrchestrator(deps) {
       } catch (error) {
         first ??= error;
       }
+    }
+    try {
+      deps.rollbackManager?.destroy?.();
+    } catch (error) {
+      first ??= error;
     }
     try {
       generationStopped("orchestrator-stopped");
@@ -7095,6 +7113,113 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
       return result("save-failed", error);
     }
   }
+  function findLastValidSnapshot(messageIndex) {
+    const context = adapter.getContext?.();
+    const envelope = context?.chatMetadata?.[NAMESPACE];
+    if (!validEnvelope(envelope)) return null;
+    for (let index = Math.min(messageIndex, (context.chat?.length ?? 0) - 1); index >= 0; index -= 1) {
+      const message = context.chat[index];
+      const swipeId = message?.swipe_id ?? 0;
+      const branch = getBranch(message, swipeId);
+      const snapshot = branch?.status === "committed" ? branch.segments?.at(-1)?.postSnapshot : null;
+      const messageId = message?.extra?.[NAMESPACE]?.messageId;
+      if (snapshot && messageId && branch.branchId) return { snapshot: clone2(snapshot), activeRef: { messageId, swipeId, branchId: branch.branchId } };
+    }
+    return { snapshot: clone2(envelope.initialSnapshot), activeRef: null };
+  }
+  async function invalidateFrom(startIndex, options = {}) {
+    const context = adapter.getContext?.();
+    const envelope = context?.chatMetadata?.[NAMESPACE];
+    if (!validEnvelope(envelope) || !Array.isArray(context?.chat) || !Number.isInteger(startIndex)) return result("invalid-context");
+    const metadataBefore = clone2(envelope);
+    const messagesBefore = /* @__PURE__ */ new Map();
+    const boundary = findLastValidSnapshot(startIndex - 1);
+    if (!boundary) return result("invalid-envelope");
+    try {
+      for (let index = Math.max(0, startIndex); index < context.chat.length; index += 1) {
+        const message = context.chat[index];
+        if (message?.is_user || message?.is_system) continue;
+        const all = options.includeAllFromStart || index > startIndex;
+        const selected = message.swipe_id ?? 0;
+        for (let swipeId = 0; swipeId < (message.swipe_info?.length ?? 0); swipeId += 1) {
+          const branch = getBranch(message, swipeId);
+          if (!branch || !all && options.includeStartSelectedOnly && swipeId !== selected) continue;
+          if (!messagesBefore.has(message)) messagesBefore.set(message, { extra: clone2(message.extra), swipes: clone2(message.swipe_info) });
+          branch.status = "stale";
+          if (swipeId === selected) message.extra[NAMESPACE] = clone2(message.swipe_info[swipeId].extra[NAMESPACE]);
+        }
+      }
+      envelope.activeSnapshot = clone2(boundary.snapshot);
+      envelope.stateVersion = boundary.snapshot.version;
+      envelope.activeRef = clone2(boundary.activeRef);
+      envelope.headRevision += 1;
+      await adapter.saveChat();
+      return { ok: true, snapshot: clone2(boundary.snapshot), activeRef: clone2(boundary.activeRef) };
+    } catch (error) {
+      context.chatMetadata[NAMESPACE] = metadataBefore;
+      for (const [message, before] of messagesBefore) {
+        message.extra = before.extra;
+        message.swipe_info = before.swipes;
+      }
+      return result("save-failed", error);
+    }
+  }
+  async function removeBranch(message, swipeId) {
+    const context = adapter.getContext?.();
+    const envelope = context?.chatMetadata?.[NAMESPACE];
+    if (!validEnvelope(envelope) || !context?.chat?.includes(message)) return result("stale-message");
+    if (!Number.isInteger(swipeId) || swipeId < 0 || !message.swipe_info?.[swipeId]) return result("stale-swipe");
+    const metadataBefore = clone2(envelope);
+    const extraBefore = clone2(message.extra);
+    const swipesBefore = clone2(message.swipe_info);
+    try {
+      delete message.swipe_info[swipeId].extra?.[NAMESPACE]?.branch;
+      if ((message.swipe_id ?? 0) === swipeId) delete message.extra?.[NAMESPACE]?.branch;
+      envelope.headRevision += 1;
+      await adapter.saveChat();
+      return { ok: true };
+    } catch (error) {
+      context.chatMetadata[NAMESPACE] = metadataBefore;
+      message.extra = extraBefore;
+      message.swipe_info = swipesBefore;
+      return result("save-failed", error);
+    }
+  }
+  async function restoreInitialSnapshot() {
+    const context = adapter.getContext?.();
+    const envelope = context?.chatMetadata?.[NAMESPACE];
+    if (!validEnvelope(envelope) || !envelope.initialSnapshot) return result("invalid-envelope");
+    const before = clone2(envelope);
+    try {
+      envelope.activeSnapshot = clone2(envelope.initialSnapshot);
+      envelope.stateVersion = envelope.initialSnapshot.version;
+      envelope.activeRef = null;
+      envelope.headRevision += 1;
+      await adapter.saveChat();
+      return { ok: true, snapshot: clone2(envelope.activeSnapshot) };
+    } catch (error) {
+      context.chatMetadata[NAMESPACE] = before;
+      return result("save-failed", error);
+    }
+  }
+  async function auditActiveRef() {
+    const context = adapter.getContext?.();
+    const envelope = context?.chatMetadata?.[NAMESPACE];
+    if (!validEnvelope(envelope)) return result("invalid-envelope");
+    if (!envelope.activeRef) return JSON.stringify(envelope.activeSnapshot) === JSON.stringify(envelope.initialSnapshot) ? { ok: true } : result("orphaned-active-ref");
+    const { messageId, swipeId, branchId } = envelope.activeRef;
+    const messageIndex = context?.chat?.findIndex((message2) => message2?.extra?.[NAMESPACE]?.messageId === messageId) ?? -1;
+    const message = context?.chat?.[messageIndex];
+    const branch = getBranch(message, swipeId);
+    const segment = branch?.segments?.at(-1);
+    if (!message || (message.swipe_id ?? 0) !== swipeId || branch?.branchId !== branchId || branch.status !== "committed" || segment?.postSnapshot?.version !== envelope.stateVersion) return { ok: false, reason: "orphaned-active-ref", messageIndex };
+    try {
+      if (segment.assistantTextHash !== await textHash(message.mes ?? "")) return { ok: false, reason: "assistant-text-mismatch", messageIndex };
+    } catch (error) {
+      return result("hash-failed", error);
+    }
+    return { ok: true };
+  }
   async function markBranchFailed({ chatId, messageId, swipeId, branchId, requestId, baseSnapshot, baseStateVersion, isContinue, baseBranchId }) {
     const context = adapter.getContext?.();
     const envelope = context?.chatMetadata?.[NAMESPACE];
@@ -7140,7 +7265,7 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     }
     return [...records.values()].map(clone2);
   }
-  return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords };
+  return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef };
 }
 
 // src/json-patch.js
@@ -7635,6 +7760,145 @@ function createChatTaskQueue({ onStatus = () => {
   };
 }
 
+// src/rollback-manager.js
+function clone3(value) {
+  return structuredClone(value);
+}
+function createRollbackManager({ adapter, store, queue, confirm = async () => false, replayTurn = async () => ({ ok: false }) }) {
+  const pendingSwipeSources = /* @__PURE__ */ new Map();
+  let replacement = null;
+  let taskSequence = 0;
+  const handlers = [];
+  const context = () => adapter.getContext();
+  function serialize(name, task) {
+    const chatId = context().chatId;
+    return queue.enqueue(chatId, `branch-${name}-${++taskSequence}`, async (signal) => {
+      signal.throwIfAborted();
+      if (context().chatId !== chatId) return { ok: false, reason: "stale-chat" };
+      return task(signal);
+    });
+  }
+  function stableAt(index) {
+    const message = context().chat[index];
+    return { message, messageId: message?.extra?.dualModelEngine?.messageId };
+  }
+  function prepareSwipeGeneration(messageIndex, type) {
+    const { message } = stableAt(messageIndex);
+    const sourceSwipeId = pendingSwipeSources.get(messageIndex) ?? (message?.swipe_id ?? 0);
+    pendingSwipeSources.delete(messageIndex);
+    const source = store.getBranch?.(message, sourceSwipeId);
+    if (!source) return { ok: false, reason: "missing-source-branch" };
+    if (type === "regenerate") replacement = { chatId: context().chatId, deleted: false };
+    const checks = source.segments?.flatMap((segment) => segment.checks ?? []).filter((record) => record?.kind === "check") ?? [];
+    const reusableChecks = [...new Map(checks.map((record) => [record.checkId, record])).values()];
+    return { ok: true, baseBranchId: source.branchId, baseSnapshot: clone3(source.baseSnapshot), baseStateVersion: source.baseStateVersion, expectedHeadRevision: context().chatMetadata?.dualModelEngine?.headRevision, reusableChecks: clone3(reusableChecks) };
+  }
+  function completeReplacement() {
+    replacement = null;
+  }
+  async function recoverAfterDeleteNow(signal) {
+    for (let index = context().chat.length - 1; index >= 0; index -= 1) {
+      signal.throwIfAborted();
+      const message = context().chat[index];
+      if (message?.is_user || message?.is_system) continue;
+      const restored = await store.restoreBranch(message, message.swipe_id ?? 0);
+      if (restored?.ok) return restored;
+    }
+    return store.restoreInitialSnapshot();
+  }
+  function recoverAfterDelete() {
+    return serialize("recover-delete", recoverAfterDeleteNow);
+  }
+  async function abortReplacement() {
+    const current = context().chatId;
+    const shouldRecover = replacement?.deleted && replacement.chatId === current;
+    const deferred = replacement?.deleted && replacement.chatId !== current;
+    replacement = null;
+    return shouldRecover ? recoverAfterDelete() : { ok: true, recovered: false, deferred: Boolean(deferred) };
+  }
+  function restoreSwipe(messageIndex, swipeId) {
+    const { message, messageId } = stableAt(messageIndex);
+    return serialize("restore", () => {
+      if (!message || !context().chat.includes(message) || message.extra?.dualModelEngine?.messageId !== messageId) return { ok: false, reason: "stale-message" };
+      if ((message.swipe_id ?? 0) !== swipeId) return { ok: false, reason: "stale-swipe" };
+      return store.restoreBranch(message, swipeId);
+    });
+  }
+  function buildRecalculationPlan(startIndex) {
+    return context().chat.slice(startIndex).map((message, offset) => ({ message, messageIndex: startIndex + offset })).filter(({ message }) => !message?.is_user && !message?.is_system).map(({ messageIndex, message }) => ({ messageIndex, swipeId: message.swipe_id ?? 0 }));
+  }
+  async function recalculateNow(startIndex, signal) {
+    let baseSnapshot = store.findLastValidSnapshot(startIndex - 1).snapshot;
+    let lastValidVersion = baseSnapshot.version;
+    for (const item of buildRecalculationPlan(startIndex)) {
+      signal.throwIfAborted();
+      const value = await replayTurn({ ...item, baseSnapshot, signal });
+      if (!value?.ok) return { ok: false, failedAt: item.messageIndex, lastValidVersion };
+      baseSnapshot = value.snapshot;
+      lastValidVersion = value.stateVersion;
+    }
+    return { ok: true, lastValidVersion };
+  }
+  function recalculate(startIndex) {
+    return serialize(`recalculate-${startIndex}`, (signal) => recalculateNow(startIndex, signal));
+  }
+  async function invalidateAndRecalculate(startIndex, options, signal) {
+    const invalidated = await store.invalidateFrom(startIndex, options);
+    if (!invalidated?.ok) return invalidated;
+    if (!await confirm({ action: "recalculate", startIndex, count: buildRecalculationPlan(startIndex).length, restoredVersion: invalidated.snapshot.version })) return { ok: false, reason: "recalculation-required" };
+    return recalculateNow(startIndex, signal);
+  }
+  function invalidateForEdit(messageIndex) {
+    const { message, messageId } = stableAt(messageIndex);
+    const start = message?.is_user ? messageIndex + 1 : messageIndex;
+    return serialize("invalidate-edit", (signal) => {
+      const current = context().chat[messageIndex];
+      if (!message || current !== message || current.extra?.dualModelEngine?.messageId !== messageId) return { ok: false, reason: "stale-message" };
+      return invalidateAndRecalculate(start, { includeStartSelectedOnly: !message.is_user }, signal);
+    });
+  }
+  function invalidateForDelete(messageIndex) {
+    const { message, messageId } = stableAt(messageIndex);
+    const length = context().chat.length;
+    return serialize("invalidate-delete", (signal) => {
+      if (context().chat.length !== length || message && (context().chat[messageIndex] !== message || message.extra?.dualModelEngine?.messageId !== messageId)) return { ok: false, reason: "stale-delete-boundary" };
+      return invalidateAndRecalculate(messageIndex, { includeAllFromStart: true }, signal);
+    });
+  }
+  async function repairOrphanedHead() {
+    const audit = await store.auditActiveRef();
+    if (audit?.ok) return { ok: true, repaired: false };
+    if (audit?.reason === "assistant-text-mismatch" && audit.messageIndex >= 0) return serialize("repair-edited-head", () => store.invalidateFrom(audit.messageIndex, { includeStartSelectedOnly: true }));
+    return recoverAfterDelete();
+  }
+  function bind() {
+    const events = adapter.events ?? {};
+    const on = (name, fn) => {
+      if (name) {
+        adapter.on(name, fn);
+        handlers.push([name, fn]);
+      }
+    };
+    on(events.MESSAGE_SWIPED, (index) => {
+      const { message } = stableAt(index);
+      const swipe = message?.swipe_id ?? 0;
+      return restoreSwipe(index, swipe);
+    });
+    on(events.MESSAGE_EDITED, invalidateForEdit);
+    on(events.MESSAGE_DELETED, (index) => replacement?.chatId === context().chatId ? (replacement.deleted = true, { ok: true, ignored: "regenerate-replacement" }) : invalidateForDelete(index));
+  }
+  function destroy() {
+    while (handlers.length) {
+      const [name, fn] = handlers.pop();
+      try {
+        adapter.off(name, fn);
+      } catch {
+      }
+    }
+  }
+  return { prepareSwipeGeneration, completeReplacement, abortReplacement, repairOrphanedHead, restoreSwipe, recoverAfterDelete, invalidateForEdit, invalidateForDelete, buildRecalculationPlan, recalculate, bind, destroy };
+}
+
 // schemas/state.schema.json
 var state_schema_default = {
   $schema: "http://json-schema.org/draft-07/schema#",
@@ -7724,13 +7988,22 @@ async function bootstrap({ adapter, dependencies } = {}) {
   const resolved = dependencies ?? {};
   const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
   const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState });
+  const queue = resolved.queue ?? createChatTaskQueue();
+  const rollbackManager = resolved.rollbackManager ?? createRollbackManager({
+    adapter: runtimeAdapter,
+    store,
+    queue,
+    confirm: resolved.confirmRecalculation ?? (async () => false),
+    replayTurn: resolved.replayTurn ?? (async () => ({ ok: false, reason: "replay-unavailable" }))
+  });
   const orchestrator = createOrchestrator({
     adapter: runtimeAdapter,
     store,
     validator,
     modelService,
     promptInjector: resolved.promptInjector ?? createPromptInjector({ adapter: runtimeAdapter }),
-    queue: resolved.queue ?? createChatTaskQueue(),
+    queue,
+    rollbackManager,
     getConfig: resolved.getConfig ?? (() => {
       const envelope = store.loadEnvelope?.();
       return resolveConfig({ globalConfig: runtimeAdapter.getSettings?.(), chatConfig: envelope?.ok ? envelope.value.configOverrides : envelope?.configOverrides });
@@ -7745,6 +8018,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
     prepareSwipeGeneration: resolved.prepareSwipeGeneration ?? ((input) => store.prepareSwipeGeneration(input))
   });
   orchestrator.start();
+  rollbackManager.bind();
   try {
     await orchestrator.initializeChat();
   } catch (error) {

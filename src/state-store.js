@@ -222,6 +222,80 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         }
     }
 
+    function findLastValidSnapshot(messageIndex) {
+        const context = adapter.getContext?.(); const envelope = context?.chatMetadata?.[NAMESPACE];
+        if (!validEnvelope(envelope)) return null;
+        for (let index = Math.min(messageIndex, (context.chat?.length ?? 0) - 1); index >= 0; index -= 1) {
+            const message = context.chat[index]; const swipeId = message?.swipe_id ?? 0;
+            const branch = getBranch(message, swipeId); const snapshot = branch?.status === 'committed' ? branch.segments?.at(-1)?.postSnapshot : null;
+            const messageId = message?.extra?.[NAMESPACE]?.messageId;
+            if (snapshot && messageId && branch.branchId) return { snapshot: clone(snapshot), activeRef: { messageId, swipeId, branchId: branch.branchId } };
+        }
+        return { snapshot: clone(envelope.initialSnapshot), activeRef: null };
+    }
+
+    async function invalidateFrom(startIndex, options = {}) {
+        const context = adapter.getContext?.(); const envelope = context?.chatMetadata?.[NAMESPACE];
+        if (!validEnvelope(envelope) || !Array.isArray(context?.chat) || !Number.isInteger(startIndex)) return result('invalid-context');
+        const metadataBefore = clone(envelope); const messagesBefore = new Map();
+        const boundary = findLastValidSnapshot(startIndex - 1);
+        if (!boundary) return result('invalid-envelope');
+        try {
+            for (let index = Math.max(0, startIndex); index < context.chat.length; index += 1) {
+                const message = context.chat[index]; if (message?.is_user || message?.is_system) continue;
+                const all = options.includeAllFromStart || index > startIndex;
+                const selected = message.swipe_id ?? 0;
+                for (let swipeId = 0; swipeId < (message.swipe_info?.length ?? 0); swipeId += 1) {
+                    const branch = getBranch(message, swipeId);
+                    if (!branch || (!all && options.includeStartSelectedOnly && swipeId !== selected)) continue;
+                    if (!messagesBefore.has(message)) messagesBefore.set(message, { extra: clone(message.extra), swipes: clone(message.swipe_info) });
+                    branch.status = 'stale';
+                    if (swipeId === selected) message.extra[NAMESPACE] = clone(message.swipe_info[swipeId].extra[NAMESPACE]);
+                }
+            }
+            envelope.activeSnapshot = clone(boundary.snapshot); envelope.stateVersion = boundary.snapshot.version; envelope.activeRef = clone(boundary.activeRef);
+            envelope.headRevision += 1; await adapter.saveChat();
+            return { ok: true, snapshot: clone(boundary.snapshot), activeRef: clone(boundary.activeRef) };
+        } catch (error) {
+            context.chatMetadata[NAMESPACE] = metadataBefore;
+            for (const [message, before] of messagesBefore) { message.extra = before.extra; message.swipe_info = before.swipes; }
+            return result('save-failed', error);
+        }
+    }
+
+    async function removeBranch(message, swipeId) {
+        const context = adapter.getContext?.(); const envelope = context?.chatMetadata?.[NAMESPACE];
+        if (!validEnvelope(envelope) || !context?.chat?.includes(message)) return result('stale-message');
+        if (!Number.isInteger(swipeId) || swipeId < 0 || !message.swipe_info?.[swipeId]) return result('stale-swipe');
+        const metadataBefore = clone(envelope); const extraBefore = clone(message.extra); const swipesBefore = clone(message.swipe_info);
+        try {
+            delete message.swipe_info[swipeId].extra?.[NAMESPACE]?.branch;
+            if ((message.swipe_id ?? 0) === swipeId) delete message.extra?.[NAMESPACE]?.branch;
+            envelope.headRevision += 1; await adapter.saveChat(); return { ok: true };
+        } catch (error) { context.chatMetadata[NAMESPACE] = metadataBefore; message.extra = extraBefore; message.swipe_info = swipesBefore; return result('save-failed', error); }
+    }
+
+    async function restoreInitialSnapshot() {
+        const context = adapter.getContext?.(); const envelope = context?.chatMetadata?.[NAMESPACE];
+        if (!validEnvelope(envelope) || !envelope.initialSnapshot) return result('invalid-envelope');
+        const before = clone(envelope);
+        try { envelope.activeSnapshot = clone(envelope.initialSnapshot); envelope.stateVersion = envelope.initialSnapshot.version; envelope.activeRef = null; envelope.headRevision += 1; await adapter.saveChat(); return { ok: true, snapshot: clone(envelope.activeSnapshot) }; }
+        catch (error) { context.chatMetadata[NAMESPACE] = before; return result('save-failed', error); }
+    }
+
+    async function auditActiveRef() {
+        const context = adapter.getContext?.(); const envelope = context?.chatMetadata?.[NAMESPACE];
+        if (!validEnvelope(envelope)) return result('invalid-envelope');
+        if (!envelope.activeRef) return JSON.stringify(envelope.activeSnapshot) === JSON.stringify(envelope.initialSnapshot) ? { ok: true } : result('orphaned-active-ref');
+        const { messageId, swipeId, branchId } = envelope.activeRef;
+        const messageIndex = context?.chat?.findIndex(message => message?.extra?.[NAMESPACE]?.messageId === messageId) ?? -1;
+        const message = context?.chat?.[messageIndex]; const branch = getBranch(message, swipeId); const segment = branch?.segments?.at(-1);
+        if (!message || (message.swipe_id ?? 0) !== swipeId || branch?.branchId !== branchId || branch.status !== 'committed' || segment?.postSnapshot?.version !== envelope.stateVersion) return { ok: false, reason: 'orphaned-active-ref', messageIndex };
+        try { if (segment.assistantTextHash !== await textHash(message.mes ?? '')) return { ok: false, reason: 'assistant-text-mismatch', messageIndex }; }
+        catch (error) { return result('hash-failed', error); }
+        return { ok: true };
+    }
+
     async function markBranchFailed({ chatId, messageId, swipeId, branchId, requestId, baseSnapshot, baseStateVersion, isContinue, baseBranchId }) {
         const context = adapter.getContext?.();
         const envelope = context?.chatMetadata?.[NAMESPACE];
@@ -265,5 +339,5 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         return [...records.values()].map(clone);
     }
 
-    return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords };
+    return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef };
 }

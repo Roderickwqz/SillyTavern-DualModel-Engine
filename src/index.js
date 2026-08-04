@@ -7,6 +7,7 @@ import { createModelService } from './model-service.js';
 import { createStateValidator } from './state-validator.js';
 import { applyValidatedPatch } from './json-patch.js';
 import { createChatTaskQueue } from './task-queue.js';
+import { createRollbackManager } from './rollback-manager.js';
 import { narrativePreset } from './rules/narrative.js';
 import { resolveConfig } from './config-resolver.js';
 import { ensureMessageId, hashText } from './identity.js';
@@ -20,9 +21,15 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     const resolved = dependencies ?? {};
     const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
     const modelService = resolved.modelService ?? createModelService({ adapter: runtimeAdapter, validatePatch: validator.validatePatch, validateState: validator.validateState });
+    const queue = resolved.queue ?? createChatTaskQueue();
+    const rollbackManager = resolved.rollbackManager ?? createRollbackManager({
+        adapter: runtimeAdapter, store, queue,
+        confirm: resolved.confirmRecalculation ?? (async () => false),
+        replayTurn: resolved.replayTurn ?? (async () => ({ ok: false, reason: 'replay-unavailable' })),
+    });
     const orchestrator = createOrchestrator({
         adapter: runtimeAdapter, store, validator, modelService,
-        promptInjector: resolved.promptInjector ?? createPromptInjector({ adapter: runtimeAdapter }), queue: resolved.queue ?? createChatTaskQueue(),
+        promptInjector: resolved.promptInjector ?? createPromptInjector({ adapter: runtimeAdapter }), queue, rollbackManager,
         getConfig: resolved.getConfig ?? (() => {
             const envelope = store.loadEnvelope?.();
             return resolveConfig({ globalConfig: runtimeAdapter.getSettings?.(), chatConfig: envelope?.ok ? envelope.value.configOverrides : envelope?.configOverrides });
@@ -31,6 +38,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         ensureMessageId, applyPatch: applyValidatedPatch, getChecks: resolved.getChecks ?? (() => []), recordDiagnostic: resolved.recordDiagnostic ?? (() => {}), prepareSwipeGeneration: resolved.prepareSwipeGeneration ?? (input => store.prepareSwipeGeneration(input)),
     });
     orchestrator.start();
+    rollbackManager.bind();
     try {
         await orchestrator.initializeChat();
     } catch (error) {
