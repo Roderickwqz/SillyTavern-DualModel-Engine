@@ -7107,7 +7107,7 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     const extraBefore = clone2(message.extra);
     const swipesBefore = clone2(message.swipe_info);
     if (!isContinue && branch?.branchId !== branchId && baseSnapshot && Number.isSafeInteger(baseStateVersion)) {
-      if (baseBranchId && branch?.branchId !== baseBranchId) return result("branch-conflict");
+      if (branch && (!baseBranchId || branch.branchId !== baseBranchId)) return result("branch-conflict");
       branch = ensureBranch(message, swipeId, baseSnapshot, baseStateVersion, branchId, true);
     }
     if (branch?.branchId !== branchId) return result("branch-conflict");

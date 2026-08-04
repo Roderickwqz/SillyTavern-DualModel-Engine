@@ -232,7 +232,7 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         if (!message || (message.swipe_id ?? 0) !== swipeId || (isContinue && branch?.branchId !== branchId)) return result('branch-conflict');
         const metadataBefore = clone(envelope); const extraBefore = clone(message.extra); const swipesBefore = clone(message.swipe_info);
         if (!isContinue && branch?.branchId !== branchId && baseSnapshot && Number.isSafeInteger(baseStateVersion)) {
-            if (baseBranchId && branch?.branchId !== baseBranchId) return result('branch-conflict');
+            if (branch && (!baseBranchId || branch.branchId !== baseBranchId)) return result('branch-conflict');
             branch = ensureBranch(message, swipeId, baseSnapshot, baseStateVersion, branchId, true);
         }
         if (branch?.branchId !== branchId) return result('branch-conflict');

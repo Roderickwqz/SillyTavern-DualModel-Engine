@@ -118,6 +118,13 @@ it('T4 prepares a cloned source branch and T5 rejects missing source', () => {
     expect(store.prepareSwipeGeneration({ target: message() })).toEqual({ ok: false, reason: 'missing-source-branch' });
 });
 
+it('rejects a failed destination when the host selected an unrelated branch', async () => {
+    const other = { branchId: 'other', baseStateVersion: 0, baseSnapshot: { version: 0 }, segments: [], status: 'committed' };
+    const { store, current, context, saveChat } = setup({ current: message(other) }); const before = structuredClone(context.chatMetadata);
+    await expect(store.markBranchFailed({ chatId: 'chat-a', messageId: 'm1', swipeId: 0, branchId: 'dest', requestId: 'r', baseSnapshot: { version: 2 }, baseStateVersion: 2, isContinue: false })).resolves.toEqual({ ok: false, reason: 'branch-conflict' });
+    expect(current.swipe_info[0].extra.dualModelEngine.branch).toEqual(other); expect(context.chatMetadata).toEqual(before); expect(saveChat).not.toHaveBeenCalled();
+});
+
 it('rejects duplicate requests before hashing or save', async () => {
     const { store, current, saveChat } = setup({ metadata: envelope({ lastCommittedRequestId: 'r1' }) });
     expect(await store.commitSegment(commitInput(current))).toEqual({ ok: false, reason: 'duplicate-request' });
