@@ -108,7 +108,7 @@ export function createUIController(deps) {
         if (action === 'save-state') return safe(async () => {
             const envelope = deps.getEnvelope?.() ?? getContext().chatMetadata?.dualModelEngine; const before = envelope?.activeSnapshot;
             const text = root.querySelector('[data-dme-role="state-json"]')?.value ?? '';
-            const tab = createStateTab({ validateState: deps.validateState ?? (() => ({ ok: true, errors: [] })), diffState: deps.diffState ?? (() => []), confirm: confirmAction, commitManualPatch: deps.commitManualPatch ?? (async () => ({ ok: false, reason: 'unavailable' })) });
+            const tab = createStateTab({ validateState: deps.validateState ?? (() => ({ ok: true, errors: [] })), diffState: deps.diffState ?? (() => []), confirm: details => { const content = document.createElement('pre'); content.textContent = JSON.stringify(details.operations, null, 2); root.querySelector('[data-dme-role="patch-preview"]').textContent = content.textContent; return confirmAction({ ...details, message: 'Confirm locked state changes', content }); }, commitManualPatch: deps.commitManualPatch ?? (async () => ({ ok: false, reason: 'unavailable' })) });
             const parsed = tab.parse(text); if (!parsed.ok) { status = 'Invalid state JSON'; return; }
             const policy = deps.getPresetPolicy?.() ?? {}; const result = await tab.saveStateEdit(before, parsed.value, [...(policy.lockedPaths ?? []), ...(policy.ruleLockedPaths ?? [])], [...(policy.allowedPaths ?? []), ...(policy.lockedPaths ?? []), ...(policy.ruleLockedPaths ?? [])]);
             root.querySelector('[data-dme-role="patch-preview"]').textContent = JSON.stringify(result.operations ?? tab.preview(before, parsed.value), null, 2); status = result.reason ?? (result.ok ? 'State saved' : 'State not saved');
@@ -120,6 +120,11 @@ export function createUIController(deps) {
         if (action !== 'probe-tools' || probePending) return;
         probePending = Promise.resolve(deps.runToolProbe?.()).then(result => deps.saveProbeResult?.(result)).catch(error => { status = error.message ?? String(error); }).finally(() => { probePending = null; });
         await probePending; await render();
+    }
+    function onKeydown(event) {
+        if (event.target.getAttribute?.('role') !== 'tab' || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        const tabs = [...root.querySelectorAll('[role="tab"]')]; const index = tabs.indexOf(event.target); const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+        event.preventDefault(); tabs[next].focus(); tabs[next].click();
     }
     async function reloadProfiles() {
         profileDiagnostic = '';
@@ -137,13 +142,13 @@ export function createUIController(deps) {
         const host = document.querySelector('#extensions_settings') ?? document.querySelector('#extensions_settings2'); if (!host) return;
         host.querySelector('#dualmodel-settings')?.remove();
         host.insertAdjacentHTML('beforeend', template); root = host.querySelector('#dualmodel-settings:last-child');
-        root.addEventListener('change', onChange); root.addEventListener('click', onClick);
+        root.addEventListener('change', onChange); root.addEventListener('click', onClick); root.addEventListener('keydown', onKeydown);
         for (const eventName of PROFILE_EVENTS) { const event = deps.adapter?.events?.[eventName]; if (!event) continue; const listener = () => reloadProfiles().catch(error => { status = error.message ?? String(error); return render(); }); deps.adapter.on?.(event, listener); listeners.push([event, listener]); }
         const chatChanged = deps.adapter?.events?.CHAT_CHANGED;
         if (chatChanged) { deps.adapter.on?.(chatChanged, render); listeners.push([chatChanged, render]); }
         await render();
     }
     function setStatus(value) { status = typeof value === 'string' ? value : JSON.stringify(value); return render(); }
-    function destroy() { if (!root) return; root.removeEventListener('change', onChange); root.removeEventListener('click', onClick); for (const [event, listener] of listeners) deps.adapter.off?.(event, listener); listeners.length = 0; root.remove(); root = null; }
+    function destroy() { if (!root) return; root.removeEventListener('change', onChange); root.removeEventListener('click', onClick); root.removeEventListener('keydown', onKeydown); for (const [event, listener] of listeners) deps.adapter.off?.(event, listener); listeners.length = 0; root.remove(); root = null; }
     return { mount, render, setStatus, confirmAction, destroy };
 }

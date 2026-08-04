@@ -3,7 +3,7 @@ import { createRuleEngine } from './rule-engine.js';
 function safeText(value) { return typeof value === 'string' ? value : JSON.stringify(value); }
 function current(deps) {
     const context = deps.adapter.getContext?.(); const loaded = deps.store.loadEnvelope?.(); const envelope = loaded?.value ?? loaded;
-    if (!context?.chatId || context.groupId || deps.orchestrator?.getActiveGeneration?.() || !envelope?.activeRef) return null;
+    if (!context?.chatId || context.groupId || !deps.config?.().enabled || deps.orchestrator?.getActiveGeneration?.() || !envelope?.activeRef) return null;
     return { context, envelope, ref: structuredClone(envelope.activeRef), chat: context.chat, metadata: context.chatMetadata, headRevision: envelope.headRevision, stateVersion: envelope.stateVersion, preset: structuredClone(envelope.preset) };
 }
 function same(deps, captured) {
@@ -11,7 +11,7 @@ function same(deps, captured) {
     return Boolean(context?.chatId === captured.context.chatId && context.chat === captured.chat && context.chatMetadata === captured.metadata && envelope === captured.envelope && envelope.headRevision === captured.headRevision && envelope.stateVersion === captured.stateVersion && JSON.stringify(envelope.activeRef) === JSON.stringify(captured.ref) && JSON.stringify(envelope.preset) === JSON.stringify(captured.preset));
 }
 function download(name, value) {
-    const url = globalThis.URL.createObjectURL(new globalThis.Blob([JSON.stringify(value, null, 2)], { type: 'application/json' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = name; anchor.click(); globalThis.queueMicrotask(() => globalThis.URL.revokeObjectURL(url));
+    const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2); const url = globalThis.URL.createObjectURL(new globalThis.Blob([text], { type: 'application/json' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = name; anchor.click(); globalThis.queueMicrotask(() => globalThis.URL.revokeObjectURL(url));
 }
 
 export function createChatActions(deps) {
@@ -37,12 +37,12 @@ export function createChatActions(deps) {
         }),
         resummarize: async () => {
             const captured = current(deps); if (!captured) return { ok: false, reason: 'not-writable' };
-            const candidate = await deps.modelService.requestSummary({ profileId: deps.config().recorderProfileId, state: captured.envelope.activeSnapshot, baseVersion: captured.envelope.stateVersion }); candidate.state.version = captured.envelope.stateVersion + 1;
+            const candidate = await deps.modelService.requestSummary({ profileId: deps.config().recorderProfileId, presetId: captured.envelope.preset.id, state: captured.envelope.activeSnapshot, oldState: captured.envelope.activeSnapshot, baseVersion: captured.envelope.stateVersion, version: captured.envelope.stateVersion + 1 }); candidate.state.version = captured.envelope.stateVersion + 1;
             const valid = deps.validateState(captured.envelope.preset.id, candidate.state); if (!valid.ok) return { ok: false, reason: 'invalid-state', errors: valid.errors };
             if (!await deps.confirm({ action: 'resummarize', candidate: safeText(candidate.state) })) return { ok: false, reason: 'cancelled' };
-            return transaction('resummarize', latest => deps.store.commitCurrentBranchMutation({ chatId: latest.context.chatId, expectedHeadRevision: latest.envelope.headRevision, baseVersion: latest.envelope.stateVersion, activeRef: latest.ref, nextState: candidate.state, patch: { operations: [] }, source: 'resummarize' }));
+            return deps.queue.enqueue(captured.context.chatId, `resummarize-${deps.makeId()}`, async signal => { signal.throwIfAborted(); if (!same(deps, captured)) return { ok: false, reason: 'stale' }; return deps.store.commitCurrentBranchMutation({ chatId: captured.context.chatId, expectedHeadRevision: captured.headRevision, baseVersion: captured.stateVersion, activeRef: captured.ref, nextState: candidate.state, patch: { operations: [] }, source: 'resummarize' }); });
         },
-        importPreset: async () => { const file = await deps.pickFile?.(); if (!file) return { ok: false, reason: 'cancelled' }; try { return { ok: true, preset: deps.presetManager.importPreset(await file.text()) }; } catch (error) { return { ok: false, reason: 'invalid-preset', error: safeText(error) }; } },
+        importPreset: async () => { const file = await deps.pickFile?.(); if (!file) return { ok: false, reason: 'cancelled' }; try { return await deps.presetManager.importPreset(await file.text()); } catch (error) { return { ok: false, reason: 'invalid-preset', error: safeText(error) }; } },
         exportPreset: id => { const preset = deps.presetManager.exportPreset(id); download(`dualmodel-preset-${id}.json`, preset); return { ok: true }; },
         exportRaw: () => { const env = deps.store.loadEnvelope?.().value; const raw = { schemaVersion: env?.schemaVersion, preset: env?.preset, stateVersion: env?.stateVersion, activeSnapshot: env?.activeSnapshot, activeRef: env?.activeRef, records: deps.ledger.list() }; download('dualmodel-raw.json', raw); return { ok: true }; },
     };

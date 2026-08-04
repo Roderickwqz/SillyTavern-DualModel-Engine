@@ -9093,7 +9093,7 @@ function createPresetManager({ settings, builtInPresets = [], registerPreset, un
 }
 
 // src/ui/settings.html?raw
-var settings_default = '<section id="dualmodel-settings" class="dualmodel-panel" aria-label="DualModel Engine">\n  <h3>DualModel Engine</h3>\n  <fieldset data-scope="global"><legend>Global defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <label>Update policy <select data-dme-field="updatePolicy"><option value="after-each-reply">After each reply</option><option value="manual">Manual</option></select></label>\n    <label><input data-dme-field="showStatusBar" type="checkbox"> Show status bar</label>\n  </fieldset>\n  <fieldset data-scope="character" data-dme-role="character-settings"><legend>Current character defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n  </fieldset>\n  <fieldset data-scope="chat" data-dme-role="chat-settings"><legend>Current chat</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <output data-dme-role="chat-disabled-reason" aria-live="polite"></output>\n  </fieldset>\n  <output data-dme-role="task-status" aria-live="polite"></output>\n  <div role="tablist" aria-label="DualModel chat tools">\n    <button type="button" role="tab" aria-controls="dme-state" aria-selected="true" data-dme-tab="state">State</button><button type="button" role="tab" aria-controls="dme-checks" aria-selected="false" data-dme-tab="checks">Checks</button><button type="button" role="tab" aria-controls="dme-history" aria-selected="false" data-dme-tab="history">History</button><button type="button" role="tab" aria-controls="dme-rules" aria-selected="false" data-dme-tab="rules">Rules</button><button type="button" role="tab" aria-controls="dme-diagnostics" aria-selected="false" data-dme-tab="diagnostics">Diagnostics</button>\n  </div>\n  <aside data-dme-role="status-bar" aria-live="polite"></aside>\n  <section id="dme-state" role="tabpanel"><textarea data-dme-role="state-json"></textarea><pre data-dme-role="patch-preview"></pre><button type="button" data-dme-action="edit-state">Edit state</button><button type="button" data-dme-action="save-state">Save state</button></section>\n  <section id="dme-checks" role="tabpanel" hidden><div data-dme-role="checks-list"></div><label>Target <input data-dme-role="damage-target"></label><label>Damage <input data-dme-role="damage-expression"></label><label>Type <input data-dme-role="damage-type"></label><label>Reason <input data-dme-role="damage-reason"></label><button type="button" data-dme-action="reroll">Reroll</button><button type="button" data-dme-action="apply-damage">Apply damage</button></section>\n  <section id="dme-history" role="tabpanel" hidden><div data-dme-role="history-list"></div><button type="button" data-dme-action="recalculate">Recalculate</button><button type="button" data-dme-action="resummarize">Resummarize</button></section>\n  <section id="dme-rules" role="tabpanel" hidden><div data-dme-role="rules-list"></div><button type="button" data-dme-action="import-preset">Import</button><button type="button" data-dme-action="export-preset">Export</button></section>\n  <section id="dme-diagnostics" role="tabpanel" hidden><pre data-dme-role="diagnostics-json"></pre><button type="button" data-dme-action="export-raw">Export raw data</button></section>\n  <button type="button" data-dme-action="probe-tools">Probe tool calling</button>\n  <pre data-dme-role="diagnostic-reasons"></pre>\n</section>\n';
+var settings_default = '<section id="dualmodel-settings" class="dualmodel-panel" aria-label="DualModel Engine">\n  <h3>DualModel Engine</h3>\n  <fieldset data-scope="global"><legend>Global defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <label>Update policy <select data-dme-field="updatePolicy"><option value="after-each-reply">After each reply</option><option value="manual">Manual</option></select></label>\n    <label><input data-dme-field="showStatusBar" type="checkbox"> Show status bar</label>\n  </fieldset>\n  <fieldset data-scope="character" data-dme-role="character-settings"><legend>Current character defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n  </fieldset>\n  <fieldset data-scope="chat" data-dme-role="chat-settings"><legend>Current chat</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <output data-dme-role="chat-disabled-reason" aria-live="polite"></output>\n  </fieldset>\n  <output data-dme-role="task-status" aria-live="polite"></output>\n  <div role="tablist" aria-label="DualModel chat tools">\n    <button id="dme-tab-state" type="button" role="tab" tabindex="0" aria-controls="dme-state" aria-selected="true" data-dme-tab="state">State</button><button id="dme-tab-checks" type="button" role="tab" tabindex="-1" aria-controls="dme-checks" aria-selected="false" data-dme-tab="checks">Checks</button><button id="dme-tab-history" type="button" role="tab" tabindex="-1" aria-controls="dme-history" aria-selected="false" data-dme-tab="history">History</button><button id="dme-tab-rules" type="button" role="tab" tabindex="-1" aria-controls="dme-rules" aria-selected="false" data-dme-tab="rules">Rules</button><button id="dme-tab-diagnostics" type="button" role="tab" tabindex="-1" aria-controls="dme-diagnostics" aria-selected="false" data-dme-tab="diagnostics">Diagnostics</button>\n  </div>\n  <aside data-dme-role="status-bar" aria-live="polite"></aside>\n  <section id="dme-state" role="tabpanel" aria-labelledby="dme-tab-state"><textarea data-dme-role="state-json"></textarea><pre data-dme-role="patch-preview"></pre><button type="button" data-dme-action="edit-state">Edit state</button><button type="button" data-dme-action="save-state">Save state</button></section>\n  <section id="dme-checks" role="tabpanel" hidden><div data-dme-role="checks-list"></div><label>Target <input data-dme-role="damage-target"></label><label>Damage <input data-dme-role="damage-expression"></label><label>Type <input data-dme-role="damage-type"></label><label>Reason <input data-dme-role="damage-reason"></label><button type="button" data-dme-action="reroll">Reroll</button><button type="button" data-dme-action="apply-damage">Apply damage</button></section>\n  <section id="dme-history" role="tabpanel" hidden><div data-dme-role="history-list"></div><button type="button" data-dme-action="recalculate">Recalculate</button><button type="button" data-dme-action="resummarize">Resummarize</button></section>\n  <section id="dme-rules" role="tabpanel" hidden><div data-dme-role="rules-list"></div><button type="button" data-dme-action="import-preset">Import</button><button type="button" data-dme-action="export-preset">Export</button></section>\n  <section id="dme-diagnostics" role="tabpanel" hidden><pre data-dme-role="diagnostics-json"></pre><button type="button" data-dme-action="export-raw">Export raw data</button></section>\n  <button type="button" data-dme-action="probe-tools">Probe tool calling</button>\n  <pre data-dme-role="diagnostic-reasons"></pre>\n</section>\n';
 
 // src/ui/state-tab.js
 function touches(operation, path) {
@@ -9332,7 +9332,12 @@ function createUIController(deps) {
       const envelope = deps.getEnvelope?.() ?? getContext().chatMetadata?.dualModelEngine;
       const before = envelope?.activeSnapshot;
       const text = root.querySelector('[data-dme-role="state-json"]')?.value ?? "";
-      const tab = createStateTab({ validateState: deps.validateState ?? (() => ({ ok: true, errors: [] })), diffState: deps.diffState ?? (() => []), confirm: confirmAction, commitManualPatch: deps.commitManualPatch ?? (async () => ({ ok: false, reason: "unavailable" })) });
+      const tab = createStateTab({ validateState: deps.validateState ?? (() => ({ ok: true, errors: [] })), diffState: deps.diffState ?? (() => []), confirm: (details) => {
+        const content = document.createElement("pre");
+        content.textContent = JSON.stringify(details.operations, null, 2);
+        root.querySelector('[data-dme-role="patch-preview"]').textContent = content.textContent;
+        return confirmAction({ ...details, message: "Confirm locked state changes", content });
+      }, commitManualPatch: deps.commitManualPatch ?? (async () => ({ ok: false, reason: "unavailable" })) });
       const parsed = tab.parse(text);
       if (!parsed.ok) {
         status = "Invalid state JSON";
@@ -9360,6 +9365,15 @@ function createUIController(deps) {
     await probePending;
     await render();
   }
+  function onKeydown(event) {
+    if (event.target.getAttribute?.("role") !== "tab" || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    const tabs = [...root.querySelectorAll('[role="tab"]')];
+    const index = tabs.indexOf(event.target);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    event.preventDefault();
+    tabs[next].focus();
+    tabs[next].click();
+  }
   async function reloadProfiles() {
     profileDiagnostic = "";
     const profiles = deps.listProfiles?.() ?? [];
@@ -9385,6 +9399,7 @@ function createUIController(deps) {
     root = host.querySelector("#dualmodel-settings:last-child");
     root.addEventListener("change", onChange);
     root.addEventListener("click", onClick);
+    root.addEventListener("keydown", onKeydown);
     for (const eventName of PROFILE_EVENTS) {
       const event = deps.adapter?.events?.[eventName];
       if (!event) continue;
@@ -9410,6 +9425,7 @@ function createUIController(deps) {
     if (!root) return;
     root.removeEventListener("change", onChange);
     root.removeEventListener("click", onClick);
+    root.removeEventListener("keydown", onKeydown);
     for (const [event, listener] of listeners) deps.adapter.off?.(event, listener);
     listeners.length = 0;
     root.remove();
@@ -9426,7 +9442,7 @@ function current(deps) {
   const context = deps.adapter.getContext?.();
   const loaded = deps.store.loadEnvelope?.();
   const envelope = loaded?.value ?? loaded;
-  if (!context?.chatId || context.groupId || deps.orchestrator?.getActiveGeneration?.() || !envelope?.activeRef) return null;
+  if (!context?.chatId || context.groupId || !deps.config?.().enabled || deps.orchestrator?.getActiveGeneration?.() || !envelope?.activeRef) return null;
   return { context, envelope, ref: structuredClone(envelope.activeRef), chat: context.chat, metadata: context.chatMetadata, headRevision: envelope.headRevision, stateVersion: envelope.stateVersion, preset: structuredClone(envelope.preset) };
 }
 function same(deps, captured) {
@@ -9436,7 +9452,8 @@ function same(deps, captured) {
   return Boolean(context?.chatId === captured.context.chatId && context.chat === captured.chat && context.chatMetadata === captured.metadata && envelope === captured.envelope && envelope.headRevision === captured.headRevision && envelope.stateVersion === captured.stateVersion && JSON.stringify(envelope.activeRef) === JSON.stringify(captured.ref) && JSON.stringify(envelope.preset) === JSON.stringify(captured.preset));
 }
 function download(name, value) {
-  const url = globalThis.URL.createObjectURL(new globalThis.Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
+  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const url = globalThis.URL.createObjectURL(new globalThis.Blob([text], { type: "application/json" }));
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = name;
@@ -9488,18 +9505,22 @@ function createChatActions(deps) {
     resummarize: async () => {
       const captured = current(deps);
       if (!captured) return { ok: false, reason: "not-writable" };
-      const candidate = await deps.modelService.requestSummary({ profileId: deps.config().recorderProfileId, state: captured.envelope.activeSnapshot, baseVersion: captured.envelope.stateVersion });
+      const candidate = await deps.modelService.requestSummary({ profileId: deps.config().recorderProfileId, presetId: captured.envelope.preset.id, state: captured.envelope.activeSnapshot, oldState: captured.envelope.activeSnapshot, baseVersion: captured.envelope.stateVersion, version: captured.envelope.stateVersion + 1 });
       candidate.state.version = captured.envelope.stateVersion + 1;
       const valid = deps.validateState(captured.envelope.preset.id, candidate.state);
       if (!valid.ok) return { ok: false, reason: "invalid-state", errors: valid.errors };
       if (!await deps.confirm({ action: "resummarize", candidate: safeText(candidate.state) })) return { ok: false, reason: "cancelled" };
-      return transaction("resummarize", (latest) => deps.store.commitCurrentBranchMutation({ chatId: latest.context.chatId, expectedHeadRevision: latest.envelope.headRevision, baseVersion: latest.envelope.stateVersion, activeRef: latest.ref, nextState: candidate.state, patch: { operations: [] }, source: "resummarize" }));
+      return deps.queue.enqueue(captured.context.chatId, `resummarize-${deps.makeId()}`, async (signal) => {
+        signal.throwIfAborted();
+        if (!same(deps, captured)) return { ok: false, reason: "stale" };
+        return deps.store.commitCurrentBranchMutation({ chatId: captured.context.chatId, expectedHeadRevision: captured.headRevision, baseVersion: captured.stateVersion, activeRef: captured.ref, nextState: candidate.state, patch: { operations: [] }, source: "resummarize" });
+      });
     },
     importPreset: async () => {
       const file = await deps.pickFile?.();
       if (!file) return { ok: false, reason: "cancelled" };
       try {
-        return { ok: true, preset: deps.presetManager.importPreset(await file.text()) };
+        return await deps.presetManager.importPreset(await file.text());
       } catch (error) {
         return { ok: false, reason: "invalid-preset", error: safeText(error) };
       }
@@ -9674,7 +9695,13 @@ async function bootstrap({ adapter, dependencies } = {}) {
     }
   });
   const canRegisterTools = typeof runtimeAdapter.registerTool === "function";
-  const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: (id) => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), config: getEffectiveConfig, rollbackManager, confirm: resolved.showConfirm ?? (async () => true), currentInvalidIndex: resolved.currentInvalidIndex, pickFile: resolved.pickPresetFile, selectedCheck: resolved.selectedCheck });
+  const confirmAction = resolved.showConfirm ?? (async (details) => {
+    const context = runtimeAdapter.getContext?.();
+    if (typeof context?.Popup !== "function") return globalThis.window?.confirm(details.message ?? details.content?.textContent ?? "Confirm") ?? false;
+    const content = details.content instanceof globalThis.HTMLElement ? details.content : Object.assign(document.createElement("div"), { textContent: details.message ?? JSON.stringify(details) });
+    return await new context.Popup(content, context.POPUP_TYPE?.CONFIRM, "", {}).show() === context.POPUP_RESULT?.AFFIRMATIVE;
+  });
+  const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: (id) => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex: resolved.currentInvalidIndex, pickFile: resolved.pickPresetFile, selectedCheck: resolved.selectedCheck });
   let ui;
   try {
     orchestrator.start();
@@ -9763,12 +9790,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
         await (runtimeAdapter.saveGlobalSettings?.(value) ?? runtimeAdapter.saveSettings?.());
       } : async () => {
       },
-      showConfirm: resolved.showConfirm ?? (async (details) => {
-        const context = runtimeAdapter.getContext?.();
-        if (typeof context?.Popup !== "function") return window.confirm(details.content?.textContent ?? details.message);
-        const content = details.content instanceof globalThis.HTMLElement ? details.content : Object.assign(document.createElement("div"), { textContent: details.message ?? "" });
-        return await new context.Popup(content, context.POPUP_TYPE?.CONFIRM, "", {}).show() === context.POPUP_RESULT?.AFFIRMATIVE;
-      })
+      showConfirm: confirmAction
     });
     await ui.mount();
   } catch (error) {

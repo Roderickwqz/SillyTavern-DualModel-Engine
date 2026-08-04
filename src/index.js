@@ -118,7 +118,8 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         resolveDamage: async (input, state) => { const preset = orchestrator.getActiveGeneration()?.preset ?? d20LitePreset; const engine = createRuleEngine({ nextUint32, preset }); const hpBefore = preset.readActor(state, input.target)?.hp?.current; const result = engine.applyDamage(input, state); return { state: result.state, audit: { rolls: result.damage.rolls, raw: result.damage.rawTotal, total: result.damage.total, absorbed: result.damage.absorbed, hpBefore, hpAfter: preset.readActor(result.state, input.target)?.hp?.current } }; },
     });
     const canRegisterTools = typeof runtimeAdapter.registerTool === 'function';
-    const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: id => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), config: getEffectiveConfig, rollbackManager, confirm: resolved.showConfirm ?? (async () => true), currentInvalidIndex: resolved.currentInvalidIndex, pickFile: resolved.pickPresetFile, selectedCheck: resolved.selectedCheck });
+    const confirmAction = resolved.showConfirm ?? (async details => { const context = runtimeAdapter.getContext?.(); if (typeof context?.Popup !== 'function') return globalThis.window?.confirm(details.message ?? details.content?.textContent ?? 'Confirm') ?? false; const content = details.content instanceof globalThis.HTMLElement ? details.content : Object.assign(document.createElement('div'), { textContent: details.message ?? JSON.stringify(details) }); return (await new context.Popup(content, context.POPUP_TYPE?.CONFIRM, '', {}).show()) === context.POPUP_RESULT?.AFFIRMATIVE; });
+    const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: id => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex: resolved.currentInvalidIndex, pickFile: resolved.pickPresetFile, selectedCheck: resolved.selectedCheck });
     let ui;
     try {
         orchestrator.start();
@@ -170,12 +171,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
             onConfigChanged: () => orchestrator.initializeChat(),
             runToolProbe: resolved.runToolProbe ?? (() => runDynamicToolProbe(runtimeAdapter)),
             saveProbeResult: resolved.runToolProbe ? async result => { const value = structuredClone(runtimeAdapter.getGlobalSettings?.() ?? runtimeAdapter.getSettings?.() ?? {}); value.toolProbe = structuredClone(result); await (runtimeAdapter.saveGlobalSettings?.(value) ?? runtimeAdapter.saveSettings?.()); } : async () => {},
-            showConfirm: resolved.showConfirm ?? (async details => {
-                const context = runtimeAdapter.getContext?.();
-                if (typeof context?.Popup !== 'function') return window.confirm(details.content?.textContent ?? details.message);
-                const content = details.content instanceof globalThis.HTMLElement ? details.content : Object.assign(document.createElement('div'), { textContent: details.message ?? '' });
-                return (await new context.Popup(content, context.POPUP_TYPE?.CONFIRM, '', {}).show()) === context.POPUP_RESULT?.AFFIRMATIVE;
-            }),
+            showConfirm: confirmAction,
         });
         await ui.mount();
     } catch (error) {
