@@ -1,61 +1,42 @@
 # SillyTavern DualModel Engine
 
-一个面向 SillyTavern 的第三方扩展，通过“剧情模型 + 状态模型 + 可选规则工具”把长篇角色扮演中的剧情生成、长期状态和数值判定分开处理。
+DualModel Engine is a Git-installable SillyTavern extension for local, one-to-one roleplay. It keeps versioned narrative state with a separate Recorder model, restores state per swipe, and optionally provides code-authoritative D20 and declarative custom rules.
 
-首个完整版本面向单用户、本机部署和一对一角色聊天，复用 SillyTavern 的连接、事件和聊天存储，不运行独立后端。群组聊天、多人共享和跨设备同步不在当前范围内。
+## Requirements and boundaries
 
-## 项目目标
+- SillyTavern **1.18.0 or later**; this extension is for one local user, one active browser tab, and one-to-one character chats.
+- Group chats are detected and remain read-only: the extension never writes DualModel Engine data to them.
+- No server, database, remote storage, credential form, or runtime CDN is used. Installers receive the committed bundle and do not run npm at runtime.
+- The Narrator always uses SillyTavern's current main connection. The Recorder uses a selected Connection Profile and never changes the Narrator connection.
 
-- 让重要事实不再只依赖模型的临时上下文记忆。
-- 在每轮剧情结束后，由独立状态模型维护结构化状态。
-- 在下一轮生成前，将最新硬状态重新注入剧情模型。
-- 可选启用轻量 D20 判定，由代码生成骰点并计算结果。
-- 支持全局默认、角色默认和当前聊天覆盖。
-- 正确处理重生成、swipe、继续生成、删改消息和状态回滚。
-- 复用 SillyTavern Connection Profiles，并继续通过现有 `cli-proxy` 访问模型。
+## Install and configure
 
-## 模型职责
+1. In SillyTavern, open **Extensions** and choose **Install extension** (Git URL).
+2. Paste `https://github.com/Roderickwqz/SillyTavern-DualModel-Engine` and install. SillyTavern loads `dist/index.js` and `dist/style.css` from the repository.
+3. Enable the **Connection Manager** extension, then create a Connection Profile for the Recorder model. Keys, base URL, proxy configuration, and model credentials remain in SillyTavern; do not enter them in this extension.
+4. In DualModel Engine settings, select that Recorder Profile, choose a mode, and enable the extension for a supported one-to-one chat. The global and character defaults apply only when a chat is first initialized.
 
-### Narrator（剧情模型）
+Modes are `narrative`, `d20-lite`, and imported `custom` presets. To import a custom preset, open the Rules tab, choose **Import preset**, select a JSON file, review the displayed summary, and confirm; only declarative JSON presets are accepted. Existing chats pin their preset ID and version. To switch an established chat, use the explicit export → confirm → reset flow; it removes only this extension's saved namespace and leaves message text and other extensions' data alone.
 
-负责角色扮演、对话、场景描写和事件推进。默认跟随 SillyTavern 当前主连接。启用 D20 时，它可以在生成过程中调用扩展注册的规则工具，但不能自行编造骰点或修改计算结果。
+## D20, tools, and other dice extensions
 
-### Recorder / Director（状态模型）
+Use **Probe tools** after configuring the Narrator/proxy. When tool calling is available, `DualModelResolveD20Check` is the authoritative formal-check tool. A failed tool probe automatically downgrades `automatic-tool` to `enforced-preflight` and shows the reason; if preflight is unavailable, formal D20 is disabled while narrative state can continue.
 
-在剧情回复完成后读取旧状态、本轮玩家消息、规则记录和新剧情，输出经过 Schema 约束的状态变更。它也可以维护未解决剧情线和软性导演建议，但不能绕过代码校验直接覆盖状态。
+Official D&D Dice can coexist for menus and `/roll`. It is not this extension's authority or dependency. If both function tools are enabled, disable the official extension's Function Tool so the Narrator does not select an unbound roll tool.
 
-## 每轮数据流
+## Recovery and data ownership
 
-```text
-玩家消息
-  -> 注入当前状态与规则
-  -> Narrator 开始生成
-  -> 必要时调用 ResolveD20Check
-  -> 代码返回不可篡改的判定结果
-  -> Narrator 完成剧情
-  -> Recorder 后台生成状态 Patch
-  -> 扩展校验、提交并保存快照
-  -> 下一轮使用新状态
+Before destructive recovery, preset replacement, or diagnosis, export raw DualModel Engine data from the chat panel. Swipe selection restores the selected branch; edits and deletions mark later data stale and offer confirmed recalculation from the last valid snapshot. Recorder errors, invalid patches, stale results, cancellation, and save failures preserve the last valid state.
+
+Disabling the extension stops state injection and background tasks. It **does not delete** data already saved in a chat. Re-enable it or export the raw namespace to recover it later. See [data format documentation](docs/data-format.md) and [developer testing instructions](docs/testing.md).
+
+## Development
+
+Requires Node.js `>=20.19.0`.
+
+```bash
+npm ci
+npm run check
 ```
 
-## 规则模式
-
-- 纯剧情状态：关系、地点、时间、任务、物品、伤势、承诺、秘密和伏笔。
-- 轻量 D20：在纯剧情状态基础上增加属性、技能、HP、优势/劣势、DC、伤害骰和状态效果。
-- 自定义规则：通过可导入、可绑定的规则预设定义特定剧本状态。
-
-## 与官方 D&D Dice 的关系
-
-官方 D&D Dice 扩展可以共存，但不是本项目的核心依赖。它适合手动菜单和 `/roll`；本项目的 `ResolveD20Check` 负责绑定角色属性、DC、状态变化、消息分支和审计记录。两者同时安装时，建议关闭官方扩展的 Function Tool，避免模型选错权威判定工具。
-
-## 集成方式
-
-本项目作为独立 GitHub 仓库发布，通过 SillyTavern 的“安装扩展”功能安装，不修改 SillyTavern 核心代码，也不引入 FastAPI 服务。首个完整版本包含纯剧情状态、分支回滚、轻量 D20 和声明式自定义规则；它们按阶段实现和验收，而不是缩减为只交付其中一部分。
-
-## 当前状态
-
-项目处于设计阶段，尚未开始功能实现。完整设计见：
-
-- [双模型剧情与状态引擎设计规格](docs/superpowers/specs/2026-08-03-dual-model-engine-design.md)
-
-开始开发前，应先验证当前 `cli-proxy` 是否完整支持 OpenAI 风格的 `tools`、`tool_calls` 和流式工具调用。如果不支持，设计中已定义生成前裁决的兼容路径。
+The complete manual-host procedure is in [tests/e2e/manual-model-checklist.md](tests/e2e/manual-model-checklist.md).

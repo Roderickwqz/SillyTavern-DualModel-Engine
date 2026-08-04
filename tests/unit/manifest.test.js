@@ -14,6 +14,9 @@ describe('extension package', () => {
         });
         expect(existsSync('dist/index.js')).toBe(true);
         expect(existsSync('dist/style.css')).toBe(true);
+        expect(manifest.version).toBe('1.0.0');
+        const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
+        expect(packageJson.version).toBe(manifest.version);
     });
 
     it('checks committed distribution assets after building them', () => {

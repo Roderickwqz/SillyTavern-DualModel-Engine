@@ -6866,7 +6866,14 @@ function createOrchestrator(deps) {
     if (!applied.ok) throw new Error(JSON.stringify(applied.errors));
     applied.value.version = captured.baseVersion + 1;
     const committed = await deps.store.commitSegment({ chatId: captured.chatId, message, messageId: captured.assistantMessageId, branchId: captured.branchId, swipeId: captured.swipeId, expectedHeadRevision: captured.expectedHeadRevision, baseStateVersion: captured.baseVersion, baseSnapshot: captured.baseSnapshot, requestId: captured.requestId, userMessageId: captured.userMessageId, patch: response.patch, checks: clone(captured.checks), assistantText, nextState: applied.value, isContinue: captured.type === "continue", allowBaseVersionMismatch: ["swipe", "regenerate"].includes(captured.type), baseBranchId: captured.baseBranchId, baseMessageId: captured.targetMessageId, baseSwipeId: captured.baseSwipeId, signal });
-    if (committed?.ok) deps.ledger?.commit(captured.pendingRuleRecords);
+    if (committed?.ok) {
+      deps.ledger?.commit(captured.pendingRuleRecords);
+      try {
+        deps.rollbackManager?.refresh?.();
+      } catch (error) {
+        diagnostic({ requestId: captured.requestId, reason: "rollback-refresh-failed", error });
+      }
+    }
     return committed;
   }
   async function replayTurn({ messageIndex, swipeId, baseSnapshot, signal }) {
@@ -8375,8 +8382,8 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
           refresh();
           return { ok: true, ignored: "regenerate-replacement" };
         }
-        await store.auditActiveRef();
-        const value = await invalidateForDelete(boundary);
+        const audit = await store.auditActiveRef();
+        const value = boundary < context().chat.length || audit?.ok ? await invalidateForDelete(boundary) : await recoverAfterDelete();
         refresh();
         return value;
       });
@@ -9236,6 +9243,8 @@ function createUIController(deps) {
   const diagnostic = () => {
     const reasons = (deps.capabilities?.reasons ?? []).filter((reason) => reason !== "Group chats are not supported" && reason !== "No supported Recorder connection profile is configured");
     const profiles = deps.listProfiles?.() ?? [];
+    const probe = deps.getToolProbe?.();
+    if (probe && !probe.supported && probe.reason) reasons.push(`Tool calling unavailable: ${probe.reason}`);
     if (getContext().groupId) reasons.push("Group chats are not supported");
     if (!profiles.length) reasons.push("No supported Recorder connection profile is configured");
     for (const scope of ["global", "character", "chat"]) {
@@ -9573,7 +9582,9 @@ function createChatActions(deps) {
     reroll: () => transaction("reroll", async (captured) => {
       const records = deps.ledger.list();
       const old = deps.selectedCheck?.() ?? records.findLast((record2) => record2.kind === "check" && record2.branchId === captured.ref.branchId);
-      if (!old?.request || old.kind !== "check" || old.branchId !== captured.ref.branchId) return { ok: false, reason: "missing-check" };
+      const message = captured.messages.find((item) => item?.extra?.dualModelEngine?.messageId === captured.ref.messageId);
+      const activeChecks = message?.swipe_info?.[captured.ref.swipeId]?.extra?.dualModelEngine?.branch?.segments?.flatMap((segment) => segment.checks ?? []) ?? [];
+      if (!old?.request || old.kind !== "check" || old.branchId !== captured.ref.branchId && !activeChecks.some((record2) => record2?.checkId === old.checkId)) return { ok: false, reason: "missing-check" };
       const preset = deps.preset(captured.preset.id);
       if (!preset?.readActor || !preset?.writeActor) return { ok: false, reason: "rules-unavailable" };
       let result2;
@@ -9899,8 +9910,14 @@ async function bootstrap({ adapter, dependencies } = {}) {
   });
   let selectedCheckId = null;
   const selectedCheck = resolved.selectedCheck ?? (() => {
-    const ref = store.loadEnvelope?.().value?.activeRef;
-    return ledger.list().find((record) => record.checkId === selectedCheckId && record.branchId === ref?.branchId) ?? null;
+    const value = store.loadEnvelope?.().value;
+    const ref = value?.activeRef;
+    const checks = runtimeAdapter.getContext?.()?.chat?.flatMap((message) => message?.swipe_info?.flatMap((swipe) => {
+      const branch = swipe?.extra?.[NAMESPACE]?.branch;
+      return branch?.branchId === ref?.branchId ? branch.segments?.flatMap((segment) => segment.checks ?? []) ?? [] : [];
+    }) ?? []) ?? [];
+    const checkId = selectedCheckId ?? checks.findLast((record) => record?.kind === "check")?.checkId;
+    return checks.find((record) => record?.kind === "check" && record.checkId === checkId) ?? null;
   });
   const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: (id) => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), validateDamage: validate2(damageValidator), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex, pickFile: resolved.pickPresetFile ?? pickPresetFile, selectedCheck, download: resolved.download, diffState });
   let ui;
@@ -9914,6 +9931,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
       queue,
       capabilities: probeHostCapabilities(runtimeAdapter),
       presetManager,
+      getToolProbe: () => runtimeAdapter.getSettings?.().toolProbe,
       getGlobalConfig: () => runtimeAdapter.getGlobalSettings?.() ?? runtimeAdapter.getSettings?.() ?? {},
       getCharacterConfig: () => {
         const character = runtimeAdapter.getCurrentCharacter?.();
@@ -9942,7 +9960,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
       },
       listChecks: () => {
         const ref = (store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE])?.activeRef;
-        return ref ? ledger.list().filter((record) => record.branchId === ref.branchId) : [];
+        return ref ? (runtimeAdapter.getContext?.()?.chat ?? []).flatMap((message) => message?.swipe_info?.flatMap((swipe) => swipe?.extra?.[NAMESPACE]?.branch?.branchId === ref.branchId ? swipe.extra[NAMESPACE].branch.segments?.flatMap((segment) => segment.checks ?? []) ?? [] : []) ?? []) : [];
       },
       onSelectCheck: (id) => {
         selectedCheckId = id;
@@ -10010,16 +10028,22 @@ async function bootstrap({ adapter, dependencies } = {}) {
     throw error;
   }
   const stopOrchestrator = orchestrator.stop.bind(orchestrator);
+  let uiDestroyed = false;
+  let toolsUnregistered = !canRegisterTools;
   let orchestratorStopped = false;
-  orchestrator.stop = () => {
+  let queueDisposed = false;
+  function stop() {
     let first;
-    try {
+    if (!uiDestroyed) try {
       ui?.destroy();
+      uiDestroyed = true;
     } catch (error) {
       first = error;
+      uiDestroyed = true;
     }
-    if (canRegisterTools) try {
+    if (!toolsUnregistered) try {
       toolRegistry.unregister();
+      toolsUnregistered = true;
     } catch (error) {
       first ??= error;
     }
@@ -10029,8 +10053,15 @@ async function bootstrap({ adapter, dependencies } = {}) {
     } catch (error) {
       first ??= error;
     }
+    if (!queueDisposed) try {
+      queue.dispose?.();
+      queueDisposed = true;
+    } catch (error) {
+      first ??= error;
+    }
     if (first) throw first;
-  };
+  }
+  orchestrator.stop = stop;
   return {
     name: "dualModelEngine",
     adapter: runtimeAdapter,
@@ -10040,7 +10071,10 @@ async function bootstrap({ adapter, dependencies } = {}) {
     toolRegistry,
     adjudicator,
     presetManager,
-    ui
+    ui,
+    async stop() {
+      stop();
+    }
   };
 }
 if (typeof document !== "undefined" && import.meta.url.includes("/scripts/extensions/")) {
