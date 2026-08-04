@@ -31,7 +31,12 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         ensureMessageId, applyPatch: applyValidatedPatch, getChecks: resolved.getChecks ?? (() => []), recordDiagnostic: resolved.recordDiagnostic ?? (() => {}), prepareSwipeGeneration: resolved.prepareSwipeGeneration ?? (input => store.prepareSwipeGeneration(input)),
     });
     orchestrator.start();
-    await orchestrator.initializeChat();
+    try {
+        await orchestrator.initializeChat();
+    } catch (error) {
+        orchestrator.stop();
+        throw error;
+    }
 
     return {
         name: 'dualModelEngine',

@@ -79,6 +79,23 @@ it('marks only the still-matching branch failed transactionally', async () => {
     await expect(store.markBranchFailed({ chatId: 'chat-a', messageId: 'm1', swipeId: 0, branchId: 'other', requestId: 'r3' })).resolves.toEqual({ ok: false, reason: 'branch-conflict' });
 });
 
+it('rolls back a newly-created failed branch when saving fails', async () => {
+    const saveChat = vi.fn().mockRejectedValue(new Error('disk'));
+    const { store, current, context } = setup({ saveChat });
+    const before = structuredClone({ metadata: context.chatMetadata, extra: current.extra, swipes: current.swipe_info });
+    await expect(store.markBranchFailed({ chatId: 'chat-a', messageId: 'm1', swipeId: 0, branchId: 'new', requestId: 'r', baseSnapshot: { version: 2, value: 2 }, baseStateVersion: 2, isContinue: false })).resolves.toMatchObject({ ok: false, reason: 'save-failed' });
+    expect({ metadata: context.chatMetadata, extra: current.extra, swipes: current.swipe_info }).toEqual(before);
+});
+
+it('rolls back a replaced cloned source branch when saving fails', async () => {
+    const saveChat = vi.fn().mockRejectedValue(new Error('disk'));
+    const source = { branchId: 'source', baseStateVersion: 1, baseSnapshot: { version: 1 }, segments: [], status: 'committed' };
+    const { store, current, context } = setup({ current: message(source), saveChat });
+    const before = structuredClone({ metadata: context.chatMetadata, extra: current.extra, swipes: current.swipe_info });
+    await store.markBranchFailed({ chatId: 'chat-a', messageId: 'm1', swipeId: 0, branchId: 'dest', requestId: 'r', baseSnapshot: { version: 1 }, baseStateVersion: 1, baseBranchId: 'source', isContinue: false });
+    expect({ metadata: context.chatMetadata, extra: current.extra, swipes: current.swipe_info }).toEqual(before);
+});
+
 it('rejects duplicate requests before hashing or save', async () => {
     const { store, current, saveChat } = setup({ metadata: envelope({ lastCommittedRequestId: 'r1' }) });
     expect(await store.commitSegment(commitInput(current))).toEqual({ ok: false, reason: 'duplicate-request' });

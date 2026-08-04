@@ -6786,9 +6786,15 @@ function createOrchestrator(deps) {
   function start() {
     if (started) return;
     started = true;
-    for (const [name, fn] of [[deps.adapter.events?.CHAT_CHANGED, handlers.chatChanged], [deps.adapter.events?.GENERATION_AFTER_COMMANDS, handlers.beforeGeneration], [deps.adapter.events?.GENERATION_ENDED, handlers.generationEnded], [deps.adapter.events?.GENERATION_STOPPED, handlers.generationStopped]]) if (name) {
-      deps.adapter.on(name, fn);
-      unbind.push(() => deps.adapter.off(name, fn));
+    try {
+      for (const [name, fn] of [[deps.adapter.events?.CHAT_CHANGED, handlers.chatChanged], [deps.adapter.events?.GENERATION_AFTER_COMMANDS, handlers.beforeGeneration], [deps.adapter.events?.GENERATION_ENDED, handlers.generationEnded], [deps.adapter.events?.GENERATION_STOPPED, handlers.generationStopped]]) if (name) {
+        deps.adapter.on(name, fn);
+        unbind.push(() => deps.adapter.off(name, fn));
+      }
+    } catch (error) {
+      while (unbind.length) unbind.pop()();
+      started = false;
+      throw error;
     }
   }
   function stop() {
@@ -7074,14 +7080,14 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     const message = context.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === messageId);
     let branch = message && getBranch(message, swipeId);
     if (!message || (message.swipe_id ?? 0) !== swipeId || isContinue && branch?.branchId !== branchId) return result("branch-conflict");
+    const metadataBefore = clone2(envelope);
+    const extraBefore = clone2(message.extra);
+    const swipesBefore = clone2(message.swipe_info);
     if (!isContinue && branch?.branchId !== branchId && baseSnapshot && Number.isSafeInteger(baseStateVersion)) {
       if (baseBranchId && branch?.branchId !== baseBranchId) return result("branch-conflict");
       branch = ensureBranch(message, swipeId, baseSnapshot, baseStateVersion, branchId, true);
     }
     if (branch?.branchId !== branchId) return result("branch-conflict");
-    const metadataBefore = clone2(envelope);
-    const extraBefore = clone2(message.extra);
-    const swipesBefore = clone2(message.swipe_info);
     try {
       branch.status = "stale";
       message.extra[NAMESPACE] = clone2(message.swipe_info[swipeId].extra[NAMESPACE]);
@@ -7714,7 +7720,12 @@ async function bootstrap({ adapter, dependencies } = {}) {
     prepareSwipeGeneration: resolved.prepareSwipeGeneration ?? ((input) => store.prepareSwipeGeneration(input))
   });
   orchestrator.start();
-  await orchestrator.initializeChat();
+  try {
+    await orchestrator.initializeChat();
+  } catch (error) {
+    orchestrator.stop();
+    throw error;
+  }
   return {
     name: "dualModelEngine",
     adapter: runtimeAdapter,
