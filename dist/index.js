@@ -9956,7 +9956,8 @@ async function bootstrap({ adapter, dependencies } = {}) {
       },
       getPresetUiFields: () => {
         const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE];
-        return presetManager.getPreset(envelope?.preset?.id)?.ui ?? [];
+        const presetId = envelope?.preset?.id;
+        return presetId ? presetManager.getPreset(presetId)?.ui ?? [] : [];
       },
       listChecks: () => {
         const ref = (store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE])?.activeRef;

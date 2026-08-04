@@ -21,6 +21,7 @@ import { bootstrap, createDiagnosticRecorder, createManualPatchCommitter } from 
 describe('bootstrap', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        document.body.innerHTML = '';
     });
 
     it('constructs and starts the injected adapter orchestration without persisting', async () => {
@@ -57,6 +58,28 @@ describe('bootstrap', () => {
         expect(adapter.saveChat).not.toHaveBeenCalled();
         expect(adapter.saveSettings).not.toHaveBeenCalled();
         expect(result.orchestrator).toBeDefined();
+    });
+
+    it('mounts settings for a disabled cold-start chat without an envelope', async () => {
+        document.body.innerHTML = '<div id="extensions_settings"></div>';
+        const settings = { customPresets: [] };
+        const context = { chatId: 'cold-start', groupId: null, chat: [], chatMetadata: {} };
+        const adapter = {
+            events: {},
+            getContext: () => context,
+            getSettings: () => settings,
+            getGlobalSettings: () => settings,
+            getChatMetadata: () => context.chatMetadata,
+            listProfiles: () => [],
+            on: vi.fn(),
+            off: vi.fn(),
+        };
+
+        const app = await bootstrap({ adapter, dependencies: { promptInjector: { refresh: vi.fn(), clear: vi.fn() } } });
+
+        expect(document.querySelector('#dualmodel-settings')).not.toBeNull();
+        expect(document.querySelector('[data-scope="global"] [data-dme-field="rulePresetId"] option[value="narrative"]')).not.toBeNull();
+        app.orchestrator.stop();
     });
 
     it('loads the runtime adapter only when one is not injected', async () => {
