@@ -44,3 +44,9 @@
 - Swipe/regenerate invoke the optional preparation seam and retain source branch identity; compiled presets are not cloned. Tool-call message metadata is filtered consistently.
 
 Round-1 focused verification: `tests/integration/narrative-turn.test.js`, state-store, queue, adapter, and bootstrap tests passed. `npm run check` passed (125 tests, lint, build). The clean build output is staged in the round-1 commit.
+
+## Round 1 final verification (HEAD `7330b1b`)
+
+- `npm run check` exited 0: ESLint passed, full Vitest suite passed **126 tests in 14 files**, and esbuild completed.
+- `npm run test:run -- tests/integration/narrative-turn.test.js tests/unit/state-store.test.js tests/unit/task-queue.test.js tests/unit/st-adapter.test.js tests/unit/bootstrap.test.js` exited 0: **39 tests in 5 files** passed.
+- The clean build produced no additional tracked `dist/` changes. `git status --short` was empty before this report-verification append.
