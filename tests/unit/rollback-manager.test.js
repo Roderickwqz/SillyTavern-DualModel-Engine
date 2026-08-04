@@ -26,3 +26,10 @@ it('does not queue or persist event mutations in read-only chats', async () => {
     await expect(manager.invalidateForDelete(0)).resolves.toEqual({ ok: false, reason: 'read-only' });
     expect(enqueue).not.toHaveBeenCalled();
 });
+
+it('keeps source reusable checks authoritative while appending new checks', async () => {
+    const source = { branchId: 'b', baseSnapshot: { version: 1 }, baseStateVersion: 1, segments: [{ checks: [{ kind: 'check', checkId: 'source', pass: true }] }] };
+    const message = { swipe_id: 0, extra: { dualModelEngine: { messageId: 'm' } }, swipe_info: [{ extra: { dualModelEngine: { branch: source } } }] };
+    const manager = createRollbackManager({ adapter: { getContext: () => ({ chatId: 'a', chat: [message], chatMetadata: { dualModelEngine: { headRevision: 3 } } }) }, store: { getBranch: () => source }, queue: {} });
+    expect(manager.prepareSwipeGeneration(0, 'swipe')).toMatchObject({ expectedHeadRevision: 3, reusableChecks: [{ checkId: 'source', pass: true }] });
+});

@@ -6696,17 +6696,19 @@ function createOrchestrator(deps) {
       return { ignored: true, reason: "missing-recorder-profile" };
     }
     const preset = deps.getPreset(config.rulePresetId);
-    try {
-      await deps.promptInjector.refresh({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection });
-    } catch (error) {
-      diagnostic({ reason: "prompt-refresh-failed", error });
-      return { ignored: true, reason: "prompt-refresh-failed" };
-    }
     activeChatId = current.chatId;
     generation = capture(type, current, envelope, config, preset);
     if (!generation) {
       diagnostic({ reason: "missing-source-branch" });
       return { ignored: true, reason: "missing-source-branch" };
+    }
+    const hardRuleText = deps.formatReusableChecks?.(generation.reusableChecks) ?? "";
+    try {
+      await deps.promptInjector.refresh({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection, hardRuleText });
+    } catch (error) {
+      generation = null;
+      diagnostic({ reason: "prompt-refresh-failed", error });
+      return { ignored: true, reason: "prompt-refresh-failed" };
     }
     return { ok: true, requestId: generation.requestId };
   }
@@ -6748,15 +6750,23 @@ function createOrchestrator(deps) {
     const envelope = envelopeValue(deps.store.loadEnvelope());
     if (!envelope) return { ok: false, reason: "missing-envelope" };
     const previousUser = current.chat.slice(0, messageIndex).findLast((item) => item?.is_user);
+    const capturedMessageId = messageId(message);
+    const capturedText = message.mes ?? "";
+    const capturedUserId = previousUser ? messageId(previousUser) : null;
+    const capturedUserText = previousUser?.mes ?? "";
     const checks = clone(branch.segments?.flatMap((segment) => segment.checks ?? []) ?? []);
     try {
-      const response = await deps.modelService.requestPatch({ profileId: config.recorderProfileId, baseVersion: baseSnapshot.version, oldState: baseSnapshot, playerText: previousUser?.mes ?? "", assistantText: message.mes ?? "", checks, signal });
+      const response = await deps.modelService.requestPatch({ profileId: config.recorderProfileId, baseVersion: baseSnapshot.version, oldState: baseSnapshot, playerText: capturedUserText, assistantText: capturedText, checks, signal });
+      const latest = context();
+      const latestMessage = latest.chat?.find((item) => item?.extra?.dualModelEngine?.messageId === capturedMessageId);
+      const latestUser = capturedUserId ? latest.chat?.find((item) => item?.extra?.dualModelEngine?.messageId === capturedUserId) : null;
+      if (latest.chatId !== current.chatId || !latestMessage || latestMessage.mes !== capturedText || (latestMessage.swipe_id ?? 0) !== swipeId || capturedUserId && (!latestUser || latestUser.mes !== capturedUserText)) return { ok: false, reason: "assistant-text-mismatch" };
       const validation = deps.validator.validatePatch(config.rulePresetId, response.patch, { expectedVersion: baseSnapshot.version, allowedPaths: preset.allowedPaths, lockedPaths: [...preset.lockedPaths, ...preset.ruleLockedPaths ?? []] });
       if (!validation.ok) return { ok: false, reason: "invalid-patch" };
       const applied = deps.applyPatch({ state: baseSnapshot, patch: response.patch, policy: preset, validateState: (state) => deps.validator.validateState(config.rulePresetId, state) });
       if (!applied.ok) return { ok: false, reason: "invalid-state" };
       applied.value.version = baseSnapshot.version + 1;
-      const committed = await deps.store.commitSegment({ chatId: current.chatId, message, messageId: messageId(message), branchId: branch.branchId, swipeId, expectedHeadRevision: envelope.headRevision, baseStateVersion: baseSnapshot.version, baseSnapshot, requestId: deps.makeId?.() ?? crypto.randomUUID(), userMessageId: previousUser ? messageId(previousUser) : null, patch: response.patch, checks, assistantText: message.mes ?? "", nextState: applied.value, isContinue: false });
+      const committed = await deps.store.commitSegment({ chatId: current.chatId, message: latestMessage, messageId: capturedMessageId, branchId: branch.branchId, swipeId, expectedHeadRevision: envelope.headRevision, baseStateVersion: baseSnapshot.version, baseSnapshot, requestId: deps.makeId?.() ?? crypto.randomUUID(), userMessageId: capturedUserId, patch: response.patch, checks, assistantText: capturedText, nextState: applied.value, isContinue: false });
       return committed.ok ? { ok: true, snapshot: clone(applied.value), stateVersion: applied.value.version } : committed;
     } catch (error) {
       return { ok: false, reason: "replay-failed", error };
@@ -6774,7 +6784,8 @@ function createOrchestrator(deps) {
     }
     captured.assistantMessageId = messageId(located.message);
     captured.swipeId = located.message.swipe_id ?? 0;
-    captured.checks = [...new Map([...captured.reusableChecks, ...deps.getChecks(captured)].filter((record) => record?.checkId).map((record) => [record.checkId, record])).values()].map(clone);
+    captured.checks = [];
+    for (const record of [...captured.reusableChecks, ...deps.getChecks(captured)]) if (record?.checkId && !captured.checks.some((existing) => existing.checkId === record.checkId)) captured.checks.push(clone(record));
     let failed = false;
     const fail = async (detail) => {
       if (failed) return;
@@ -6782,6 +6793,21 @@ function createOrchestrator(deps) {
       const outcome = await deps.store.markBranchFailed?.({ chatId: captured.chatId, messageId: captured.assistantMessageId, swipeId: captured.swipeId, branchId: captured.branchId, requestId: captured.requestId, baseSnapshot: captured.baseSnapshot, baseStateVersion: captured.baseVersion, isContinue: captured.type === "continue", baseBranchId: captured.baseBranchId });
       if (!outcome?.ok) diagnostic({ requestId: captured.requestId, ...detail, failureResult: outcome });
       else diagnostic({ requestId: captured.requestId, ...detail });
+    };
+    let replacementSettled = false;
+    const settleReplacement = (ok) => {
+      if (replacementSettled) return null;
+      replacementSettled = true;
+      try {
+        if (ok) {
+          deps.rollbackManager?.completeReplacement?.();
+          return null;
+        }
+        return deps.rollbackManager?.abortReplacement?.() ?? null;
+      } catch (error) {
+        diagnostic({ requestId: captured.requestId, reason: "replacement-settlement-failed", error });
+        return null;
+      }
     };
     let queued;
     try {
@@ -6793,7 +6819,7 @@ function createOrchestrator(deps) {
     }
     void queued.then(async (result2) => {
       if (result2?.ok) {
-        deps.rollbackManager?.completeReplacement?.();
+        settleReplacement(true);
         try {
           const env = envelopeValue(deps.store.loadEnvelope());
           await deps.promptInjector.refresh({ state: env.activeSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection });
@@ -6801,15 +6827,17 @@ function createOrchestrator(deps) {
           diagnostic({ requestId: captured.requestId, reason: "prompt-refresh-failed", error });
         }
       } else {
-        if (deps.rollbackManager?.abortReplacement) await deps.rollbackManager.abortReplacement();
+        const abort = settleReplacement(false);
+        if (abort) await Promise.resolve(abort).catch((error) => diagnostic({ requestId: captured.requestId, reason: "replacement-settlement-failed", error }));
         if (conflicts.has(result2?.reason)) diagnostic({ requestId: captured.requestId, ...result2 });
         else await fail({ reason: result2?.reason ?? "task-failed", result: result2 });
       }
-    }).catch(async (error) => {
-      if (deps.rollbackManager?.abortReplacement) await deps.rollbackManager.abortReplacement();
-      if (error?.name === "AbortError") return diagnostic({ requestId: captured.requestId, reason: "cancelled" });
-      await fail({ reason: "recorder-failed", error });
-    }).catch(() => void 0);
+    }, async (error) => {
+      const abort = settleReplacement(false);
+      if (abort) await Promise.resolve(abort).catch((settleError) => diagnostic({ requestId: captured.requestId, reason: "replacement-settlement-failed", error: settleError }));
+      if (error?.name === "AbortError") diagnostic({ requestId: captured.requestId, reason: "cancelled" });
+      else await fail({ reason: "recorder-failed", error });
+    }).catch((error) => diagnostic({ requestId: captured.requestId, reason: "settlement-observer-failed", error }));
     return { ok: true, queued: true };
   }
   function generationStopped(reason = "host-stopped") {
@@ -8096,7 +8124,8 @@ async function bootstrap({ adapter, dependencies } = {}) {
     getChecks: resolved.getChecks ?? (() => []),
     recordDiagnostic: resolved.recordDiagnostic ?? (() => {
     }),
-    prepareSwipeGeneration: resolved.prepareSwipeGeneration ?? ((input) => store.prepareSwipeGeneration(input))
+    prepareSwipeGeneration: resolved.prepareSwipeGeneration ?? ((input) => store.prepareSwipeGeneration(input)),
+    formatReusableChecks: resolved.formatReusableChecks ?? ((records) => records.length ? `Authoritative completed checks; do not request them again: ${records.map((record) => `${record.checkId}=${record.pass ?? record.outcome ?? "recorded"}`).join(", ")}` : "")
   });
   orchestrator.start();
   rollbackManager.bind();
