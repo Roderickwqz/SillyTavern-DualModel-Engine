@@ -137,7 +137,8 @@ export async function bootstrap({ adapter, dependencies } = {}) {
             showConfirm: resolved.showConfirm ?? (async details => {
                 const context = runtimeAdapter.getContext?.();
                 if (typeof context?.Popup !== 'function') return window.confirm(details.content?.textContent ?? details.message);
-                return (await new context.Popup(details.content ?? details.message, context.POPUP_TYPE?.CONFIRM, '', {}).show()) === context.POPUP_RESULT?.AFFIRMATIVE;
+                const content = details.content instanceof globalThis.HTMLElement ? details.content : Object.assign(document.createElement('div'), { textContent: details.message ?? '' });
+                return (await new context.Popup(content, context.POPUP_TYPE?.CONFIRM, '', {}).show()) === context.POPUP_RESULT?.AFFIRMATIVE;
             }),
         });
         await ui.mount();

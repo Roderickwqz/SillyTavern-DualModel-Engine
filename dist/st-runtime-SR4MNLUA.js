@@ -38,7 +38,9 @@ function createSTAdapter(host) {
       for (const key of Object.keys(settings)) delete settings[key];
       Object.assign(settings, structuredClone(value));
       try {
-        await host.saveSettingsDebounced?.();
+        const trigger = host.saveSettingsDebounced?.();
+        if (trigger && typeof trigger.then === "function") await trigger;
+        return { ok: true, scheduled: true, persisted: false };
       } catch (error) {
         for (const key of Object.keys(settings)) delete settings[key];
         Object.assign(settings, before);

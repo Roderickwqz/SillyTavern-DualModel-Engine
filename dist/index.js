@@ -9172,6 +9172,7 @@ function createUIController(deps) {
       signal.throwIfAborted();
       if (!isCapturedChat(captured)) return;
       const result2 = await deps.bindChatPreset?.(id, { confirmedReset: true });
+      if (result2?.ok && getContext().chatId === captured.chatId && getContext().chat === captured.chat && getContext().chatMetadata === captured.metadata) captured.namespace = getContext().chatMetadata?.dualModelEngine;
       if (isCapturedChat(captured) && result2?.ok) await deps.onConfigChanged?.();
     });
   }
@@ -9207,6 +9208,7 @@ function createUIController(deps) {
     await render();
   }
   async function reloadProfiles() {
+    profileDiagnostic = "";
     const profiles = deps.listProfiles?.() ?? [];
     for (const scope of ["global", "character", "chat"]) {
       const getter = { global: deps.getGlobalConfig, character: deps.getCharacterConfig, chat: deps.getChatConfig }[scope];
@@ -9277,7 +9279,7 @@ var adjudicator_schema_default = {
 
 // src/index.js
 async function bootstrap({ adapter, dependencies } = {}) {
-  const runtimeAdapter = adapter ?? (await import("./st-runtime-64FU4ZTE.js")).createRuntimeAdapter();
+  const runtimeAdapter = adapter ?? (await import("./st-runtime-SR4MNLUA.js")).createRuntimeAdapter();
   const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });
   const resolved = dependencies ?? {};
@@ -9460,7 +9462,8 @@ async function bootstrap({ adapter, dependencies } = {}) {
       showConfirm: resolved.showConfirm ?? (async (details) => {
         const context = runtimeAdapter.getContext?.();
         if (typeof context?.Popup !== "function") return window.confirm(details.content?.textContent ?? details.message);
-        return await new context.Popup(details.content ?? details.message, context.POPUP_TYPE?.CONFIRM, "", {}).show() === context.POPUP_RESULT?.AFFIRMATIVE;
+        const content = details.content instanceof globalThis.HTMLElement ? details.content : Object.assign(document.createElement("div"), { textContent: details.message ?? "" });
+        return await new context.Popup(content, context.POPUP_TYPE?.CONFIRM, "", {}).show() === context.POPUP_RESULT?.AFFIRMATIVE;
       })
     });
     await ui.mount();

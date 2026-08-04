@@ -74,6 +74,7 @@ export function createUIController(deps) {
         return deps.queue.enqueue(chatId, `preset-${Date.now()}`, async signal => {
             signal.throwIfAborted(); if (!isCapturedChat(captured)) return;
             const result = await deps.bindChatPreset?.(id, { confirmedReset: true });
+            if (result?.ok && getContext().chatId === captured.chatId && getContext().chat === captured.chat && getContext().chatMetadata === captured.metadata) captured.namespace = getContext().chatMetadata?.dualModelEngine;
             if (isCapturedChat(captured) && result?.ok) await deps.onConfigChanged?.();
         });
     }
@@ -92,6 +93,7 @@ export function createUIController(deps) {
         await probePending; await render();
     }
     async function reloadProfiles() {
+        profileDiagnostic = '';
         const profiles = deps.listProfiles?.() ?? [];
         for (const scope of ['global', 'character', 'chat']) {
             const getter = { global: deps.getGlobalConfig, character: deps.getCharacterConfig, chat: deps.getChatConfig }[scope];

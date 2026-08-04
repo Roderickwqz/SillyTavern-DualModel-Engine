@@ -52,4 +52,9 @@ describe('createSTAdapter', () => {
         const adapter = createSTAdapter({ getContext: () => context });
         await expect(adapter.saveChatSettings({ enabled: true })).rejects.toThrow('disk'); expect(context.chatMetadata.dualModelEngine).toEqual({ concurrent: true });
     });
+
+    it('reports global debounced saving as scheduled rather than durable', async () => {
+        const settings = { enabled: false, customPresets: [] }; const saveSettingsDebounced = vi.fn(); const adapter = createSTAdapter({ getContext: () => ({}), getSettings: () => settings, saveSettingsDebounced });
+        await expect(adapter.saveGlobalSettings({ enabled: true })).resolves.toEqual({ ok: true, scheduled: true, persisted: false }); expect(settings).toEqual({ enabled: true }); expect(saveSettingsDebounced).toHaveBeenCalledOnce();
+    });
 });

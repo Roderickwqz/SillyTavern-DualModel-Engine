@@ -69,4 +69,10 @@ describe('UI controller', () => {
         const deps = dependencies(); const ui = createUIController(deps); await ui.mount(); deps.context.groupId = 'new-group'; await ui.render();
         expect(document.querySelector('[data-dme-role="chat-settings"]').disabled).toBe(true);
     });
+
+    it('refreshes after a confirmed reset replaces the current envelope', async () => {
+        const deps = dependencies(); deps.bindChatPreset.mockImplementation(async (_id, options) => { if (!options.confirmedReset) return { ok: false, reason: 'preset-reset-required', summary: {} }; deps.context.chatMetadata.dualModelEngine = { configOverrides: {} }; return { ok: true }; });
+        const ui = createUIController(deps); await ui.mount(); const field = document.querySelector('[data-scope="chat"] [data-dme-field="rulePresetId"]'); field.value = 'custom-a'; field.dispatchEvent(new globalThis.Event('change', { bubbles: true })); await new Promise(resolve => window.setTimeout(resolve)); await deps.queue.waitForIdle('chat-a');
+        expect(deps.onConfigChanged).toHaveBeenCalledOnce();
+    });
 });

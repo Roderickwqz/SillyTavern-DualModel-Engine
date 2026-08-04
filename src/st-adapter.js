@@ -25,7 +25,7 @@ export function createSTAdapter(host) {
         async saveGlobalSettings(value) {
             const settings = host.getSettings?.(); if (!settings || typeof settings !== 'object') throw new Error('Global extension settings are unavailable');
             const before = structuredClone(settings); for (const key of Object.keys(settings)) delete settings[key]; Object.assign(settings, structuredClone(value));
-            try { await host.saveSettingsDebounced?.(); } catch (error) { for (const key of Object.keys(settings)) delete settings[key]; Object.assign(settings, before); throw error; }
+            try { const trigger = host.saveSettingsDebounced?.(); if (trigger && typeof trigger.then === 'function') await trigger; return { ok: true, scheduled: true, persisted: false }; } catch (error) { for (const key of Object.keys(settings)) delete settings[key]; Object.assign(settings, before); throw error; }
         },
         getCurrentCharacter: getCharacter,
         async saveCurrentCharacter(value) {
