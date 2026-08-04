@@ -1,7 +1,18 @@
 const BLOCKED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 function errorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
+    try {
+        if (error instanceof Error && typeof error.message === 'string' && error.message) return error.message;
+    } catch {
+        // Fall through to the guarded string conversion.
+    }
+    try {
+        const message = String(error);
+        if (message) return message;
+    } catch {
+        // Some values, including Object.create(null), cannot be stringified.
+    }
+    return 'Unable to stringify error';
 }
 
 export function decodePointer(path) {
@@ -28,11 +39,11 @@ function parentAt(root, parts) {
 }
 
 function pathsOverlap(left, right) {
-    return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+    return left === '/' || right === '/' || left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 }
 
 function isArrayIndex(key) {
-    return /^(0|[1-9]\d*)$/.test(key);
+    return /^(0|[1-9]\d*)$/.test(key) && Number.isSafeInteger(Number(key));
 }
 
 function assertInput(patch, policy, validateState) {
@@ -42,6 +53,20 @@ function assertInput(patch, policy, validateState) {
     }
     if (![...policy.allowedPaths, ...policy.lockedPaths].every((path) => typeof path === 'string')) throw new Error('Invalid policy path');
     if (typeof validateState !== 'function') throw new Error('Invalid state validator');
+}
+
+function normalizeValidation(validation) {
+    if (!validation || typeof validation !== 'object' || Array.isArray(validation) || typeof validation.ok !== 'boolean' || !Array.isArray(validation.errors)) {
+        throw new Error('Invalid state validator result');
+    }
+    if (validation.ok) {
+        if (validation.errors.length !== 0) throw new Error('Invalid state validator result');
+        return { ok: true, errors: [] };
+    }
+
+    const errors = validation.errors.map((error) => ({ message: errorMessage(error?.message ?? error) }));
+    if (errors.length === 0) throw new Error('Invalid state validator result');
+    return { ok: false, errors };
 }
 
 export function applyValidatedPatch({ state, patch, policy, validateState }) {
@@ -89,8 +114,8 @@ export function applyValidatedPatch({ state, patch, policy, validateState }) {
             }
             throw new Error(`Unsupported operation: ${operation.op}`);
         }
-        const validation = validateState(value);
-        return validation.ok ? { ok: true, value, errors: [] } : { ok: false, errors: structuredClone(validation.errors ?? []) };
+        const validation = normalizeValidation(validateState(value));
+        return validation.ok ? { ok: true, value, errors: [] } : { ok: false, errors: validation.errors };
     } catch (error) {
         return { ok: false, errors: [{ message: errorMessage(error) }] };
     }

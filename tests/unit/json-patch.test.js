@@ -64,6 +64,17 @@ it('rejects root operations and changes overlapping locked paths', () => {
     expect(lockedParent.ok).toBe(false);
 });
 
+it('treats the root locked path as overlapping every operation path', () => {
+    const result = applyValidatedPatch({
+        state: { scene: 'old' },
+        patch: { operations: [{ op: 'replace', path: '/scene', value: 'new' }] },
+        policy: { allowedPaths: ['/'], lockedPaths: ['/'] },
+        validateState: () => ({ ok: true, errors: [] }),
+    });
+
+    expect(result.ok).toBe(false);
+});
+
 it('inserts, replaces, and removes array entries with RFC indices', () => {
     const result = applyValidatedPatch({
         state: { list: ['a', 'c'] },
@@ -79,7 +90,7 @@ it('inserts, replaces, and removes array entries with RFC indices', () => {
     expect(result).toEqual({ ok: true, value: { list: ['A', 'b', 'd'] }, errors: [] });
 });
 
-it.each(['/list/01', '/list/4'])('rejects invalid add array index %s', (path) => {
+it.each(['/list/01', '/list/4', '/list/-1', '/list/9007199254740992'])('rejects invalid add array index %s', (path) => {
     const result = applyValidatedPatch({
         state: { list: ['a'] },
         patch: { operations: [{ op: 'add', path, value: 'b' }] },
@@ -142,4 +153,36 @@ it('returns cloned Error-shaped errors for invalid input and validator failures'
         const result = applyValidatedPatch(options);
         expect(result).toMatchObject({ ok: false, errors: [{ message: expect.any(String) }] });
     }
+});
+
+it('rejects malformed validator results and normalizes its failure errors', () => {
+    const options = { state: { trust: 20 }, patch: { operations: [] }, policy: { allowedPaths: [], lockedPaths: [] } };
+
+    for (const validateState of [
+        () => null,
+        () => ({ ok: 'yes', errors: [] }),
+        () => ({ ok: false }),
+        () => ({ ok: true, errors: [{ message: 'contradiction' }] }),
+    ]) {
+        const result = applyValidatedPatch({ ...options, validateState });
+        expect(result).toMatchObject({ ok: false, errors: [{ message: expect.any(String) }] });
+    }
+
+    const normalized = applyValidatedPatch({
+        ...options,
+        validateState: () => ({ ok: false, errors: [{ message: 42 }, Object.create(null), 'plain failure'] }),
+    });
+    expect(normalized).toEqual({
+        ok: false,
+        errors: [{ message: '42' }, { message: 'Unable to stringify error' }, { message: 'plain failure' }],
+    });
+});
+
+it('returns an Error-shaped result even for an unstringifiable thrown value', () => {
+    const result = applyValidatedPatch({
+        state: {}, patch: { operations: [] }, policy: { allowedPaths: [], lockedPaths: [] },
+        validateState: () => { throw Object.create(null); },
+    });
+
+    expect(result).toEqual({ ok: false, errors: [{ message: 'Unable to stringify error' }] });
 });
