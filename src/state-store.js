@@ -62,8 +62,9 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         return current.branch;
     }
 
-    function validCommitContext(input, context, envelope) {
+    function validCommitContext(input, context, envelope, capturedChat = null) {
         if (!context || context.chatId !== input.chatId) return 'stale-chat';
+        if (capturedChat !== null && context.chat !== capturedChat) return 'stale-chat';
         if (!envelope) return 'missing-envelope';
         if (!validEnvelope(envelope)) return 'invalid-envelope';
         if (!input.branchId || !input.requestId || !input.messageId) return 'missing-identity';
@@ -85,6 +86,7 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         const envelope = context?.chatMetadata?.[NAMESPACE];
         const invalid = validCommitContext(input, context, envelope);
         if (invalid) return result(invalid);
+        const capturedChat = context.chat;
 
         let textHashValue;
         try {
@@ -95,7 +97,7 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
 
         const contextAfterHash = adapter.getContext?.();
         const envelopeAfterHash = contextAfterHash?.chatMetadata?.[NAMESPACE];
-        const staleAfterHash = validCommitContext(input, contextAfterHash, envelopeAfterHash);
+        const staleAfterHash = validCommitContext(input, contextAfterHash, envelopeAfterHash, capturedChat);
         if (staleAfterHash) return result(staleAfterHash);
 
         const metadataBefore = clone(envelopeAfterHash);

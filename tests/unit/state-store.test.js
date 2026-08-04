@@ -167,16 +167,20 @@ it('lists deduplicated cloned rule records and returns missing context as a resu
     expect(store.loadEnvelope()).toEqual({ ok: false, reason: 'missing-envelope' });
 });
 
-it('rejects an old revision after a real 18-to-10-to-18 ABA change without hashing or saving', async () => {
-    const { store, current, context, saveChat } = setup({ metadata: envelope({ stateVersion: 18, headRevision: 7 }) });
-    context.chatMetadata.dualModelEngine.stateVersion = 10;
-    context.chatMetadata.dualModelEngine.headRevision = 8;
-    context.chatMetadata.dualModelEngine.stateVersion = 18;
-    context.chatMetadata.dualModelEngine.headRevision = 9;
+it('rejects an old revision after real restore transactions advance 18-to-10-to-18', async () => {
+    const branch = { branchId: 'b1', segments: [{ postSnapshot: { version: 10 } }] };
+    const hashText = vi.fn(async text => `hash:${text}`);
+    const { current, context, saveChat } = setup({ current: message(branch), metadata: envelope({ stateVersion: 18, headRevision: 7 }) });
+    const store = createStateStore({ adapter: { getContext: () => context, saveChat }, makeId: () => 'generated', hashText });
+    await expect(store.restoreBranch(current, 0)).resolves.toMatchObject({ ok: true, snapshot: { version: 10 } });
+    current.swipe_info[0].extra.dualModelEngine.branch.segments.push({ postSnapshot: { version: 18 } });
+    await expect(store.restoreBranch(current, 0)).resolves.toMatchObject({ ok: true, snapshot: { version: 18 } });
+    expect(context.chatMetadata.dualModelEngine).toMatchObject({ stateVersion: 18, headRevision: 9 });
     expect(await store.commitSegment(commitInput(current, {
         baseStateVersion: 18, expectedHeadRevision: 7, nextState: { version: 19, value: 19 },
     }))).toEqual({ ok: false, reason: 'head-conflict' });
-    expect(saveChat).not.toHaveBeenCalled();
+    expect(hashText).not.toHaveBeenCalled();
+    expect(saveChat).toHaveBeenCalledTimes(2);
 });
 
 it('revalidates after a delayed hash and rejects a changed revision without saving', async () => {
@@ -190,6 +194,28 @@ it('revalidates after a delayed hash and rejects a changed revision without savi
     expect(await pending).toEqual({ ok: false, reason: 'head-conflict' });
     expect(hashText).toHaveBeenCalledTimes(1);
     expect(saveChat).not.toHaveBeenCalled();
+});
+
+it('binds a delayed commit to its captured chat array even if the same message is retained', async () => {
+    let resolveHash;
+    const hashText = vi.fn(() => new Promise(resolve => { resolveHash = resolve; }));
+    const { context, current, saveChat } = setup();
+    const store = createStateStore({ adapter: { getContext: () => ({ ...context }), saveChat }, makeId: () => 'generated', hashText });
+    const before = structuredClone(context);
+    const pending = store.commitSegment(commitInput(current));
+    context.chat = [current];
+    resolveHash('hash:answer');
+    expect(await pending).toEqual({ ok: false, reason: 'stale-chat' });
+    expect(hashText).toHaveBeenCalledTimes(1);
+    expect(saveChat).not.toHaveBeenCalled();
+    expect(context).toEqual(before);
+});
+
+it('allows a normal commit when getContext returns fresh wrappers around the same chat array', async () => {
+    const { context, current, saveChat } = setup();
+    const store = createStateStore({ adapter: { getContext: () => ({ ...context }), saveChat }, makeId: () => 'generated', hashText: async text => `hash:${text}` });
+    await expect(store.commitSegment(commitInput(current))).resolves.toMatchObject({ ok: true });
+    expect(saveChat).toHaveBeenCalledTimes(1);
 });
 
 it('restores every swipe identity when a multi-swipe commit save fails', async () => {
