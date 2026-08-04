@@ -3,6 +3,8 @@ import Ajv from 'ajv';
 import schema from '../../schemas/d20.schema.json';
 import { createCheckLedger } from '../../src/check-ledger.js';
 import { createToolRegistry } from '../../src/tool-registry.js';
+import { createOrchestrator } from '../../src/orchestrator.js';
+import { createOrchestratorTestDependencies } from '../fixtures/fake-host.js';
 
 const check = { actor: 'player', action: ' pick lock ', ability: 'dexterity', skill: 'sleight_of_hand', dc: 12, advantage: 'normal', reason: 'locked door' };
 const damage = { target: 'player', expression: '1d6', damageType: 'fire', reason: 'trap' };
@@ -73,6 +75,15 @@ it('only unregisters tools actually registered and remains retry-safe after an u
     const registry = createToolRegistry({ adapter, getConfig: () => ({}), getActiveGeneration: () => null, validateCheck: () => ({ ok: true }), validateDamage: () => ({ ok: true }), resolveCheck: async () => ({}), resolveDamage: async () => ({}), ledger: createCheckLedger({ makeId: () => 'x', now: () => 'now' }) });
     expect(() => registry.register()).toThrow('second'); expect(adapter.unregisterTool).toHaveBeenCalledWith('DualModelResolveD20Check'); expect(adapter.unregisterTool).not.toHaveBeenCalledWith('DualModelApplyD20Damage');
     registry.unregister(); expect(adapter.unregisterTool).toHaveBeenCalledTimes(1);
+});
+
+it('runs failure through the real orchestrator lifecycle without committing staged damage', async () => {
+    const user = { is_user: true, mes: 'go', extra: { dualModelEngine: { messageId: 'u1' } } }; const definitions = new Map();
+    const deps = createOrchestratorTestDependencies({ chat: [user] }); deps.getConfig = () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'd20-lite', adjudication: 'automatic-tool', injectionBudget: 1 }); deps.getPreset = () => ({ id: 'd20-lite', allowedPaths: ['/inventory'], lockedPaths: ['/version'], ruleLockedPaths: ['/actors'], injection: [] }); deps.adapter.registerTool = definition => definitions.set(definition.name, definition); deps.rollbackManager = { abortReplacement: vi.fn() };
+    const ledger = createCheckLedger({ makeId: (() => { let i = 0; return () => `c${++i}`; })(), now: () => 'now' }); deps.ledger = ledger;
+    const orchestrator = createOrchestrator(deps); const registry = createToolRegistry({ adapter: deps.adapter, getConfig: deps.getConfig, getActiveGeneration: orchestrator.getActiveGeneration, validateCheck: validation('checkInput'), validateDamage: validation('damageInput'), ledger, resolveCheck: async () => ({ total: 1 }), resolveDamage: vi.fn().mockResolvedValueOnce({ state: { actors: { player: { hp: { current: 9, temporary: 0 } } } }, audit: { rolls: [4], raw: 4, total: 4, absorbed: 3, hpBefore: 10, hpAfter: 9 } }).mockRejectedValueOnce(new Error('damage failure')) }); registry.register();
+    await orchestrator.beforeGeneration('normal'); await definitions.get('DualModelApplyD20Damage').action(damage); await expect(definitions.get('DualModelApplyD20Damage').action({ ...damage, reason: 'second' })).rejects.toThrow('damage failure'); deps.context.chat.push({ is_user: false, mes: 'answer', extra: {}, swipe_id: 0, swipe_info: [{ extra: {} }] });
+    expect(await orchestrator.afterGeneration()).toMatchObject({ reason: 'rule-tool-failed' }); expect(deps.store.commitSegment).not.toHaveBeenCalled(); expect(ledger.list()).toEqual([]); expect(deps.rollbackManager.abortReplacement).toHaveBeenCalled();
 });
 
 it('does not stage late, failed, or reuse-only unmatched tool calls', async () => {

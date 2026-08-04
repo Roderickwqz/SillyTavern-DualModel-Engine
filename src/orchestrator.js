@@ -95,6 +95,7 @@ export function createOrchestrator(deps) {
     async function afterGeneration() {
         if (!generation) return { ignored: true, reason: 'no-matching-generation' };
         const located = locate(context(), generation); const captured = generation; generation = null;
+        await captured.ruleToolTail?.catch(() => undefined);
         if (captured.ruleToolFailed) { captured.pendingRuleRecords.length = 0; captured.pendingRuleEffects.length = 0; await Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => undefined); return { ok: false, reason: 'rule-tool-failed' }; }
         if (!located.ok) { await Promise.resolve(deps.rollbackManager?.abortReplacement?.()).catch(() => undefined); diagnostic({ requestId: captured.requestId, ...located }); return located; }
         captured.assistantMessageId = messageId(located.message); captured.swipeId = located.message.swipe_id ?? 0; captured.checks = []; for (const record of [...captured.reusableChecks, ...captured.pendingRuleRecords, ...deps.getChecks(captured)]) if (record?.checkId && !captured.checks.some(existing => existing.checkId === record.checkId)) captured.checks.push(clone(record));

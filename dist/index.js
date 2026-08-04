@@ -6784,6 +6784,7 @@ function createOrchestrator(deps) {
     const located = locate(context(), generation);
     const captured = generation;
     generation = null;
+    await captured.ruleToolTail?.catch(() => void 0);
     if (captured.ruleToolFailed) {
       captured.pendingRuleRecords.length = 0;
       captured.pendingRuleEffects.length = 0;
