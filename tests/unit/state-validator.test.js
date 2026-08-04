@@ -82,6 +82,35 @@ describe('state validator', () => {
         }).ok).toBe(false);
     });
 
+    it('returns a policy error instead of throwing for a null policy', () => {
+        const patch = { base_version: 1, operations: [] };
+
+        expect(() => validator.validatePatch('narrative', patch, null)).not.toThrow();
+        expect(validator.validatePatch('narrative', patch, null)).toMatchObject({
+            ok: false,
+            errors: expect.arrayContaining([{ message: 'Invalid policy' }]),
+        });
+    });
+
+    it('rejects non-string path policy entries without throwing', () => {
+        const result = validator.validatePatch('narrative', {
+            base_version: 1,
+            operations: [{ op: 'replace', path: '/scene/location', value: 'inn', reason: 'move' }],
+        }, {
+            expectedVersion: 1,
+            allowedPaths: ['/scene', Symbol('not-a-path')],
+            lockedPaths: [42, Symbol('not-a-path')],
+        });
+
+        expect(result).toMatchObject({
+            ok: false,
+            errors: expect.arrayContaining([
+                { message: 'Invalid allowed path' },
+                { message: 'Invalid locked path' },
+            ]),
+        });
+    });
+
     it('does not share mutable input or Ajv error results', () => {
         const invalidState = { ...validState, scene: { location: 1, time: 'night' } };
         const first = validator.validateState('narrative', invalidState);
