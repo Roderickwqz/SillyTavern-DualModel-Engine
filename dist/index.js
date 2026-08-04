@@ -9500,9 +9500,11 @@ function createChatActions(deps) {
       const captured = current(deps);
       if (!captured) return { ok: false, reason: "not-writable" };
       const index = deps.currentInvalidIndex?.();
+      if (!Number.isInteger(index) || index < 0) return { ok: false, reason: "no-recalculation-boundary" };
       const plan = deps.rollbackManager.buildRecalculationPlan?.(index);
       if (!plan || Array.isArray(plan) && !plan.length || plan.count === 0) return { ok: false, reason: "no-recalculation-boundary" };
-      if (!await deps.confirm({ action: "recalculate", plan })) return { ok: false, reason: "cancelled" };
+      const items = Array.isArray(plan) ? plan : plan.items ?? [];
+      if (!await deps.confirm({ action: "recalculate", startIndex: index, count: plan.count ?? items.length, startVersion: plan.startVersion ?? items[0]?.baseVersion, items })) return { ok: false, reason: "cancelled" };
       return deps.rollbackManager.recalculate(index);
     },
     reroll: () => transaction("reroll", async (captured) => {
@@ -9643,10 +9645,11 @@ function pickPresetFile() {
 }
 function firstInvalidHistoryIndex(adapter) {
   const chat = adapter.getContext?.()?.chat ?? [];
-  return chat.findIndex((message) => (message.swipe_info ?? []).some((swipe) => {
+  return chat.findIndex((message) => {
+    const swipe = message.swipe_info?.[message.swipe_id ?? 0];
     const branch = swipe?.extra?.[NAMESPACE]?.branch;
     return ["stale", "invalidated", "failed"].includes(branch?.status) || (branch?.segments ?? []).some((segment) => ["stale", "invalidated", "failed"].includes(segment?.status));
-  }));
+  });
 }
 async function bootstrap({ adapter, dependencies } = {}) {
   const runtimeAdapter = adapter ?? (await import("./st-runtime-SR4MNLUA.js")).createRuntimeAdapter();

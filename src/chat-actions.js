@@ -39,9 +39,11 @@ export function createChatActions(deps) {
     return {
         recalculate: async () => {
             const captured = current(deps); if (!captured) return { ok: false, reason: 'not-writable' };
-            const index = deps.currentInvalidIndex?.(); const plan = deps.rollbackManager.buildRecalculationPlan?.(index);
+            const index = deps.currentInvalidIndex?.(); if (!Number.isInteger(index) || index < 0) return { ok: false, reason: 'no-recalculation-boundary' };
+            const plan = deps.rollbackManager.buildRecalculationPlan?.(index);
             if (!plan || (Array.isArray(plan) && !plan.length) || plan.count === 0) return { ok: false, reason: 'no-recalculation-boundary' };
-            if (!await deps.confirm({ action: 'recalculate', plan })) return { ok: false, reason: 'cancelled' };
+            const items = Array.isArray(plan) ? plan : plan.items ?? [];
+            if (!await deps.confirm({ action: 'recalculate', startIndex: index, count: plan.count ?? items.length, startVersion: plan.startVersion ?? items[0]?.baseVersion, items })) return { ok: false, reason: 'cancelled' };
             return deps.rollbackManager.recalculate(index);
         },
         reroll: () => transaction('reroll', async captured => {

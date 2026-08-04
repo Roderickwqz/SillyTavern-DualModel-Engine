@@ -47,10 +47,10 @@ function pickPresetFile() {
 }
 function firstInvalidHistoryIndex(adapter) {
     const chat = adapter.getContext?.()?.chat ?? [];
-    return chat.findIndex(message => (message.swipe_info ?? []).some(swipe => {
+    return chat.findIndex(message => { const swipe = message.swipe_info?.[message.swipe_id ?? 0];
         const branch = swipe?.extra?.[NAMESPACE]?.branch;
         return ['stale', 'invalidated', 'failed'].includes(branch?.status) || (branch?.segments ?? []).some(segment => ['stale', 'invalidated', 'failed'].includes(segment?.status));
-    }));
+    });
 }
 
 export async function bootstrap({ adapter, dependencies } = {}) {
