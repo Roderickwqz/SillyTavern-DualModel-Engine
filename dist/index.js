@@ -4027,7 +4027,7 @@ var require_core = __commonJS({
         uriResolver
       };
     }
-    var Ajv2 = class {
+    var Ajv3 = class {
       constructor(opts = {}) {
         this.schemas = {};
         this.refs = {};
@@ -4397,9 +4397,9 @@ var require_core = __commonJS({
         }
       }
     };
-    Ajv2.ValidationError = validation_error_1.default;
-    Ajv2.MissingRefError = ref_error_1.default;
-    exports.default = Ajv2;
+    Ajv3.ValidationError = validation_error_1.default;
+    Ajv3.MissingRefError = ref_error_1.default;
+    exports.default = Ajv3;
     function checkOptions(checkOpts, options, msg, log = "error") {
       for (const key in checkOpts) {
         const opt = key;
@@ -6510,7 +6510,7 @@ var require_ajv = __commonJS({
     var draft7MetaSchema = require_json_schema_draft_07();
     var META_SUPPORT_DATA = ["/properties"];
     var META_SCHEMA_ID = "http://json-schema.org/draft-07/schema";
-    var Ajv2 = class extends core_1.default {
+    var Ajv3 = class extends core_1.default {
       _addVocabularies() {
         super._addVocabularies();
         draft7_1.default.forEach((v) => this.addVocabulary(v));
@@ -6529,11 +6529,11 @@ var require_ajv = __commonJS({
         return this.opts.defaultMeta = super.defaultMeta() || (this.getSchema(META_SCHEMA_ID) ? META_SCHEMA_ID : void 0);
       }
     };
-    exports.Ajv = Ajv2;
-    module.exports = exports = Ajv2;
-    module.exports.Ajv = Ajv2;
+    exports.Ajv = Ajv3;
+    module.exports = exports = Ajv3;
+    module.exports.Ajv = Ajv3;
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.default = Ajv2;
+    exports.default = Ajv3;
     var validate_1 = require_validate();
     Object.defineProperty(exports, "KeywordCxt", { enumerable: true, get: function() {
       return validate_1.KeywordCxt;
@@ -6674,7 +6674,7 @@ function createOrchestrator(deps) {
     const prepared = ["swipe", "regenerate"].includes(type) ? deps.rollbackManager?.prepareSwipeGeneration?.(current.chat.length - 1, type) ?? deps.prepareSwipeGeneration?.({ type, target, envelope }) : null;
     if (prepared?.ok === false) return null;
     const branch = type === "continue" ? existing?.branchId : null;
-    return { type, chatId: current.chatId, expectedHeadRevision: prepared?.expectedHeadRevision ?? envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (["swipe", "regenerate"].includes(type) ? existing?.branchId ?? null : null), baseSwipeId: prepared?.baseSwipeId ?? (["swipe", "regenerate"].includes(type) ? target?.swipe_id ?? 0 : null), reusableChecks: clone(prepared?.reusableChecks ?? []), effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === "continue" ? target?.mes ?? "" : null, playerText: previousUser?.mes ?? "", userMessageId: previousUser ? messageId(previousUser) : null };
+    return { type, chatId: current.chatId, expectedHeadRevision: prepared?.expectedHeadRevision ?? envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (["swipe", "regenerate"].includes(type) ? existing?.branchId ?? null : null), baseSwipeId: prepared?.baseSwipeId ?? (["swipe", "regenerate"].includes(type) ? target?.swipe_id ?? 0 : null), reusableChecks: clone(prepared?.reusableChecks ?? []), pendingRuleRecords: [], pendingRuleEffects: [], ruleReplayMode: ["swipe", "regenerate"].includes(type) ? "reuse-only" : null, effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === "continue" ? target?.mes ?? "" : null, playerText: previousUser?.mes ?? "", userMessageId: previousUser ? messageId(previousUser) : null };
   }
   async function beforeGeneration(type) {
     if (!supported.has(type)) return { ignored: true, reason: "unsupported-generation-type" };
@@ -6729,14 +6729,18 @@ function createOrchestrator(deps) {
     const assistantText = captured.type === "continue" ? message.mes.slice(captured.assistantText.length) : message.mes;
     if (captured.type === "continue" && (!message.mes.startsWith(captured.assistantText) || message.mes.length < captured.assistantText.length)) return { ok: false, reason: "stale-message" };
     const checks = clone(captured.checks);
-    const response = await deps.modelService.requestPatch({ profileId: captured.effectiveConfig.recorderProfileId, baseVersion: captured.baseVersion, oldState: captured.baseSnapshot, playerText: captured.playerText, assistantText, checks, signal });
+    const authoritativeState = captured.pendingRuleEffects.at(-1)?.nextState ?? captured.baseSnapshot;
+    const response = await deps.modelService.requestPatch({ profileId: captured.effectiveConfig.recorderProfileId, baseVersion: captured.baseVersion, oldState: authoritativeState, playerText: captured.playerText, assistantText, checks, signal });
     signal?.throwIfAborted?.();
     const validation = deps.validator.validatePatch(captured.effectiveConfig.rulePresetId, response.patch, { expectedVersion: captured.baseVersion, allowedPaths: captured.preset.allowedPaths, lockedPaths: [...captured.preset.lockedPaths, ...captured.preset.ruleLockedPaths ?? []] });
     if (!validation.ok) throw new Error(JSON.stringify(validation.errors));
-    const applied = deps.applyPatch({ state: captured.baseSnapshot, patch: response.patch, policy: captured.preset, validateState: (state) => deps.validator.validateState(captured.effectiveConfig.rulePresetId, state) });
+    const recorderPolicy = { ...captured.preset, lockedPaths: [...captured.preset.lockedPaths, ...captured.preset.ruleLockedPaths ?? []] };
+    const applied = deps.applyPatch({ state: authoritativeState, patch: response.patch, policy: recorderPolicy, validateState: (state) => deps.validator.validateState(captured.effectiveConfig.rulePresetId, state) });
     if (!applied.ok) throw new Error(JSON.stringify(applied.errors));
     applied.value.version = captured.baseVersion + 1;
-    return deps.store.commitSegment({ chatId: captured.chatId, message, messageId: captured.assistantMessageId, branchId: captured.branchId, swipeId: captured.swipeId, expectedHeadRevision: captured.expectedHeadRevision, baseStateVersion: captured.baseVersion, baseSnapshot: captured.baseSnapshot, requestId: captured.requestId, userMessageId: captured.userMessageId, patch: response.patch, checks: clone(captured.checks), assistantText, nextState: applied.value, isContinue: captured.type === "continue", allowBaseVersionMismatch: ["swipe", "regenerate"].includes(captured.type), baseBranchId: captured.baseBranchId, baseMessageId: captured.targetMessageId, baseSwipeId: captured.baseSwipeId, signal });
+    const committed = await deps.store.commitSegment({ chatId: captured.chatId, message, messageId: captured.assistantMessageId, branchId: captured.branchId, swipeId: captured.swipeId, expectedHeadRevision: captured.expectedHeadRevision, baseStateVersion: captured.baseVersion, baseSnapshot: captured.baseSnapshot, requestId: captured.requestId, userMessageId: captured.userMessageId, patch: response.patch, checks: clone(captured.checks), assistantText, nextState: applied.value, isContinue: captured.type === "continue", allowBaseVersionMismatch: ["swipe", "regenerate"].includes(captured.type), baseBranchId: captured.baseBranchId, baseMessageId: captured.targetMessageId, baseSwipeId: captured.baseSwipeId, signal });
+    if (committed?.ok) deps.ledger?.commit(captured.pendingRuleRecords);
+    return committed;
   }
   async function replayTurn({ messageIndex, swipeId, baseSnapshot, signal }) {
     const current = context();
@@ -6788,7 +6792,7 @@ function createOrchestrator(deps) {
     captured.assistantMessageId = messageId(located.message);
     captured.swipeId = located.message.swipe_id ?? 0;
     captured.checks = [];
-    for (const record of [...captured.reusableChecks, ...deps.getChecks(captured)]) if (record?.checkId && !captured.checks.some((existing) => existing.checkId === record.checkId)) captured.checks.push(clone(record));
+    for (const record of [...captured.reusableChecks, ...captured.pendingRuleRecords, ...deps.getChecks(captured)]) if (record?.checkId && !captured.checks.some((existing) => existing.checkId === record.checkId)) captured.checks.push(clone(record));
     let failed = false;
     const fail = async (detail) => {
       if (failed) return;
@@ -6832,12 +6836,16 @@ function createOrchestrator(deps) {
           diagnostic({ requestId: captured.requestId, reason: "prompt-refresh-failed", error });
         }
       } else {
+        captured.pendingRuleRecords.length = 0;
+        captured.pendingRuleEffects.length = 0;
         const abort = settleReplacement(false);
         if (abort) await Promise.resolve(abort).catch((error) => diagnostic({ requestId: captured.requestId, reason: "replacement-settlement-failed", error }));
         if (conflicts.has(result2?.reason)) diagnostic({ requestId: captured.requestId, ...result2 });
         else await fail({ reason: result2?.reason ?? "task-failed", result: result2 });
       }
     }, async (error) => {
+      captured.pendingRuleRecords.length = 0;
+      captured.pendingRuleEffects.length = 0;
       const abort = settleReplacement(false);
       if (abort) await Promise.resolve(abort).catch((settleError) => diagnostic({ requestId: captured.requestId, reason: "replacement-settlement-failed", error: settleError }));
       if (error?.name === "AbortError") diagnostic({ requestId: captured.requestId, reason: "cancelled" });
@@ -6849,8 +6857,14 @@ function createOrchestrator(deps) {
     const pending = pendingGeneration;
     const stopped = generation;
     generation = null;
+    if (stopped) {
+      stopped.pendingRuleRecords.length = 0;
+      stopped.pendingRuleEffects.length = 0;
+    }
     if (pending) {
       pendingGeneration = null;
+      pending.pendingRuleRecords.length = 0;
+      pending.pendingRuleEffects.length = 0;
       diagnostic({ requestId: pending.requestId, reason });
       deps.queue.cancelChat(pending.chatId, reason);
       return;
@@ -6916,7 +6930,7 @@ function createOrchestrator(deps) {
     const error = cleanup();
     if (error) throw error;
   }
-  return { start, stop, initializeChat, beforeGeneration, afterGeneration, replayTurn, getStatus: () => ({ activeChatId, generation: Boolean(generation), queue: activeChatId ? deps.queue.getStatus(activeChatId) : { state: "idle", requestId: null } }) };
+  return { start, stop, initializeChat, beforeGeneration, afterGeneration, replayTurn, getActiveGeneration: () => generation, getStatus: () => ({ activeChatId, generation: Boolean(generation), queue: activeChatId ? deps.queue.getStatus(activeChatId) : { state: "idle", requestId: null } }) };
 }
 
 // src/constants.js
@@ -8142,6 +8156,79 @@ var narrativePreset = Object.freeze({
   ]
 });
 
+// schemas/d20-state.schema.json
+var d20_state_schema_default = {
+  $schema: "http://json-schema.org/draft-07/schema#",
+  type: "object",
+  required: ["version", "scene", "characters", "inventory", "quests", "world_facts", "promises", "secrets", "open_threads", "director_hints", "actors"],
+  additionalProperties: false,
+  properties: {
+    version: { type: "integer", minimum: 0 },
+    scene: { type: "object", required: ["location", "time"], additionalProperties: false, properties: { location: { type: "string", maxLength: 500 }, time: { type: "string", maxLength: 500 } } },
+    characters: { type: "object", maxProperties: 100, additionalProperties: { type: "object", required: ["attitude", "trust", "injuries"], additionalProperties: false, properties: { attitude: { type: "string", maxLength: 200 }, trust: { type: "integer", minimum: 0, maximum: 100 }, injuries: { type: "array", maxItems: 50, items: { type: "string", maxLength: 300 } } } } },
+    inventory: { type: "array", maxItems: 500, items: { type: "string", maxLength: 300 } },
+    quests: { type: "array", maxItems: 200, items: { type: "string", maxLength: 500 } },
+    world_facts: { type: "array", maxItems: 500, items: { type: "string", maxLength: 500 } },
+    promises: { type: "array", maxItems: 200, items: { type: "string", maxLength: 500 } },
+    secrets: { type: "array", maxItems: 200, items: { type: "string", maxLength: 500 } },
+    open_threads: { type: "array", maxItems: 200, items: { type: "string", maxLength: 500 } },
+    director_hints: { type: "array", maxItems: 100, items: { type: "string", maxLength: 500 } },
+    actors: {
+      type: "object",
+      maxProperties: 100,
+      additionalProperties: {
+        type: "object",
+        required: ["abilities", "proficiencyBonus", "proficientSkills", "hp", "conditions"],
+        additionalProperties: false,
+        properties: {
+          abilities: { type: "object", required: ["strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"], additionalProperties: false, properties: { strength: { type: "integer", minimum: 1, maximum: 30 }, dexterity: { type: "integer", minimum: 1, maximum: 30 }, constitution: { type: "integer", minimum: 1, maximum: 30 }, intelligence: { type: "integer", minimum: 1, maximum: 30 }, wisdom: { type: "integer", minimum: 1, maximum: 30 }, charisma: { type: "integer", minimum: 1, maximum: 30 } } },
+          proficiencyBonus: { type: "integer", minimum: 0, maximum: 10 },
+          proficientSkills: { type: "array", maxItems: 100, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 100 } },
+          hp: { type: "object", required: ["current", "max", "temporary"], additionalProperties: false, properties: { current: { type: "integer", minimum: 0, maximum: 1e6 }, max: { type: "integer", minimum: 0, maximum: 1e6 }, temporary: { type: "integer", minimum: 0, maximum: 1e6 } } },
+          conditions: { type: "array", maxItems: 100, items: { type: "string", maxLength: 200 } }
+        }
+      }
+    }
+  }
+};
+
+// src/rules/d20-lite.js
+function deepFreeze(value, seen = /* @__PURE__ */ new WeakSet()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) deepFreeze(child, seen);
+  return Object.freeze(value);
+}
+var d20LitePreset = deepFreeze({
+  ...narrativePreset,
+  id: "d20-lite",
+  name: "D20 Lite",
+  presetVersion: 1,
+  stateSchema: structuredClone(d20_state_schema_default),
+  initialState: { ...structuredClone(narrativePreset.initialState), actors: {} },
+  naturalRollPolicy: "critical",
+  skillAbilities: Object.freeze({
+    acrobatics: "dexterity",
+    athletics: "strength",
+    investigation: "intelligence",
+    perception: "wisdom",
+    persuasion: "charisma",
+    sleight_of_hand: "dexterity",
+    stealth: "dexterity"
+  }),
+  allowedPaths: structuredClone(narrativePreset.allowedPaths),
+  lockedPaths: structuredClone(narrativePreset.lockedPaths),
+  ruleLockedPaths: ["/actors"],
+  injection: [...structuredClone(narrativePreset.injection), { path: "/actors", label: "actors", priority: 100, required: true }],
+  validateInvariants(state) {
+    return Object.entries(state.actors).flatMap(([actorId, actor]) => actor.hp.current <= actor.hp.max ? [] : [{ instancePath: `/actors/${actorId}/hp/current`, message: "must not exceed max HP" }]);
+  },
+  readActor: (state, actorId) => state.actors[actorId],
+  writeActor: (state, actorId, actor) => {
+    state.actors[actorId] = actor;
+  }
+});
+
 // src/config-resolver.js
 function definedEntries(value = {}) {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== void 0));
@@ -8155,10 +8242,255 @@ function resolveConfig({ globalConfig = {}, characterConfig = {}, chatConfig = {
   });
 }
 
+// src/check-ledger.js
+function deepFreeze2(value, seen = /* @__PURE__ */ new WeakSet()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) deepFreeze2(child, seen);
+  return Object.freeze(value);
+}
+function createCheckLedger({ makeId, now, initialRecords = [] }) {
+  const records = initialRecords.map((record) => deepFreeze2(structuredClone(record)));
+  const freezeRecord = (input) => deepFreeze2(structuredClone({ checkId: makeId(), createdAt: now(), supersedes: null, ...input }));
+  return {
+    createRecord: freezeRecord,
+    reroll: (previous, input) => freezeRecord({ ...input, supersedes: previous.checkId }),
+    commit(staged = []) {
+      for (const record of staged) if (record?.checkId && !records.some((item) => item.checkId === record.checkId)) records.push(deepFreeze2(structuredClone(record)));
+    },
+    findReusable({ baseBranchId, signature: signature2 }) {
+      return records.findLast((record) => record.branchId === baseBranchId && record.signature === signature2) ?? null;
+    },
+    list: () => records.map((record) => structuredClone(record))
+  };
+}
+
+// schemas/d20.schema.json
+var d20_schema_default = {
+  $schema: "http://json-schema.org/draft-07/schema#",
+  $defs: {
+    checkInput: {
+      type: "object",
+      required: ["actor", "action", "ability", "skill", "dc", "advantage", "reason"],
+      additionalProperties: false,
+      properties: {
+        actor: { type: "string", minLength: 1, maxLength: 100 },
+        action: { type: "string", minLength: 1, maxLength: 500 },
+        ability: { enum: ["strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"] },
+        skill: { enum: ["acrobatics", "athletics", "investigation", "perception", "persuasion", "sleight_of_hand", "stealth"] },
+        dc: { type: "integer", minimum: 1, maximum: 40 },
+        advantage: { enum: ["normal", "advantage", "disadvantage"] },
+        reason: { type: "string", minLength: 1, maxLength: 500 }
+      }
+    },
+    damageInput: {
+      type: "object",
+      required: ["target", "expression", "damageType", "reason"],
+      additionalProperties: false,
+      properties: {
+        target: { type: "string", minLength: 1, maxLength: 100 },
+        expression: { type: "string", pattern: "^(?:[1-9][0-9]?|100)d(?:[2-9]|[1-9][0-9]{1,2}|1000)(?:[+-][0-9]{1,3})?$" },
+        damageType: { type: "string", minLength: 1, maxLength: 100 },
+        reason: { type: "string", minLength: 1, maxLength: 500 }
+      }
+    }
+  }
+};
+
+// src/tool-registry.js
+var checkSchema = { $ref: "#/$defs/checkInput", ...d20_schema_default };
+var damageSchema = { $ref: "#/$defs/damageInput", ...d20_schema_default };
+function signature(input, userMessageId) {
+  return JSON.stringify([userMessageId, input.actor, input.action.trim(), input.ability, input.skill, input.dc, input.advantage]);
+}
+function activeIdentity(getActiveGeneration, expected) {
+  return getActiveGeneration() === expected;
+}
+function staleGeneration() {
+  return new Error("active generation changed");
+}
+function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateCheck, validateDamage, resolveCheck, resolveDamage, ledger }) {
+  const names = ["DualModelResolveD20Check", "DualModelApplyD20Damage"];
+  const enabled = () => {
+    const config = getActiveGeneration()?.effectiveConfig ?? getConfig();
+    return Boolean(getActiveGeneration()) && config?.enabled && config.rulePresetId !== "narrative" && config.adjudication === "automatic-tool";
+  };
+  const sameCall = (generation, key, work) => {
+    generation.ruleToolInflight ??= /* @__PURE__ */ new Map();
+    if (!generation.ruleToolInflight.has(key)) {
+      generation.ruleToolTail ??= Promise.resolve();
+      const run = generation.ruleToolTail.catch(() => void 0).then(work);
+      generation.ruleToolTail = run;
+      generation.ruleToolInflight.set(key, run.finally(() => generation.ruleToolInflight.delete(key)));
+    }
+    return generation.ruleToolInflight.get(key);
+  };
+  const checkDefinition = {
+    name: names[0],
+    displayName: "Resolve D20 Check",
+    description: "Resolve a formal story check using authoritative character state. Never provide dice or modifiers.",
+    parameters: checkSchema,
+    shouldRegister: enabled,
+    stealth: false,
+    formatMessage: (input) => `D20: ${input.actor} \u2014 ${input.action}`,
+    action: async (input) => {
+      const validation = validateCheck(input);
+      if (!validation.ok) throw new Error(JSON.stringify(validation.errors));
+      const generation = getActiveGeneration();
+      if (!generation) throw new Error("No active generation");
+      const key = `check:${signature(input, generation.userMessageId)}`;
+      return sameCall(generation, key, async () => {
+        const existing = generation.pendingRuleRecords.find((record2) => record2.kind === "check" && record2.signature === key.slice(6));
+        if (existing) return existing;
+        const reusable = generation.baseBranchId && ledger.findReusable({ baseBranchId: generation.baseBranchId, signature: key.slice(6) });
+        if (reusable) {
+          if (!activeIdentity(getActiveGeneration, generation)) throw staleGeneration();
+          generation.pendingRuleRecords.push(reusable);
+          return reusable;
+        }
+        if (generation.ruleReplayMode === "reuse-only") throw new Error("Ordinary regeneration cannot create or reroll a formal check; use explicit reroll");
+        const result2 = await resolveCheck(input, structuredClone(generation.pendingRuleEffects.at(-1)?.nextState ?? generation.baseSnapshot));
+        if (!activeIdentity(getActiveGeneration, generation)) throw staleGeneration();
+        const record = ledger.createRecord({ kind: "check", branchId: generation.branchId, signature: key.slice(6), request: structuredClone(input), result: structuredClone(result2) });
+        generation.pendingRuleRecords.push(record);
+        return record;
+      });
+    }
+  };
+  const damageDefinition = {
+    name: names[1],
+    displayName: "Apply D20 Damage",
+    description: "Roll and apply authoritative damage to a target. Never provide rolled values or HP totals.",
+    parameters: damageSchema,
+    shouldRegister: enabled,
+    stealth: false,
+    formatMessage: (input) => `Damage: ${input.target} \u2014 ${input.expression}`,
+    action: async (input) => {
+      const validation = validateDamage(input);
+      if (!validation.ok) throw new Error(JSON.stringify(validation.errors));
+      const generation = getActiveGeneration();
+      if (!generation) throw new Error("No active generation");
+      const key = `damage:${JSON.stringify(input)}`;
+      return sameCall(generation, key, async () => {
+        const state = structuredClone(generation.pendingRuleEffects.at(-1)?.nextState ?? generation.baseSnapshot);
+        const resolved = await resolveDamage(input, state);
+        if (!activeIdentity(getActiveGeneration, generation)) throw staleGeneration();
+        const record = ledger.createRecord({ kind: "damage", branchId: generation.branchId, request: structuredClone(input), result: structuredClone(resolved.audit) });
+        generation.pendingRuleRecords.push(record);
+        generation.pendingRuleEffects.push({ record, nextState: structuredClone(resolved.state) });
+        return record;
+      });
+    }
+  };
+  return { register() {
+    try {
+      adapter.registerTool(checkDefinition);
+      adapter.registerTool(damageDefinition);
+    } catch (error) {
+      try {
+        adapter.unregisterTool(names[0]);
+      } catch {
+      }
+      throw error;
+    }
+  }, unregister() {
+    let first;
+    for (const name of names) try {
+      adapter.unregisterTool(name);
+    } catch (error) {
+      first ??= error;
+    }
+    if (first) throw first;
+  } };
+}
+
+// src/dice-engine.js
+var UINT32_RANGE = 2 ** 32;
+var MAX_REJECTIONS = 1e4;
+function nextValue(nextUint32) {
+  if (typeof nextUint32 !== "function") throw new TypeError("Random source must be a function");
+  const value = nextUint32();
+  if (!Number.isInteger(value) || value < 0 || value >= UINT32_RANGE) throw new TypeError("Random source must return a uint32");
+  return value;
+}
+function createWebCryptoUint32(cryptoObject = globalThis.crypto) {
+  if (typeof cryptoObject?.getRandomValues !== "function") throw new Error("Web Crypto is unavailable");
+  return () => cryptoObject.getRandomValues(new Uint32Array(1))[0];
+}
+function rollDie(sides, nextUint32) {
+  if (!Number.isInteger(sides) || sides < 2 || sides > 1e3) throw new Error("Dice sides must be an integer from 2 to 1000");
+  const limit = Math.floor(UINT32_RANGE / sides) * sides;
+  for (let attempts = 0; attempts < MAX_REJECTIONS; attempts += 1) {
+    const value = nextValue(nextUint32);
+    if (value < limit) return value % sides + 1;
+  }
+  throw new Error("Random source rejected too many values");
+}
+function rollExpression(expression, nextUint32) {
+  const match = /^([1-9]\d?|100)d([2-9]|[1-9]\d{1,2}|1000)([+-]\d{1,3})?$/.exec(expression);
+  if (!match) throw new Error("Invalid dice expression");
+  const count = Number(match[1]);
+  const sides = Number(match[2]);
+  const modifier = Number(match[3] ?? 0);
+  const rolls = Array.from({ length: count }, () => rollDie(sides, nextUint32));
+  return { rolls, modifier, total: rolls.reduce((sum, roll) => sum + roll, modifier) };
+}
+
+// src/rule-engine.js
+function abilityModifier(score) {
+  return Math.floor((score - 10) / 2);
+}
+function selectRoll(rolls, advantage) {
+  if (advantage === "advantage") return Math.max(...rolls);
+  if (advantage === "disadvantage") return Math.min(...rolls);
+  return rolls[0];
+}
+function assertCheckAuthority(input, preset) {
+  const ability = preset.skillAbilities?.[input.skill];
+  if (!ability) throw new Error(`Unknown skill: ${input.skill}`);
+  if (input.ability !== ability) throw new Error(`Ability does not match skill: ${input.skill}`);
+}
+function assertAdvantage(advantage) {
+  if (!["normal", "advantage", "disadvantage"].includes(advantage)) throw new Error(`Invalid advantage mode: ${advantage}`);
+}
+function assertActor(actorId, actor) {
+  if (!actor) throw new Error(`Unknown actor: ${actorId}`);
+}
+function createRuleEngine({ nextUint32, preset }) {
+  if (!preset || typeof preset.readActor !== "function" || typeof preset.writeActor !== "function") throw new TypeError("A rule preset with actor accessors is required");
+  return {
+    resolveCheck(input, state) {
+      assertCheckAuthority(input, preset);
+      assertAdvantage(input.advantage);
+      const actor = preset.readActor(state, input.actor);
+      assertActor(input.actor, actor);
+      const rolls = Array.from({ length: input.advantage === "normal" ? 1 : 2 }, () => rollDie(20, nextUint32));
+      const selectedRoll = selectRoll(rolls, input.advantage);
+      const abilityMod = abilityModifier(actor.abilities[input.ability]);
+      const proficiencyBonus = actor.proficientSkills.includes(input.skill) ? actor.proficiencyBonus : 0;
+      const total = selectedRoll + abilityMod + proficiencyBonus;
+      const outcome = preset.naturalRollPolicy === "critical" && selectedRoll === 20 ? "critical-success" : preset.naturalRollPolicy === "critical" && selectedRoll === 1 ? "critical-failure" : total >= input.dc ? "success" : "failure";
+      return { rolls, selectedRoll, abilityModifier: abilityMod, proficiencyBonus, total, dc: input.dc, outcome };
+    },
+    applyDamage({ target: actorId, expression }, state) {
+      assertActor(actorId, preset.readActor(state, actorId));
+      const nextState = structuredClone(state);
+      const actor = structuredClone(preset.readActor(nextState, actorId));
+      const damage = rollExpression(expression, nextUint32);
+      const total = Math.max(0, damage.total);
+      const absorbed = Math.min(actor.hp.temporary, total);
+      actor.hp.temporary -= absorbed;
+      actor.hp.current = Math.max(0, Math.min(actor.hp.max, actor.hp.current - (total - absorbed)));
+      preset.writeActor(nextState, actorId, actor);
+      return { state: nextState, damage: { ...damage, rawTotal: damage.total, total, absorbed } };
+    }
+  };
+}
+
 // src/index.js
 async function bootstrap({ adapter, dependencies } = {}) {
   const runtimeAdapter = adapter ?? (await import("./st-runtime-WSMD2CWO.js")).createRuntimeAdapter();
-  const presets = [narrativePreset];
+  const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });
   const resolved = dependencies ?? {};
   const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
@@ -8168,6 +8500,11 @@ async function bootstrap({ adapter, dependencies } = {}) {
     const envelope = store.loadEnvelope?.();
     return resolveConfig({ globalConfig: runtimeAdapter.getSettings?.(), chatConfig: envelope?.ok ? envelope.value.configOverrides : envelope?.configOverrides });
   });
+  const makeId = resolved.makeId ?? (() => {
+    if (typeof globalThis.crypto?.randomUUID !== "function") throw new Error("Web Crypto randomUUID is unavailable");
+    return globalThis.crypto.randomUUID();
+  });
+  const ledger = resolved.ledger ?? createCheckLedger({ makeId, now: resolved.now ?? (() => (/* @__PURE__ */ new Date()).toISOString()), initialRecords: store.listRuleRecords?.() ?? [] });
   let orchestrator;
   const rollbackManager = resolved.rollbackManager ?? createRollbackManager({
     adapter: runtimeAdapter,
@@ -8185,6 +8522,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
     store,
     validator,
     modelService,
+    ledger,
     promptInjector: resolved.promptInjector ?? createPromptInjector({ adapter: runtimeAdapter }),
     queue,
     rollbackManager,
@@ -8199,22 +8537,66 @@ async function bootstrap({ adapter, dependencies } = {}) {
     prepareSwipeGeneration: resolved.prepareSwipeGeneration ?? ((input) => store.prepareSwipeGeneration(input)),
     formatReusableChecks: resolved.formatReusableChecks ?? ((records) => records.length ? `Authoritative completed checks; do not request them again: ${records.map((record) => `${record.checkId}=${record.pass ?? record.outcome ?? "recorded"}`).join(", ")}` : "")
   });
-  orchestrator.start();
-  rollbackManager.bind();
+  const ajv = new import_ajv2.default({ allErrors: true, strict: false });
+  const checkValidator = ajv.compile({ $ref: "#/$defs/checkInput", ...d20_schema_default });
+  const damageValidator = ajv.compile({ $ref: "#/$defs/damageInput", ...d20_schema_default });
+  const validate2 = (fn) => (input) => ({ ok: Boolean(fn(input)), errors: structuredClone(fn.errors ?? []) });
+  let randomSource;
+  const nextUint32 = resolved.nextUint32 ?? (() => (randomSource ??= createWebCryptoUint32(globalThis.crypto))());
+  const toolRegistry = resolved.toolRegistry ?? createToolRegistry({
+    adapter: runtimeAdapter,
+    getConfig: getEffectiveConfig,
+    getActiveGeneration: () => orchestrator?.getActiveGeneration(),
+    validateCheck: validate2(checkValidator),
+    validateDamage: validate2(damageValidator),
+    ledger,
+    resolveCheck: async (input, state) => createRuleEngine({ nextUint32, preset: orchestrator.getActiveGeneration()?.preset ?? d20LitePreset }).resolveCheck(input, state),
+    resolveDamage: async (input, state) => {
+      const engine = createRuleEngine({ nextUint32, preset: orchestrator.getActiveGeneration()?.preset ?? d20LitePreset });
+      const hpBefore = state.actors?.[input.target]?.hp?.current;
+      const result2 = engine.applyDamage(input, state);
+      return { state: result2.state, audit: { rolls: result2.damage.rolls, raw: result2.damage.rawTotal, total: result2.damage.total, absorbed: result2.damage.absorbed, hpBefore, hpAfter: result2.state.actors?.[input.target]?.hp?.current } };
+    }
+  });
+  const canRegisterTools = typeof runtimeAdapter.registerTool === "function";
   try {
+    orchestrator.start();
+    if (canRegisterTools) toolRegistry.register();
+    rollbackManager.bind();
     await orchestrator.initializeChat();
   } catch (error) {
+    try {
+      if (canRegisterTools) toolRegistry.unregister();
+    } catch {
+    }
     try {
       orchestrator.stop();
     } catch {
     }
     throw error;
   }
+  const stopOrchestrator = orchestrator.stop.bind(orchestrator);
+  orchestrator.stop = () => {
+    let first;
+    if (canRegisterTools) try {
+      toolRegistry.unregister();
+    } catch (error) {
+      first = error;
+    }
+    try {
+      stopOrchestrator();
+    } catch (error) {
+      first ??= error;
+    }
+    if (first) throw first;
+  };
   return {
     name: "dualModelEngine",
     adapter: runtimeAdapter,
     capabilities: probeHostCapabilities(runtimeAdapter),
-    orchestrator
+    orchestrator,
+    ledger,
+    toolRegistry
   };
 }
 if (typeof document !== "undefined" && import.meta.url.includes("/scripts/extensions/")) {
