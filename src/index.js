@@ -177,7 +177,9 @@ export async function bootstrap({ adapter, dependencies } = {}) {
                     if (latest?.groupId || orchestrator.getActiveGeneration?.() || latest?.chatId !== captured.chatId || latest.chat !== captured.chat || latest.chatMetadata !== captured.metadata || value !== captured.envelope || JSON.stringify(value?.preset) !== JSON.stringify(captured.preset) || JSON.stringify(value?.activeRef) !== JSON.stringify(captured.ref) || value?.headRevision !== captured.head || value?.stateVersion !== input.baseVersion || latestMessage !== captured.message || latestSwipe !== captured.swipe || latestSwipe?.extra?.[NAMESPACE]?.branch !== captured.branch) return { ok: false, reason: 'stale' };
                     const nextState = structuredClone(input.nextState); nextState.version = input.baseVersion + 1;
                     const valid = validator.validateState(value.preset?.id, nextState); if (!valid.ok) return { ok: false, reason: 'invalid-state', errors: valid.errors };
-                    return store.commitCurrentBranchMutation({ chatId: captured.chatId, expectedHeadRevision: captured.head, baseVersion: input.baseVersion, activeRef: captured.ref, nextState, patch: { base_version: input.baseVersion, operations: input.operations }, source: input.source });
+                    const committed = await store.commitCurrentBranchMutation({ chatId: captured.chatId, expectedHeadRevision: captured.head, baseVersion: input.baseVersion, activeRef: captured.ref, nextState, patch: { base_version: input.baseVersion, operations: input.operations }, source: input.source });
+                    if (!committed?.ok) return committed;
+                    const audit = await store.auditActiveRef?.(); return audit?.ok ? committed : { ok: false, reason: audit?.reason ?? 'audit-failed' };
                 });
             },
             rollbackManager,

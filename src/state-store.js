@@ -170,13 +170,15 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         if (branch.status !== 'committed') return result('branch-not-committed');
         const duplicate = branch.segments.flatMap(segment => segment.checks ?? []).find(check => check?.checkId === record.checkId);
         if (duplicate) return JSON.stringify(duplicate) === JSON.stringify(record) ? { ok: true, duplicate: true, record: clone(duplicate) } : result('duplicate-check-conflict');
-        const metadataBefore = clone(envelope); const extraBefore = clone(message.extra); const swipesBefore = clone(message.swipe_info);
+        const capturedChat = context.chat; const capturedMetadata = context.chatMetadata; const capturedSwipe = message.swipe_info[activeRef.swipeId]; const capturedBranch = branch; const metadataBefore = clone(envelope); const extraBefore = clone(message.extra); const swipesBefore = clone(message.swipe_info);
         try {
             branch.segments.at(-1).checks ??= []; branch.segments.at(-1).checks.push(clone(record));
             message.extra ??= {}; message.extra[NAMESPACE] = clone(message.swipe_info[activeRef.swipeId].extra[NAMESPACE]);
-            envelope.headRevision += 1; await adapter.saveChat(); return { ok: true, headRevision: envelope.headRevision, record: clone(record) };
+            envelope.headRevision += 1; await adapter.saveChat(); const after = adapter.getContext?.();
+            if (after?.chatId !== chatId || after.chat !== capturedChat || after.chatMetadata !== capturedMetadata || after.chatMetadata?.[NAMESPACE] !== envelope || after.chat?.find(item => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId) !== message || message.swipe_info?.[activeRef.swipeId] !== capturedSwipe || capturedSwipe?.extra?.[NAMESPACE]?.branch !== capturedBranch) return result('stale-chat');
+            return { ok: true, headRevision: envelope.headRevision, record: clone(record) };
         }
-        catch (error) { context.chatMetadata[NAMESPACE] = metadataBefore; message.extra = extraBefore; message.swipe_info = swipesBefore; return result('save-failed', error); }
+        catch (error) { const latest = adapter.getContext?.(); if (latest?.chatId !== chatId || latest.chat !== capturedChat || latest.chatMetadata !== capturedMetadata || latest.chatMetadata?.[NAMESPACE] !== envelope) return result('stale-chat', error); context.chatMetadata[NAMESPACE] = metadataBefore; message.extra = extraBefore; message.swipe_info = swipesBefore; return result('save-failed', error); }
     }
 
     // One save transaction for edits which change canonical state and append an audit trail.
@@ -189,7 +191,7 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         const message = context.chat.find(item => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId);
         const branch = getBranch(message, activeRef.swipeId);
         if (!message || (message.swipe_id ?? 0) !== activeRef.swipeId || branch?.branchId !== activeRef.branchId || branch.status !== 'committed' || !branch.segments?.length) return result('missing-active-branch');
-        const capturedChat = context.chat; const metadataBefore = clone(envelope); const extraBefore = clone(message.extra); const swipesBefore = clone(message.swipe_info);
+        const capturedChat = context.chat; const capturedMetadata = context.chatMetadata; const capturedSwipe = message.swipe_info[activeRef.swipeId]; const capturedBranch = branch; const metadataBefore = clone(envelope); const extraBefore = clone(message.extra); const swipesBefore = clone(message.swipe_info);
         try {
             const latest = adapter.getContext?.();
             if (latest?.chatId !== chatId || latest.chat !== capturedChat || latest.chatMetadata?.[NAMESPACE] !== envelope || envelope.headRevision !== expectedHeadRevision || envelope.stateVersion !== baseVersion) return result('stale-chat');
@@ -197,8 +199,11 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
             const segment = { requestId: prior.requestId, userMessageId: prior.userMessageId ?? null, assistantTextHash: prior.assistantTextHash, source, patch: clone(patch ?? { operations: [] }), checks: record ? [clone(record)] : [], postSnapshot: clone(nextState) };
             branch.segments.push(segment); message.extra[NAMESPACE] = clone(message.swipe_info[activeRef.swipeId].extra[NAMESPACE]);
             envelope.activeSnapshot = clone(nextState); envelope.stateVersion = nextState.version; envelope.headRevision += 1; envelope.taskStatus = { state: 'idle', requestId: null };
-            await adapter.saveChat(); return { ok: true, stateVersion: envelope.stateVersion, headRevision: envelope.headRevision, record: record ? clone(record) : undefined };
-        } catch (error) { context.chatMetadata[NAMESPACE] = metadataBefore; message.extra = extraBefore; message.swipe_info = swipesBefore; return result('save-failed', error); }
+            await adapter.saveChat();
+            const after = adapter.getContext?.();
+            if (after?.chatId !== chatId || after.chat !== capturedChat || after.chatMetadata !== capturedMetadata || after.chatMetadata?.[NAMESPACE] !== envelope || after.chat?.find(item => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId) !== message || message.swipe_info?.[activeRef.swipeId] !== capturedSwipe || capturedSwipe?.extra?.[NAMESPACE]?.branch !== capturedBranch) return result('stale-chat');
+            return { ok: true, stateVersion: envelope.stateVersion, headRevision: envelope.headRevision, record: record ? clone(record) : undefined };
+        } catch (error) { const latest = adapter.getContext?.(); if (latest?.chatId !== chatId || latest.chat !== capturedChat || latest.chatMetadata !== capturedMetadata || latest.chatMetadata?.[NAMESPACE] !== envelope) return result('stale-chat', error); context.chatMetadata[NAMESPACE] = metadataBefore; message.extra = extraBefore; message.swipe_info = swipesBefore; return result('save-failed', error); }
     }
 
     async function restoreBranch(message, swipeId) {
