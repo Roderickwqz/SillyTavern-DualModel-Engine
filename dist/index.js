@@ -9625,7 +9625,7 @@ function createChatActions(deps) {
       return deps.queue.enqueue(captured.context.chatId, `resummarize-${deps.makeId()}`, async (signal) => {
         signal.throwIfAborted();
         if (!same(deps, captured)) return { ok: false, reason: "stale" };
-        return deps.store.commitCurrentBranchMutation({ chatId: captured.context.chatId, expectedHeadRevision: captured.headRevision, baseVersion: captured.stateVersion, activeRef: captured.ref, nextState: candidate, patch: { operations: [] }, source: "resummarize" });
+        return deps.store.commitCurrentBranchMutation({ chatId: captured.context.chatId, expectedHeadRevision: captured.headRevision, baseVersion: captured.stateVersion, activeRef: captured.ref, nextState: candidate, patch: { operations }, source: "resummarize" });
       });
     },
     importPreset: async () => {
