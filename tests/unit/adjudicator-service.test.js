@@ -15,3 +15,9 @@ it('honours supported automatic, confirmation cancellation, manual, validation a
     await expect(createAdjudicatorService(deps({ validateInput: () => ({ ok: false, errors: ['bad'] }) })).resolveBeforeGeneration({ strategy: 'enforced-preflight' })).rejects.toThrow('bad');
     await expect(createAdjudicatorService(deps({ stageCheck: async () => { throw new Error('rule failed'); } })).resolveBeforeGeneration({ strategy: 'enforced-preflight' })).rejects.toThrow('rule failed');
 });
+
+it('validates manual checks before invoking the resolver', async () => {
+    const d = deps({ validateInput: () => ({ ok: false, errors: ['bad manual'] }) });
+    await expect(createAdjudicatorService(d).resolveManual({ actor: 'player' })).rejects.toThrow('bad manual');
+    expect(d.resolveManualCheck).not.toHaveBeenCalled();
+});

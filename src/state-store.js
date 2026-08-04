@@ -167,9 +167,15 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         const message = context.chat?.find(item => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId);
         const branch = getBranch(message, activeRef.swipeId);
         if (!message || (message.swipe_id ?? 0) !== activeRef.swipeId || branch?.branchId !== activeRef.branchId || !Array.isArray(branch.segments) || !branch.segments.length) return result('missing-active-branch');
-        if (branch.segments.some(segment => segment.checks?.some(check => check?.checkId === record.checkId))) return { ok: true, duplicate: true };
+        if (branch.status !== 'committed') return result('branch-not-committed');
+        const duplicate = branch.segments.flatMap(segment => segment.checks ?? []).find(check => check?.checkId === record.checkId);
+        if (duplicate) return JSON.stringify(duplicate) === JSON.stringify(record) ? { ok: true, duplicate: true, record: clone(duplicate) } : result('duplicate-check-conflict');
         const metadataBefore = clone(envelope); const extraBefore = clone(message.extra); const swipesBefore = clone(message.swipe_info);
-        try { branch.segments.at(-1).checks ??= []; branch.segments.at(-1).checks.push(clone(record)); envelope.headRevision += 1; await adapter.saveChat(); return { ok: true, headRevision: envelope.headRevision }; }
+        try {
+            branch.segments.at(-1).checks ??= []; branch.segments.at(-1).checks.push(clone(record));
+            message.extra ??= {}; message.extra[NAMESPACE] = clone(message.swipe_info[activeRef.swipeId].extra[NAMESPACE]);
+            envelope.headRevision += 1; await adapter.saveChat(); return { ok: true, headRevision: envelope.headRevision, record: clone(record) };
+        }
         catch (error) { context.chatMetadata[NAMESPACE] = metadataBefore; message.extra = extraBefore; message.swipe_info = swipesBefore; return result('save-failed', error); }
     }
 

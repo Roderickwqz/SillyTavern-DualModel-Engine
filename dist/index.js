@@ -6728,6 +6728,7 @@ function createOrchestrator(deps) {
       diagnostic({ reason: "prompt-refresh-failed", error });
       return { ignored: true, reason: "prompt-refresh-failed" };
     }
+    if (generation !== captured || captured.closed || context().chatId !== captured.chatId) return { ignored: true, reason: "generation-cancelled" };
     return { ok: true, requestId: captured.requestId };
   }
   function isFinalAssistant(message) {
@@ -7175,16 +7176,20 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     const message = context.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId);
     const branch = getBranch(message, activeRef.swipeId);
     if (!message || (message.swipe_id ?? 0) !== activeRef.swipeId || branch?.branchId !== activeRef.branchId || !Array.isArray(branch.segments) || !branch.segments.length) return result("missing-active-branch");
-    if (branch.segments.some((segment) => segment.checks?.some((check) => check?.checkId === record.checkId))) return { ok: true, duplicate: true };
+    if (branch.status !== "committed") return result("branch-not-committed");
+    const duplicate = branch.segments.flatMap((segment) => segment.checks ?? []).find((check) => check?.checkId === record.checkId);
+    if (duplicate) return JSON.stringify(duplicate) === JSON.stringify(record) ? { ok: true, duplicate: true, record: clone2(duplicate) } : result("duplicate-check-conflict");
     const metadataBefore = clone2(envelope);
     const extraBefore = clone2(message.extra);
     const swipesBefore = clone2(message.swipe_info);
     try {
       branch.segments.at(-1).checks ??= [];
       branch.segments.at(-1).checks.push(clone2(record));
+      message.extra ??= {};
+      message.extra[NAMESPACE] = clone2(message.swipe_info[activeRef.swipeId].extra[NAMESPACE]);
       envelope.headRevision += 1;
       await adapter.saveChat();
-      return { ok: true, headRevision: envelope.headRevision };
+      return { ok: true, headRevision: envelope.headRevision, record: clone2(record) };
     } catch (error) {
       context.chatMetadata[NAMESPACE] = metadataBefore;
       message.extra = extraBefore;
@@ -8638,7 +8643,7 @@ var adjudicator_schema_default = {
 
 // src/index.js
 async function bootstrap({ adapter, dependencies } = {}) {
-  const runtimeAdapter = adapter ?? (await import("./st-runtime-DWPLWOTI.js")).createRuntimeAdapter();
+  const runtimeAdapter = adapter ?? (await import("./st-runtime-WZIDD5QD.js")).createRuntimeAdapter();
   const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });
   const resolved = dependencies ?? {};
@@ -8664,25 +8669,28 @@ async function bootstrap({ adapter, dependencies } = {}) {
   const nextUint32 = resolved.nextUint32 ?? (() => (randomSource ??= createWebCryptoUint32(globalThis.crypto))());
   let orchestrator;
   const resolveCheck = async (input, state) => createRuleEngine({ nextUint32, preset: orchestrator?.getActiveGeneration()?.preset ?? d20LitePreset }).resolveCheck(input, state);
+  const resolveManualCheck = resolved.resolveManualCheck ?? (async (input) => {
+    const context = runtimeAdapter.getContext();
+    const config = getEffectiveConfig();
+    const envelope = store.loadEnvelope?.();
+    const value = envelope?.ok ? envelope.value : envelope;
+    if (context?.groupId || !config.enabled || config.rulePresetId !== "d20-lite" || config.adjudication !== "manual" || value?.preset?.id !== "d20-lite") throw new Error("Manual D20 checks are not authorized for this chat configuration");
+    const ref = value.activeRef;
+    const message = context?.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === ref?.messageId);
+    const branch = message?.swipe_info?.[ref?.swipeId]?.extra?.[NAMESPACE]?.branch;
+    if (!ref || !message || (message.swipe_id ?? 0) !== ref.swipeId || !branch || branch.branchId !== ref.branchId || branch.status !== "committed" || !branch.segments?.length) throw new Error("No active committed branch");
+    const manualGeneration = { branchId: ref.branchId, baseBranchId: ref.branchId, userMessageId: branch.segments.at(-1).userMessageId ?? null, baseSnapshot: structuredClone(value.activeSnapshot), pendingRuleRecords: [], pendingRuleEffects: [], ruleReplayMode: null, closed: false };
+    const record = await stageCheckRecord({ generation: manualGeneration, input, ledger, resolveCheck: (request, state) => createRuleEngine({ nextUint32, preset: d20LitePreset }).resolveCheck(request, state) });
+    const committed = await store.commitCurrentBranchAudit({ chatId: context.chatId, expectedHeadRevision: value.headRevision, activeRef: ref, record });
+    if (!committed?.ok) throw new Error(committed?.reason ?? "manual audit failed");
+    ledger.commit([committed.record ?? record]);
+    return committed.record ?? record;
+  });
   const adjudicator = resolved.adjudicator ?? createAdjudicatorService({ toolProbe: resolved.toolProbe ?? { supported: false }, getToolProbe: resolved.getToolProbe ?? (() => runtimeAdapter.getSettings?.().toolProbe ?? { supported: false }), getMainApiModelLabel: () => runtimeAdapter.getMainApiModelLabel?.(), requestDecision: resolved.requestDecision ?? ((input) => modelService.requestDecision({ ...input, profileId: input.recorderProfileId ?? getEffectiveConfig().recorderProfileId })), validateInput: validate2(checkValidator), stageCheck: async (input, context) => {
     const generation = context.generation ?? orchestrator?.getActiveGeneration();
     if (!generation) throw new Error("No active generation");
     return stageCheckRecord({ generation, input, ledger, resolveCheck, signal: context.signal, isActive: () => orchestrator?.getActiveGeneration() === generation && !generation.closed });
-  }, formatCheck: resolved.formatCheck ?? ((check) => `Formal check ${check.checkId}: total ${check.result.total} vs DC ${check.result.dc} \u2014 ${check.result.outcome}`), confirm: resolved.confirm ?? (async () => true), resolveManualCheck: resolved.resolveManualCheck ?? (async (input) => {
-    const context = runtimeAdapter.getContext();
-    const envelope = store.loadEnvelope?.();
-    const value = envelope?.ok ? envelope.value : envelope;
-    const ref = value?.activeRef;
-    const message = context?.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === ref?.messageId);
-    const branch = message?.swipe_info?.[ref?.swipeId]?.extra?.[NAMESPACE]?.branch;
-    if (!value || !ref || !branch || branch.branchId !== ref.branchId) throw new Error("No active committed branch");
-    const generation = { branchId: ref.branchId, baseBranchId: ref.branchId, userMessageId: branch.segments.at(-1)?.userMessageId ?? null, baseSnapshot: structuredClone(value.activeSnapshot), pendingRuleRecords: [], pendingRuleEffects: [], ruleReplayMode: null, closed: false };
-    const record = await stageCheckRecord({ generation, input, ledger, resolveCheck });
-    const committed = await store.commitCurrentBranchAudit({ chatId: context.chatId, expectedHeadRevision: value.headRevision, activeRef: ref, record });
-    if (!committed?.ok) throw new Error(committed?.reason ?? "manual audit failed");
-    ledger.commit([record]);
-    return record;
-  }) });
+  }, formatCheck: resolved.formatCheck ?? ((check) => `Formal check ${check.checkId}: total ${check.result.total} vs DC ${check.result.dc} \u2014 ${check.result.outcome}`), confirm: resolved.confirm ?? (async () => true), resolveManualCheck });
   const rollbackManager = resolved.rollbackManager ?? createRollbackManager({
     adapter: runtimeAdapter,
     store,

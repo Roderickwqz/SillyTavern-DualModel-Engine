@@ -54,6 +54,7 @@ export function createOrchestrator(deps) {
         if (generation !== captured || captured.closed || context().chatId !== captured.chatId) return { ignored: true, reason: 'generation-cancelled' };
         const hardRuleText = [deps.formatReusableChecks?.(captured.reusableChecks) ?? '', adjudication.injectedText ?? ''].filter(Boolean).join('\n');
         try { await deps.promptInjector.refresh({ state: captured.baseSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection, hardRuleText }); } catch (error) { if (generation === captured) generation = null; diagnostic({ reason: 'prompt-refresh-failed', error }); return { ignored: true, reason: 'prompt-refresh-failed' }; }
+        if (generation !== captured || captured.closed || context().chatId !== captured.chatId) return { ignored: true, reason: 'generation-cancelled' };
         return { ok: true, requestId: captured.requestId };
     }
     function isFinalAssistant(message) { return !message?.is_user && !message?.is_system && !message?.extra?.tool_invocations && !message?.extra?.tool_call_id && !message?.extra?.tool_calls && !message?.tool_calls; }

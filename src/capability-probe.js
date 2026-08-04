@@ -31,11 +31,23 @@ export async function runDynamicToolProbe(adapter) {
     const name = 'DualModelCapabilityProbe'; let invoked = false;
     const definition = { name, displayName: 'DualModel Capability Probe', description: 'Call this probe exactly once.', parameters: { type: 'object', properties: {}, additionalProperties: false }, action: async () => { invoked = true; return { ok: true }; }, shouldRegister: () => true, stealth: true };
     const label = adapter?.getMainApiModelLabel?.() ?? null;
-    const persist = async report => { const safe = { supported: Boolean(report.supported), reason: report.reason ?? null, checkedAt: new Date().toISOString(), apiModelLabel: label }; try { const settings = adapter?.getSettings?.(); if (settings && typeof settings === 'object') { settings.toolProbe = safe; await adapter.saveSettings?.(); } } catch (error) { return { ...report, supported: false, reason: `Probe persistence failed: ${error.message}` }; } return { ...report, ...safe }; };
+    const persist = async report => {
+        const safe = { supported: Boolean(report.supported), reason: report.reason ?? null, checkedAt: new Date().toISOString(), apiModelLabel: label };
+        const settings = adapter?.getSettings?.();
+        if (!settings || typeof settings !== 'object') return { ...report, ...safe };
+        settings.toolProbe = safe;
+        try { await adapter.saveSettings?.(); }
+        catch (error) {
+            const failure = { supported: false, reason: `Probe persistence failed: ${error.message}`, checkedAt: safe.checkedAt, apiModelLabel: label };
+            settings.toolProbe = failure;
+            return { ...report, ...failure };
+        }
+        return { ...report, ...safe };
+    };
     if (typeof adapter?.registerTool !== 'function' || typeof adapter?.unregisterTool !== 'function' || typeof adapter?.probeMainTool !== 'function') return persist({ supported: false, reason: 'Tool probe API is unavailable' });
     let registered = false;
     try {
-        registered = true; adapter.registerTool(definition);
+        adapter.registerTool(definition); registered = true;
         const result = await adapter.probeMainTool({ prompt: `Call ${name} exactly once.`, definition, responseLength: 32 });
         const errors = result?.invocation?.errors ?? [];
         return await persist({ supported: Boolean(result?.supported && invoked && !errors.length), reason: result?.reason ?? (invoked && !errors.length ? null : 'Model response did not successfully invoke the probe tool'), invocation: result?.invocation });

@@ -69,6 +69,24 @@ it('persists a new branch from its base snapshot, clones caller data, and increm
     expect(saveChat).toHaveBeenCalledTimes(1);
 });
 
+it('audits only the selected committed active branch and mirrors its new check', async () => {
+    const branch = { branchId: 'b1', status: 'committed', segments: [{ checks: [] }] };
+    const { store, current, context } = setup({ current: message(branch), metadata: envelope({ activeRef: { messageId: 'm1', swipeId: 0, branchId: 'b1' } }) });
+    const record = { checkId: 'manual-1', kind: 'check', result: { total: 14 } };
+    await expect(store.commitCurrentBranchAudit({ chatId: 'chat-a', expectedHeadRevision: 7, activeRef: context.chatMetadata.dualModelEngine.activeRef, record })).resolves.toMatchObject({ ok: true, headRevision: 8 });
+    expect(current.swipe_info[0].extra.dualModelEngine.branch.segments.at(-1).checks).toEqual([record]);
+    expect(current.extra.dualModelEngine.branch.segments.at(-1).checks).toEqual([record]);
+    await expect(store.commitCurrentBranchAudit({ chatId: 'chat-a', expectedHeadRevision: 8, activeRef: context.chatMetadata.dualModelEngine.activeRef, record })).resolves.toMatchObject({ ok: true, duplicate: true });
+    expect(context.chatMetadata.dualModelEngine.headRevision).toBe(8);
+});
+
+it('rejects an audit for a pending branch without mutation', async () => {
+    const branch = { branchId: 'b1', status: 'pending', segments: [{ checks: [] }] };
+    const { store, context, saveChat } = setup({ current: message(branch), metadata: envelope({ activeRef: { messageId: 'm1', swipeId: 0, branchId: 'b1' } }) });
+    await expect(store.commitCurrentBranchAudit({ chatId: 'chat-a', expectedHeadRevision: 7, activeRef: context.chatMetadata.dualModelEngine.activeRef, record: { checkId: 'x' } })).resolves.toEqual({ ok: false, reason: 'branch-not-committed' });
+    expect(saveChat).not.toHaveBeenCalled();
+});
+
 it('does not mutate after a delayed hash when its commit signal is aborted', async () => {
     let resolveHash; const hashText = vi.fn(() => new Promise(resolve => { resolveHash = resolve; })); const { context, current, saveChat } = setup(); const store = createStateStore({ adapter: { getContext: () => context, saveChat }, makeId: () => 'generated', hashText }); const controller = new AbortController(); const before = structuredClone(context);
     const pending = store.commitSegment(commitInput(current, { signal: controller.signal })); await vi.waitFor(() => expect(hashText).toHaveBeenCalledOnce()); controller.abort(); resolveHash('hash:answer');

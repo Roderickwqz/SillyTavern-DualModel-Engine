@@ -21,4 +21,10 @@ describe('createSTAdapter', () => {
             {},
         );
     });
+
+    it('does not expose registration operations when the host has no real tool API', () => {
+        const adapter = createSTAdapter({ getContext: () => ({}) });
+        expect(adapter.registerTool).toBeUndefined();
+        expect(adapter.unregisterTool).toBeUndefined();
+    });
 });

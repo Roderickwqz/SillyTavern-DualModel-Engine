@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildRecorderMessages, buildSummaryMessages } from '../../src/prompts/recorder.js';
 import { createModelService, extractJsonObject } from '../../src/model-service.js';
+import Ajv from 'ajv';
+import adjudicatorSchema from '../../schemas/adjudicator.schema.json';
 
 function recorderInput(overrides = {}) {
     return {
@@ -59,6 +61,14 @@ describe('extractJsonObject', () => {
 });
 
 describe('createModelService', () => {
+    it('uses the real adjudicator schema and repairs an invalid decision once', async () => {
+        const validate = new Ajv({ allErrors: true, strict: false }).compile({ $ref: '#/$defs/decision', ...adjudicatorSchema });
+        const adapter = { requestProfile: vi.fn().mockResolvedValueOnce({ content: JSON.stringify({ required: true, actor: 'p', action: 'jump', ability: 'dexterity', skill: 'acrobatics', dc: 12, advantage: 'normal', reason: 'r', roll: 20 }) }).mockResolvedValueOnce({ content: JSON.stringify({ required: false }) }) };
+        const service = createModelService({ adapter, validatePatch: () => ({ ok: true, errors: [] }), validateState: () => ({ ok: true, errors: [] }), validateDecision: value => ({ ok: validate(value), errors: validate.errors ?? [] }) });
+        await expect(service.requestDecision({ profileId: 'rec', playerText: 'jump', baseSnapshot: { version: 0 } })).resolves.toEqual({ decision: { required: false }, repaired: true });
+        expect(JSON.parse(adapter.requestProfile.mock.calls[1][1][1].content).validationErrors).not.toEqual([]);
+        expect(validate({ required: true, actor: 'p', action: 'jump', ability: 'dexterity', skill: 'acrobatics', dc: 12, advantage: 'normal', reason: 'r', modifier: 2, outcome: 'success' })).toBe(false);
+    });
     it('repairs invalid Recorder output exactly once', async () => {
         const adapter = {
             requestProfile: vi.fn()

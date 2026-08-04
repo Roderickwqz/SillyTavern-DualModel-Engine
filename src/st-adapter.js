@@ -9,8 +9,8 @@ export function createSTAdapter(host) {
         listProfiles: () => host.getProfiles?.() ?? [],
         requestProfile: (profileId, messages, maxTokens, options, overridePayload = {}) =>
             host.sendRequest(profileId, messages, maxTokens, options, overridePayload),
-        registerTool: definition => host.registerTool?.(definition),
-        unregisterTool: name => host.unregisterTool?.(name),
+        registerTool: typeof host.registerTool === 'function' ? definition => host.registerTool(definition) : undefined,
+        unregisterTool: typeof host.unregisterTool === 'function' ? name => host.unregisterTool(name) : undefined,
         probeMainTool: typeof host.probeMainTool === 'function' ? params => host.probeMainTool(params) : undefined,
         getMainApiModelLabel: typeof host.getMainApiModelLabel === 'function' ? () => host.getMainApiModelLabel() : () => null,
         saveChat: () => host.getContext().saveMetadata(),
