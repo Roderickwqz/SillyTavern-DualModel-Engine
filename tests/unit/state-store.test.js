@@ -154,6 +154,22 @@ it('does not save a preset reset when envelope head changed before save', async 
     expect(saveChat).not.toHaveBeenCalled();
 });
 
+it('does not overwrite a concurrent envelope when preset reset save rejects', async () => {
+    const current = message({ branchId: 'b', status: 'committed', segments: [] }); const context = { chatId: 'chat-a', chat: [current], chatMetadata: { dualModelEngine: envelope({ preset: { id: 'narrative', version: 1 } }) } };
+    const concurrent = envelope({ headRevision: 99, preset: { id: 'other', version: 1 } });
+    const adapter = { getContext: () => context, saveChat: vi.fn(async () => { context.chatMetadata.dualModelEngine = concurrent; throw new Error('disk'); }) };
+    const store = createStateStore({ adapter, makeId: () => 'x', hashText: async () => 'x' });
+    await expect(store.resetForPreset({ id: 'custom-a', presetVersion: 1, initialState: { version: 0 } })).resolves.toMatchObject({ ok: false, reason: 'stale-chat' });
+    expect(context.chatMetadata.dualModelEngine).toBe(concurrent);
+});
+
+it('detects a concurrent envelope replacement while preset reset save is pending', async () => {
+    const current = message(); const context = { chatId: 'chat-a', chat: [current], chatMetadata: { dualModelEngine: envelope({ preset: { id: 'narrative', version: 1 } }) } }; const concurrent = envelope({ headRevision: 77, preset: { id: 'other', version: 1 } });
+    const adapter = { getContext: () => context, saveChat: vi.fn(async () => { context.chatMetadata.dualModelEngine = concurrent; }) }; const store = createStateStore({ adapter, makeId: () => 'x', hashText: async () => 'x' });
+    await expect(store.resetForPreset({ id: 'custom-a', presetVersion: 1, initialState: { version: 0 } })).resolves.toMatchObject({ ok: false, reason: 'stale-chat' });
+    expect(context.chatMetadata.dualModelEngine).toBe(concurrent);
+});
+
 it('T4 prepares a cloned source branch and T5 rejects missing source', () => {
     const source = { branchId: 'source', baseStateVersion: 1, baseSnapshot: { version: 1, nested: { x: 1 } }, segments: [], status: 'committed' };
     const { store, current } = setup({ current: message(source) });

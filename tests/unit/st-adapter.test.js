@@ -27,4 +27,11 @@ describe('createSTAdapter', () => {
         expect(adapter.registerTool).toBeUndefined();
         expect(adapter.unregisterTool).toBeUndefined();
     });
+
+    it('exposes the host seam for enumerating persisted preset references', () => {
+        const listPresetReferences = vi.fn(() => [{ type: 'archived-chat', id: 'old' }]);
+        const adapter = createSTAdapter({ getContext: () => ({}), listPresetReferences });
+        expect(adapter.listPresetReferences('custom-a')).toEqual([{ type: 'archived-chat', id: 'old' }]);
+        expect(listPresetReferences).toHaveBeenCalledWith('custom-a');
+    });
 });

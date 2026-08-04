@@ -37,7 +37,13 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         save: () => runtimeAdapter.saveSettings?.(),
         getReferences: id => {
             const context = runtimeAdapter.getContext?.();
-            return context?.chatMetadata?.[NAMESPACE]?.preset?.id === id ? [{ type: 'chat', id: context.chatId }] : [];
+            const references = [];
+            if (context?.chatMetadata?.[NAMESPACE]?.preset?.id === id) references.push({ type: 'chat', id: context.chatId });
+            const character = context?.character ?? context?.characters?.[context?.characterId];
+            if (character?.data?.extensions?.[NAMESPACE]?.rulePresetId === id) references.push({ type: 'character', id: context?.characterId ?? character.id ?? 'current' });
+            const persisted = runtimeAdapter.listPresetReferences?.(id);
+            if (Array.isArray(persisted)) references.push(...persisted);
+            return references;
         }, stateStore: store,
     });
     const decisionAjv = new Ajv({ allErrors: true, strict: false });
@@ -67,12 +73,13 @@ export async function bootstrap({ adapter, dependencies } = {}) {
             if (orchestrator?.getActiveGeneration()) throw new Error('Finish generation before resolving a manual D20 check');
             const context = runtimeAdapter.getContext(); const config = getEffectiveConfig();
             const envelope = store.loadEnvelope?.(); const value = envelope?.ok ? envelope.value : envelope;
-            if (context?.chatId !== queuedChatId || context?.groupId || !config.enabled || config.rulePresetId !== 'd20-lite' || config.adjudication !== 'manual' || value?.preset?.id !== 'd20-lite') throw new Error('Manual D20 checks are not authorized for this chat configuration');
+            let activePreset; try { activePreset = presetManager.getPreset(value?.preset?.id); } catch { activePreset = null; }
+            if (context?.chatId !== queuedChatId || context?.groupId || !config.enabled || config.rulePresetId !== value?.preset?.id || config.adjudication !== 'manual' || typeof activePreset?.readActor !== 'function' || typeof activePreset?.writeActor !== 'function') throw new Error('Manual D20 checks are not authorized for this chat configuration');
             const ref = value.activeRef; const message = context.chat?.find(item => item?.extra?.[NAMESPACE]?.messageId === ref?.messageId);
             const branch = message?.swipe_info?.[ref?.swipeId]?.extra?.[NAMESPACE]?.branch;
             if (!ref || !message || (message.swipe_id ?? 0) !== ref.swipeId || !branch || branch.branchId !== ref.branchId || branch.status !== 'committed' || !branch.segments?.length) throw new Error('No active committed branch');
             const manualGeneration = { branchId: ref.branchId, baseBranchId: ref.branchId, userMessageId: branch.segments.at(-1).userMessageId ?? null, baseSnapshot: structuredClone(value.activeSnapshot), pendingRuleRecords: [], pendingRuleEffects: [], ruleReplayMode: null, closed: false };
-            const record = await stageCheckRecord({ generation: manualGeneration, input, ledger, signal, resolveCheck: (request, state) => createRuleEngine({ nextUint32, preset: d20LitePreset }).resolveCheck(request, state) });
+            const record = await stageCheckRecord({ generation: manualGeneration, input, ledger, signal, resolveCheck: (request, state) => createRuleEngine({ nextUint32, preset: activePreset }).resolveCheck(request, state) });
             signal.throwIfAborted();
             const committed = await store.commitCurrentBranchAudit({ chatId: context.chatId, expectedHeadRevision: value.headRevision, activeRef: ref, record });
             if (!committed?.ok) throw new Error(committed?.reason ?? 'manual audit failed'); ledger.commit([committed.record ?? record]); return committed.record ?? record;
@@ -96,7 +103,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     const toolRegistry = resolved.toolRegistry ?? createToolRegistry({
         adapter: runtimeAdapter, getConfig: getEffectiveConfig, getActiveGeneration: () => orchestrator?.getActiveGeneration(), validateCheck: validate(checkValidator), validateDamage: validate(damageValidator), ledger,
         resolveCheck,
-        resolveDamage: async (input, state) => { const engine = createRuleEngine({ nextUint32, preset: orchestrator.getActiveGeneration()?.preset ?? d20LitePreset }); const hpBefore = state.actors?.[input.target]?.hp?.current; const result = engine.applyDamage(input, state); return { state: result.state, audit: { rolls: result.damage.rolls, raw: result.damage.rawTotal, total: result.damage.total, absorbed: result.damage.absorbed, hpBefore, hpAfter: result.state.actors?.[input.target]?.hp?.current } }; },
+        resolveDamage: async (input, state) => { const preset = orchestrator.getActiveGeneration()?.preset ?? d20LitePreset; const engine = createRuleEngine({ nextUint32, preset }); const hpBefore = preset.readActor(state, input.target)?.hp?.current; const result = engine.applyDamage(input, state); return { state: result.state, audit: { rolls: result.damage.rolls, raw: result.damage.rawTotal, total: result.damage.total, absorbed: result.damage.absorbed, hpBefore, hpAfter: preset.readActor(result.state, input.target)?.hp?.current } }; },
     });
     const canRegisterTools = typeof runtimeAdapter.registerTool === 'function';
     try {

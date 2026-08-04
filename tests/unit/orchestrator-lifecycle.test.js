@@ -33,3 +33,18 @@ it('T8 refuses restart after an unbind failure to avoid duplicate handlers', () 
     subject.start(); expect(() => subject.stop()).toThrow('off'); subject.start();
     expect(value.adapter.on).toHaveBeenCalledTimes(4); expect(value.adapter.off).toHaveBeenCalledTimes(4); expect(value.promptInjector.clear).toHaveBeenCalledOnce();
 });
+
+it('keeps an existing snapshot readable and disables writes when its pinned preset is missing', async () => {
+    const value = deps({
+        adapter: { events: {}, getContext: () => ({ chatId: 'x', groupId: null, chat: [] }), on: vi.fn(), off: vi.fn() },
+        getConfig: () => ({ enabled: true, rulePresetId: 'missing', injectionBudget: 100 }),
+        hasProfile: () => true,
+        getPreset: () => { throw new Error('Preset not found: missing'); },
+        store: { loadEnvelope: () => ({ stateVersion: 4, headRevision: 9, activeSnapshot: { version: 4, notes: ['still readable'] }, preset: { id: 'missing' } }) },
+    });
+    const subject = createOrchestrator(value);
+    await expect(subject.initializeChat()).resolves.toEqual({ enabled: false, reason: 'missing-preset' });
+    await expect(subject.beforeGeneration('normal')).resolves.toEqual({ ignored: true, reason: 'missing-preset' });
+    expect(value.promptInjector.clear).toHaveBeenCalled();
+    expect(value.recordDiagnostic).toHaveBeenCalledWith(expect.objectContaining({ reason: 'missing-preset', presetId: 'missing' }));
+});

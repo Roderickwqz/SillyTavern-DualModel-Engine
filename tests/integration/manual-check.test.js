@@ -3,8 +3,10 @@ import { bootstrap } from '../../src/index.js';
 import { NAMESPACE } from '../../src/constants.js';
 import { createChatTaskQueue } from '../../src/task-queue.js';
 import { d20TestState } from '../fixtures/d20.js';
+import { createCustomRuleAdapter } from '../../src/rules/custom.js';
 
 const check = { actor: 'player', action: 'Pick the lock', ability: 'dexterity', skill: 'sleight_of_hand', dc: 12, advantage: 'normal', reason: 'locked door' };
+const damage = { target: 'player', expression: '1d6', damageType: 'fire', reason: 'trap' };
 const recorderPatch = { base_version: 0, operations: [{ op: 'add', path: '/inventory/-', value: 'recorded', reason: 'recorder' }] };
 
 function host() {
@@ -58,4 +60,25 @@ it('cancels a queued manual audit without leaving a record behind', async () => 
     await app.orchestrator.beforeGeneration('normal'); subject.addAssistant(); await app.orchestrator.afterGeneration(); await vi.waitFor(() => expect(release).toBeTypeOf('function'));
     const manual = app.adjudicator.resolveManual(check); app.orchestrator.stop(); release(); await expect(manual).rejects.toMatchObject({ name: 'AbortError' });
     expect(app.ledger.list()).toEqual([]); expect(subject.context.chat.at(-1).swipe_info[0].extra[NAMESPACE].branch?.segments[0].checks ?? []).toEqual([]);
+});
+
+it('authorizes manual checks for the active mapped custom D20 preset', async () => {
+    const subject = host(); const mappedState = { version: 0, sheet: { members: { player: { stats: { dexterity: 14 }, proficiency: 2, skills: ['sleight_of_hand'], vitals: { current: 10, max: 10, temporary: 0 }, effects: [] } } } };
+    const preset = createCustomRuleAdapter({ id: 'custom-d20', name: 'Custom', presetVersion: 1, stateSchema: {}, initialState: mappedState, allowedPaths: ['/sheet'], lockedPaths: ['/version'], injection: [], ui: [], d20: { actorsPath: '/sheet/members', abilitiesPath: '/stats', proficiencyBonusPath: '/proficiency', proficientSkillsPath: '/skills', hpPath: '/vitals', conditionsPath: '/effects', skillAbilities: { sleight_of_hand: 'dexterity' }, naturalRollPolicy: 'critical' } });
+    const envelope = subject.context.chatMetadata[NAMESPACE]; envelope.preset = { id: 'custom-d20', version: 1 }; envelope.activeSnapshot = mappedState;
+    subject.adapter.getSettings = () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'custom-d20', adjudication: 'manual', injectionBudget: 100 });
+    const { app } = await appFor(subject, { presetManager: { getPreset: id => id === 'custom-d20' ? preset : undefined } });
+    await expect(app.adjudicator.resolveManual(check)).resolves.toMatchObject({ kind: 'check', result: { total: 19 } });
+    app.orchestrator.stop();
+});
+
+it('audits mapped custom D20 damage through preset actor accessors', async () => {
+    const subject = host(); const definitions = new Map(); const mappedState = { version: 0, sheet: { members: { player: { stats: { dexterity: 14 }, proficiency: 2, skills: ['sleight_of_hand'], vitals: { current: 10, max: 10, temporary: 0 }, effects: [] } } } };
+    const preset = createCustomRuleAdapter({ id: 'custom-d20', name: 'Custom', presetVersion: 1, stateSchema: {}, initialState: mappedState, allowedPaths: ['/sheet'], lockedPaths: ['/version'], injection: [], ui: [], d20: { actorsPath: '/sheet/members', abilitiesPath: '/stats', proficiencyBonusPath: '/proficiency', proficientSkillsPath: '/skills', hpPath: '/vitals', conditionsPath: '/effects', skillAbilities: { sleight_of_hand: 'dexterity' } } });
+    const envelope = subject.context.chatMetadata[NAMESPACE]; envelope.preset = { id: 'custom-d20', version: 1 }; envelope.activeSnapshot = mappedState;
+    subject.adapter.getSettings = () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'custom-d20', adjudication: 'automatic-tool', injectionBudget: 100 }); subject.adapter.registerTool = definition => definitions.set(definition.name, definition); subject.adapter.unregisterTool = name => definitions.delete(name);
+    const { app } = await appFor(subject, { presetManager: { getPreset: id => id === 'custom-d20' ? preset : undefined }, adjudicator: { resolveBeforeGeneration: vi.fn(async () => ({ injectedText: '' })) } });
+    await app.orchestrator.beforeGeneration('normal');
+    await expect(definitions.get('DualModelApplyD20Damage').action(damage)).resolves.toMatchObject({ kind: 'damage', result: { hpBefore: 10, hpAfter: 7 } });
+    app.orchestrator.stop();
 });

@@ -65,6 +65,28 @@ it('binds character defaults, protects referenced presets, and requires confirme
     await expect(instance.deletePreset('custom-a')).rejects.toThrow('Preset is still referenced');
 });
 
+it('lists stable descriptors for built-in and custom presets', async () => {
+    const instance = manager({ builtInPresets: [{ id: 'narrative', name: 'Narrative', presetVersion: 1 }] });
+    await instance.importPreset(JSON.stringify(validCustomPreset()));
+    expect(instance.listPresets()).toEqual([
+        { id: 'narrative', name: 'Narrative', presetVersion: 1, builtIn: true },
+        { id: 'custom-a', name: 'Custom A', presetVersion: 1, builtIn: false },
+    ]);
+});
+
+it.each(['actorsPath', 'abilitiesPath', 'proficiencyBonusPath', 'proficientSkillsPath', 'hpPath', 'conditionsPath'])('rejects invalid declarative D20 %s', async field => {
+    const preset = validCustomPreset(); preset.id = 'custom-d20'; preset.d20 = { actorsPath: '/actors', abilitiesPath: '/abilities', proficiencyBonusPath: '/proficiency', proficientSkillsPath: '/skills', hpPath: '/hp', conditionsPath: '/conditions' }; preset.d20[field] = field === 'actorsPath' ? '' : 'relative';
+    await expect(manager().importPreset(JSON.stringify(preset))).rejects.toThrow('Invalid D20 path');
+});
+
+it('supports escaped actor IDs in declarative D20 accessors', () => {
+    const preset = { ...validCustomPreset(), d20: { actorsPath: '/actors', abilitiesPath: '/abilities', proficiencyBonusPath: '/proficiency', proficientSkillsPath: '/skills', hpPath: '/hp', conditionsPath: '/conditions' } };
+    const adapter = createCustomRuleAdapter(preset); const state = { actors: { 'hero/~/constructor-safe': { abilities: {}, proficiency: 2, skills: [], hp: { current: 2, max: 2, temporary: 0 }, conditions: [] } } };
+    expect(adapter.readActor(state, 'hero/~/constructor-safe').hp.current).toBe(2);
+    const special = { actors: Object.fromEntries([['constructor', { abilities: {}, proficiency: 2, skills: [], hp: { current: 1, max: 1, temporary: 0 }, conditions: [] }]]) };
+    expect(adapter.readActor(special, 'constructor').hp.current).toBe(1);
+});
+
 it('maps declarative D20 paths without executable data', () => {
     const preset = { ...validCustomPreset(), d20: { actorsPath: '/sheet/members', abilitiesPath: '/stats', proficiencyBonusPath: '/proficiency', proficientSkillsPath: '/skills', hpPath: '/vitals', conditionsPath: '/effects', skillAbilities: { stealth: 'dexterity' }, naturalRollPolicy: 'critical' } };
     const adapter = createCustomRuleAdapter(preset); const state = { version: 0, notes: [], sheet: { members: { hero: { stats: { dexterity: 14 }, proficiency: 2, skills: [], vitals: { current: 10, max: 10, temporary: 0 }, effects: [] } } } };

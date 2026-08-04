@@ -334,13 +334,19 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         if (stale()) return result('stale-chat');
         try {
             const configOverrides = { ...(isPlainObject(envelope.configOverrides) ? clone(envelope.configOverrides) : {}), rulePresetId: preset.id, presetVersion: preset.presetVersion };
-            context.chatMetadata[NAMESPACE] = { schemaVersion: envelope.schemaVersion, stateVersion: 0, headRevision: envelope.headRevision + 1, initialSnapshot: clone(preset.initialState), activeSnapshot: clone(preset.initialState), activeRef: null, preset: { id: preset.id, version: preset.presetVersion }, configOverrides, taskStatus: { state: 'idle', requestId: null }, lastCommittedRequestId: null };
+            const transactionEnvelope = { schemaVersion: envelope.schemaVersion, stateVersion: 0, headRevision: envelope.headRevision + 1, initialSnapshot: clone(preset.initialState), activeSnapshot: clone(preset.initialState), activeRef: null, preset: { id: preset.id, version: preset.presetVersion }, configOverrides, taskStatus: { state: 'idle', requestId: null }, lastCommittedRequestId: null };
+            context.chatMetadata[NAMESPACE] = transactionEnvelope;
             for (const message of chat) { if (message?.extra) delete message.extra[NAMESPACE]; for (const swipe of message?.swipe_info ?? []) if (swipe?.extra) delete swipe.extra[NAMESPACE]; }
             const latestBeforeSave = adapter.getContext?.();
-            if (!latestBeforeSave || latestBeforeSave.chatId !== chatId || latestBeforeSave.chat !== chat || latestBeforeSave.chatMetadata?.[NAMESPACE] !== context.chatMetadata[NAMESPACE]) throw new Error('stale-chat');
+            if (!latestBeforeSave || latestBeforeSave.chatId !== chatId || latestBeforeSave.chat !== chat || latestBeforeSave.chatMetadata?.[NAMESPACE] !== transactionEnvelope || transactionEnvelope.headRevision !== expectedHeadRevision + 1) throw new Error('stale-chat');
             await adapter.saveChat();
+            const latestAfterSave = adapter.getContext?.();
+            if (!latestAfterSave || latestAfterSave.chatId !== chatId || latestAfterSave.chat !== chat || latestAfterSave.chatMetadata?.[NAMESPACE] !== transactionEnvelope || transactionEnvelope.headRevision !== expectedHeadRevision + 1) return result('stale-chat');
             return { ok: true };
         } catch (error) {
+            const latest = adapter.getContext?.();
+            const ownsTransaction = latest?.chatId === chatId && latest.chat === chat && latest.chatMetadata?.[NAMESPACE] === context.chatMetadata[NAMESPACE] && context.chatMetadata[NAMESPACE]?.headRevision === expectedHeadRevision + 1;
+            if (!ownsTransaction) return result('stale-chat', error);
             if (metadataHad) context.chatMetadata[NAMESPACE] = metadataBefore; else delete context.chatMetadata[NAMESPACE];
             for (const item of messageBefore) { if (!item.message) continue; if (item.extraHad) item.message.extra = item.extra; else delete item.message.extra; for (const swipe of item.swipes) { if (swipe.extraHad) swipe.swipe.extra = swipe.extra; else delete swipe.swipe.extra; } }
             return result(error?.message === 'stale-chat' ? 'stale-chat' : 'save-failed', error);

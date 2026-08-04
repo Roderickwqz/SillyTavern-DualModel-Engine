@@ -25,6 +25,7 @@ function createSTAdapter(host) {
     saveChat: () => host.getContext().saveMetadata(),
     saveSettings: () => host.saveSettingsDebounced?.(),
     getSettings: () => host.getSettings?.() ?? {},
+    listPresetReferences: typeof host.listPresetReferences === "function" ? (id) => host.listPresetReferences(id) : void 0,
     countTokens: (text) => host.countTokens(text),
     canInjectPrompt: typeof host.setExtensionPrompt === "function",
     canPersist: typeof host.getContext?.().saveMetadata === "function",

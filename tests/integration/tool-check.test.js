@@ -10,13 +10,22 @@ const check = { actor: 'player', action: ' pick lock ', ability: 'dexterity', sk
 const damage = { target: 'player', expression: '1d6', damageType: 'fire', reason: 'trap' };
 function validation(name) { const ajv = new Ajv(); const fn = ajv.compile({ $ref: `#/$defs/${name}` , ...schema }); return input => ({ ok: fn(input), errors: fn.errors ?? [] }); }
 function setup(overrides = {}) {
-    const definitions = new Map(); const generation = { requestId: 'g1', branchId: 'b1', userMessageId: 'u1', baseSnapshot: { actors: { player: { hp: { current: 10, temporary: 3 } } } }, effectiveConfig: { enabled: true, rulePresetId: 'd20-lite', adjudication: 'automatic-tool' }, pendingRuleRecords: [], pendingRuleEffects: [], ...overrides.generation };
+    const definitions = new Map(); const generation = { requestId: 'g1', branchId: 'b1', userMessageId: 'u1', baseSnapshot: { actors: { player: { hp: { current: 10, temporary: 3 } } } }, effectiveConfig: { enabled: true, rulePresetId: 'd20-lite', adjudication: 'automatic-tool' }, preset: { readActor() {}, writeActor() {} }, pendingRuleRecords: [], pendingRuleEffects: [], ...overrides.generation };
     const adapter = { registerTool: vi.fn(x => definitions.set(x.name, x)), unregisterTool: vi.fn(x => definitions.delete(x)) };
     const resolveCheck = overrides.resolveCheck ?? vi.fn(async () => ({ total: 16 }));
     const resolveDamage = overrides.resolveDamage ?? vi.fn(async (_input, _state) => ({ audit: { rolls: [4], raw: 4, total: 4, absorbed: 3, hpBefore: 10, hpAfter: 9 }, state: { actors: { player: { hp: { current: 9, temporary: 0 } } } } }));
     const registry = createToolRegistry({ adapter, getConfig: () => generation.effectiveConfig, getActiveGeneration: () => overrides.getActiveGeneration?.() ?? generation, validateCheck: validation('checkInput'), validateDamage: validation('damageInput'), resolveCheck, resolveDamage, ledger: createCheckLedger({ makeId: (() => { let n = 0; return () => `c${++n}`; })(), now: () => 'now' }) }); registry.register();
     return { definitions, generation, adapter, resolveCheck, resolveDamage, registry };
 }
+
+it('enables tools by captured preset capability rather than preset ID', async () => {
+    const noD20 = setup({ generation: { effectiveConfig: { enabled: true, rulePresetId: 'custom-plain', adjudication: 'automatic-tool' }, preset: { d20: null } } });
+    expect(noD20.definitions.get('DualModelResolveD20Check').shouldRegister()).toBe(false);
+    await expect(noD20.definitions.get('DualModelResolveD20Check').action(check)).rejects.toThrow('not authorized');
+    const mapped = setup({ generation: { effectiveConfig: { enabled: true, rulePresetId: 'custom-mapped', adjudication: 'automatic-tool' }, preset: { readActor() {}, writeActor() {} } } });
+    expect(mapped.definitions.get('DualModelResolveD20Check').shouldRegister()).toBe(true);
+    await expect(mapped.definitions.get('DualModelResolveD20Check').action(check)).resolves.toMatchObject({ kind: 'check' });
+});
 
 it('validates exact d20 schemas and uses state-authoritative results', async () => {
     const host = setup(); const tool = host.definitions.get('DualModelResolveD20Check');
@@ -59,7 +68,7 @@ it.each([
     [{ enabled: true, rulePresetId: 'd20-lite', adjudication: 'confirm' }],
     [{ enabled: true, rulePresetId: 'd20-lite', adjudication: 'enforced-preflight' }],
 ])('rejects a directly invoked tool when captured config is unauthorized', async effectiveConfig => {
-    const host = setup({ generation: { effectiveConfig } });
+    const host = setup({ generation: { effectiveConfig, ...(effectiveConfig.rulePresetId === 'narrative' ? { preset: {} } : {}) } });
     await expect(host.definitions.get('DualModelResolveD20Check').action(check)).rejects.toThrow('not authorized');
     expect(host.resolveCheck).not.toHaveBeenCalled(); expect(host.generation.ruleToolFailed).toBe(true);
 });
@@ -79,7 +88,7 @@ it('only unregisters tools actually registered and remains retry-safe after an u
 
 it('runs failure through the real orchestrator lifecycle without committing staged damage', async () => {
     const user = { is_user: true, mes: 'go', extra: { dualModelEngine: { messageId: 'u1' } } }; const definitions = new Map();
-    const deps = createOrchestratorTestDependencies({ chat: [user] }); deps.getConfig = () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'd20-lite', adjudication: 'automatic-tool', injectionBudget: 1 }); deps.getPreset = () => ({ id: 'd20-lite', allowedPaths: ['/inventory'], lockedPaths: ['/version'], ruleLockedPaths: ['/actors'], injection: [] }); deps.adapter.registerTool = definition => definitions.set(definition.name, definition); deps.rollbackManager = { abortReplacement: vi.fn() };
+    const deps = createOrchestratorTestDependencies({ chat: [user] }); deps.getConfig = () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'd20-lite', adjudication: 'automatic-tool', injectionBudget: 1 }); deps.getPreset = () => ({ id: 'd20-lite', allowedPaths: ['/inventory'], lockedPaths: ['/version'], ruleLockedPaths: ['/actors'], injection: [], readActor() {}, writeActor() {} }); deps.adapter.registerTool = definition => definitions.set(definition.name, definition); deps.rollbackManager = { abortReplacement: vi.fn() };
     const ledger = createCheckLedger({ makeId: (() => { let i = 0; return () => `c${++i}`; })(), now: () => 'now' }); deps.ledger = ledger;
     const orchestrator = createOrchestrator(deps); const registry = createToolRegistry({ adapter: deps.adapter, getConfig: deps.getConfig, getActiveGeneration: orchestrator.getActiveGeneration, validateCheck: validation('checkInput'), validateDamage: validation('damageInput'), ledger, resolveCheck: async () => ({ total: 1 }), resolveDamage: vi.fn().mockResolvedValueOnce({ state: { actors: { player: { hp: { current: 9, temporary: 0 } } } }, audit: { rolls: [4], raw: 4, total: 4, absorbed: 3, hpBefore: 10, hpAfter: 9 } }).mockRejectedValueOnce(new Error('damage failure')) }); registry.register();
     await orchestrator.beforeGeneration('normal'); await definitions.get('DualModelApplyD20Damage').action(damage); await expect(definitions.get('DualModelApplyD20Damage').action({ ...damage, reason: 'second' })).rejects.toThrow('damage failure'); deps.context.chat.push({ is_user: false, mes: 'answer', extra: {}, swipe_id: 0, swipe_info: [{ extra: {} }] });
@@ -88,7 +97,7 @@ it('runs failure through the real orchestrator lifecycle without committing stag
 
 it('commits a damage action accepted just before generation end', async () => {
     const user = { is_user: true, mes: 'go', extra: { dualModelEngine: { messageId: 'u1' } } }; const definitions = new Map();
-    const deps = createOrchestratorTestDependencies({ chat: [user] }); deps.getConfig = () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'd20-lite', adjudication: 'automatic-tool', injectionBudget: 1 }); deps.getPreset = () => ({ id: 'd20-lite', allowedPaths: ['/inventory'], lockedPaths: ['/version'], ruleLockedPaths: ['/actors'], injection: [] }); deps.adapter.registerTool = definition => definitions.set(definition.name, definition);
+    const deps = createOrchestratorTestDependencies({ chat: [user] }); deps.getConfig = () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'd20-lite', adjudication: 'automatic-tool', injectionBudget: 1 }); deps.getPreset = () => ({ id: 'd20-lite', allowedPaths: ['/inventory'], lockedPaths: ['/version'], ruleLockedPaths: ['/actors'], injection: [], readActor() {}, writeActor() {} }); deps.adapter.registerTool = definition => definitions.set(definition.name, definition);
     const ledger = createCheckLedger({ makeId: () => 'damage-1', now: () => 'now' }); deps.ledger = ledger;
     const orchestrator = createOrchestrator(deps); const registry = createToolRegistry({ adapter: deps.adapter, getConfig: deps.getConfig, getActiveGeneration: orchestrator.getActiveGeneration, validateCheck: validation('checkInput'), validateDamage: validation('damageInput'), ledger, resolveCheck: async () => ({ total: 1 }), resolveDamage: async (_input, state) => ({ state: { ...state, actors: { player: { hp: { current: 9, temporary: 0 } } } }, audit: { rolls: [4], raw: 4, total: 4, absorbed: 3, hpBefore: 10, hpAfter: 9 } }) }); registry.register();
     await orchestrator.beforeGeneration('normal'); const accepted = definitions.get('DualModelApplyD20Damage').action(damage); deps.context.chat.push({ is_user: false, mes: 'answer', extra: {}, swipe_id: 0, swipe_info: [{ extra: {} }] });
@@ -98,7 +107,7 @@ it('commits a damage action accepted just before generation end', async () => {
 
 it.each(['stop', 'chat-change'])('cancels a pending resolver when generation receives %s', async kind => {
     const user = { is_user: true, mes: 'go', extra: { dualModelEngine: { messageId: 'u1' } } }; const definitions = new Map(); let release;
-    const deps = createOrchestratorTestDependencies({ chat: [user] }); deps.getConfig = () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'd20-lite', adjudication: 'automatic-tool', injectionBudget: 1 }); deps.getPreset = () => ({ id: 'd20-lite', allowedPaths: ['/inventory'], lockedPaths: ['/version'], ruleLockedPaths: ['/actors'], injection: [] }); deps.adapter.registerTool = definition => definitions.set(definition.name, definition); deps.adapter.events = { GENERATION_STOPPED: 'stopped', CHAT_CHANGED: 'chat' };
+    const deps = createOrchestratorTestDependencies({ chat: [user] }); deps.getConfig = () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'd20-lite', adjudication: 'automatic-tool', injectionBudget: 1 }); deps.getPreset = () => ({ id: 'd20-lite', allowedPaths: ['/inventory'], lockedPaths: ['/version'], ruleLockedPaths: ['/actors'], injection: [], readActor() {}, writeActor() {} }); deps.adapter.registerTool = definition => definitions.set(definition.name, definition); deps.adapter.events = { GENERATION_STOPPED: 'stopped', CHAT_CHANGED: 'chat' };
     const ledger = createCheckLedger({ makeId: () => 'damage-1', now: () => 'now' }); deps.ledger = ledger;
     const orchestrator = createOrchestrator(deps); const registry = createToolRegistry({ adapter: deps.adapter, getConfig: deps.getConfig, getActiveGeneration: orchestrator.getActiveGeneration, validateCheck: validation('checkInput'), validateDamage: validation('damageInput'), ledger, resolveCheck: async () => ({ total: 1 }), resolveDamage: async () => new Promise(resolve => { release = resolve; }) }); registry.register(); orchestrator.start();
     await orchestrator.beforeGeneration('normal'); const pending = definitions.get('DualModelApplyD20Damage').action(damage); deps.context.chat.push({ is_user: false, mes: 'answer', extra: {}, swipe_id: 0, swipe_info: [{ extra: {} }] }); const ending = orchestrator.afterGeneration(); await vi.waitFor(() => expect(release).toBeTypeOf('function'));

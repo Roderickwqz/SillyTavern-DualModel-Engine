@@ -23,8 +23,9 @@ function closedGeneration() { const error = new Error('active generation is clos
 
 export function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateCheck, validateDamage, resolveCheck, resolveDamage, ledger }) {
     const names = ['DualModelResolveD20Check', 'DualModelApplyD20Damage'];
-    const enabled = () => { const config = getActiveGeneration()?.effectiveConfig ?? getConfig(); return Boolean(getActiveGeneration()) && config?.enabled && config.rulePresetId !== 'narrative' && config.adjudication === 'automatic-tool'; };
-    const authorized = generation => generation?.effectiveConfig?.enabled && !generation.formalD20Blocked && generation.effectiveConfig.rulePresetId !== 'narrative' && generation.effectiveConfig.adjudication === 'automatic-tool';
+    const supportsD20 = preset => typeof preset?.readActor === 'function' && typeof preset?.writeActor === 'function';
+    const enabled = () => { const generation = getActiveGeneration(); const config = generation?.effectiveConfig ?? getConfig(); return Boolean(generation) && config?.enabled && supportsD20(generation.preset) && config.adjudication === 'automatic-tool'; };
+    const authorized = generation => generation?.effectiveConfig?.enabled && !generation.formalD20Blocked && supportsD20(generation.preset) && generation.effectiveConfig.adjudication === 'automatic-tool';
     const discard = generation => { generation.ruleToolFailed = true; generation.pendingRuleRecords.length = 0; generation.pendingRuleEffects.length = 0; };
     const enqueue = (generation, work) => {
         if (generation.generationEnding || generation.closed) return Promise.reject(closedGeneration());

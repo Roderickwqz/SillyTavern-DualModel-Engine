@@ -6,6 +6,7 @@ export function createOrchestrator(deps) {
     const supported = new Set(['normal', 'swipe', 'regenerate', 'continue']);
     let activeChatId = null; let generation = null; let pendingGeneration = null; let started = false; let stopped = false; let promptTail = null; let promptEpoch = 0; const unbind = [];
     const diagnostic = value => { try { return Promise.resolve(deps.recordDiagnostic?.(value)).catch(() => undefined); } catch { return undefined; } };
+    function presetOrNull(id) { try { const preset = deps.getPreset(id); if (!preset) throw new Error(`Preset not found: ${id}`); return preset; } catch (error) { diagnostic({ reason: 'missing-preset', presetId: id, error }); return null; } }
     function context() { return deps.adapter.getContext(); }
     function messageId(message) { return deps.ensureMessageId ? deps.ensureMessageId(message) : (message.extra?.dualModelEngine?.messageId); }
     function refreshPrompt(input) {
@@ -23,13 +24,15 @@ export function createOrchestrator(deps) {
         if (current.groupId || !config.enabled) { try { deps.promptInjector.clear(); } catch (error) { diagnostic({ reason: 'prompt-clear-failed', error }); } return { enabled: false, reason: current.groupId ? 'group-chat' : 'disabled' }; }
         try { await deps.rollbackManager?.repairOrphanedHead?.(); } catch (error) { diagnostic({ reason: 'orphan-repair-failed', error }); }
         const loaded = deps.store.loadEnvelope(); let envelope = envelopeValue(loaded);
-        const configuredPreset = deps.getPreset(config.rulePresetId);
         if (!envelope || loaded?.ok === false) {
+            const configuredPreset = presetOrNull(config.rulePresetId);
+            if (!configuredPreset) { try { deps.promptInjector.clear(); } catch (error) { diagnostic({ reason: 'prompt-clear-failed', error }); } return { enabled: false, reason: 'missing-preset' }; }
             const created = await deps.store.ensureEnvelope?.({ presetId: config.rulePresetId, initialState: configuredPreset?.initialState });
             if (!created?.ok) { diagnostic({ reason: 'missing-envelope', result: created }); try { deps.promptInjector.clear(); } catch (error) { diagnostic({ reason: 'prompt-clear-failed', error }); } return { enabled: false, reason: 'missing-envelope' }; }
             envelope = envelopeValue(created);
         }
-        const preset = deps.getPreset(envelope.preset.id);
+        const preset = presetOrNull(envelope.preset.id);
+        if (!preset) { try { deps.promptInjector.clear(); } catch (error) { diagnostic({ reason: 'prompt-clear-failed', error }); } return { enabled: false, reason: 'missing-preset' }; }
         try { await refreshPrompt({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection }); } catch (error) { diagnostic({ reason: 'prompt-refresh-failed', error }); }
         return { enabled: true };
     }
@@ -53,7 +56,8 @@ export function createOrchestrator(deps) {
         if (!envelope || loaded?.ok === false) { diagnostic({ reason: 'missing-envelope' }); return { ignored: true, reason: 'missing-envelope' }; }
         if (current.groupId || !config.enabled) { deps.promptInjector.clear(); return { ignored: true, reason: current.groupId ? 'group-chat' : 'disabled' }; }
         if (!deps.hasProfile(config.recorderProfileId)) { diagnostic({ reason: 'missing-recorder-profile', profileId: config.recorderProfileId }); return { ignored: true, reason: 'missing-recorder-profile' }; }
-        const preset = deps.getPreset(config.rulePresetId);
+        const preset = presetOrNull(envelope.preset?.id ?? config.rulePresetId);
+        if (!preset) { deps.promptInjector.clear(); return { ignored: true, reason: 'missing-preset' }; }
         activeChatId = current.chatId; generation = capture(type, current, envelope, config, preset); if (!generation) { diagnostic({ reason: 'missing-source-branch' }); return { ignored: true, reason: 'missing-source-branch' }; }
         const captured = generation; let adjudication = { injectedText: '' };
         try {
@@ -105,7 +109,7 @@ export function createOrchestrator(deps) {
         const current = context(); const config = clone(deps.getConfig());
         if (current.groupId || !config.enabled) return { ok: false, reason: 'read-only' };
         if (!deps.hasProfile(config.recorderProfileId)) return { ok: false, reason: 'missing-recorder-profile' };
-        const preset = deps.getPreset(config.rulePresetId); if (!preset) return { ok: false, reason: 'missing-preset' };
+        const preset = presetOrNull(config.rulePresetId); if (!preset) return { ok: false, reason: 'missing-preset' };
         const message = current.chat[messageIndex];
         if (!message || message.is_user || message.is_system || (message.swipe_id ?? 0) !== swipeId) return { ok: false, reason: 'stale-message' };
         const branch = deps.store.getBranch(message, swipeId); if (!branch?.branchId) return { ok: false, reason: 'missing-source-branch' };

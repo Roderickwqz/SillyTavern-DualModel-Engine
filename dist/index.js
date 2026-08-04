@@ -6623,6 +6623,16 @@ function createOrchestrator(deps) {
       return void 0;
     }
   };
+  function presetOrNull(id) {
+    try {
+      const preset = deps.getPreset(id);
+      if (!preset) throw new Error(`Preset not found: ${id}`);
+      return preset;
+    } catch (error) {
+      diagnostic({ reason: "missing-preset", presetId: id, error });
+      return null;
+    }
+  }
   function context() {
     return deps.adapter.getContext();
   }
@@ -6664,8 +6674,16 @@ function createOrchestrator(deps) {
     }
     const loaded = deps.store.loadEnvelope();
     let envelope = envelopeValue(loaded);
-    const configuredPreset = deps.getPreset(config.rulePresetId);
     if (!envelope || loaded?.ok === false) {
+      const configuredPreset = presetOrNull(config.rulePresetId);
+      if (!configuredPreset) {
+        try {
+          deps.promptInjector.clear();
+        } catch (error) {
+          diagnostic({ reason: "prompt-clear-failed", error });
+        }
+        return { enabled: false, reason: "missing-preset" };
+      }
       const created = await deps.store.ensureEnvelope?.({ presetId: config.rulePresetId, initialState: configuredPreset?.initialState });
       if (!created?.ok) {
         diagnostic({ reason: "missing-envelope", result: created });
@@ -6678,7 +6696,15 @@ function createOrchestrator(deps) {
       }
       envelope = envelopeValue(created);
     }
-    const preset = deps.getPreset(envelope.preset.id);
+    const preset = presetOrNull(envelope.preset.id);
+    if (!preset) {
+      try {
+        deps.promptInjector.clear();
+      } catch (error) {
+        diagnostic({ reason: "prompt-clear-failed", error });
+      }
+      return { enabled: false, reason: "missing-preset" };
+    }
     try {
       await refreshPrompt({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection });
     } catch (error) {
@@ -6721,7 +6747,11 @@ function createOrchestrator(deps) {
       diagnostic({ reason: "missing-recorder-profile", profileId: config.recorderProfileId });
       return { ignored: true, reason: "missing-recorder-profile" };
     }
-    const preset = deps.getPreset(config.rulePresetId);
+    const preset = presetOrNull(envelope.preset?.id ?? config.rulePresetId);
+    if (!preset) {
+      deps.promptInjector.clear();
+      return { ignored: true, reason: "missing-preset" };
+    }
     activeChatId = current.chatId;
     generation = capture(type, current, envelope, config, preset);
     if (!generation) {
@@ -6804,7 +6834,7 @@ function createOrchestrator(deps) {
     const config = clone(deps.getConfig());
     if (current.groupId || !config.enabled) return { ok: false, reason: "read-only" };
     if (!deps.hasProfile(config.recorderProfileId)) return { ok: false, reason: "missing-recorder-profile" };
-    const preset = deps.getPreset(config.rulePresetId);
+    const preset = presetOrNull(config.rulePresetId);
     if (!preset) return { ok: false, reason: "missing-preset" };
     const message = current.chat[messageIndex];
     if (!message || message.is_user || message.is_system || (message.swipe_id ?? 0) !== swipeId) return { ok: false, reason: "stale-message" };
@@ -7428,16 +7458,22 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     if (stale()) return result("stale-chat");
     try {
       const configOverrides = { ...isPlainObject(envelope.configOverrides) ? clone2(envelope.configOverrides) : {}, rulePresetId: preset.id, presetVersion: preset.presetVersion };
-      context.chatMetadata[NAMESPACE] = { schemaVersion: envelope.schemaVersion, stateVersion: 0, headRevision: envelope.headRevision + 1, initialSnapshot: clone2(preset.initialState), activeSnapshot: clone2(preset.initialState), activeRef: null, preset: { id: preset.id, version: preset.presetVersion }, configOverrides, taskStatus: { state: "idle", requestId: null }, lastCommittedRequestId: null };
+      const transactionEnvelope = { schemaVersion: envelope.schemaVersion, stateVersion: 0, headRevision: envelope.headRevision + 1, initialSnapshot: clone2(preset.initialState), activeSnapshot: clone2(preset.initialState), activeRef: null, preset: { id: preset.id, version: preset.presetVersion }, configOverrides, taskStatus: { state: "idle", requestId: null }, lastCommittedRequestId: null };
+      context.chatMetadata[NAMESPACE] = transactionEnvelope;
       for (const message of chat) {
         if (message?.extra) delete message.extra[NAMESPACE];
         for (const swipe of message?.swipe_info ?? []) if (swipe?.extra) delete swipe.extra[NAMESPACE];
       }
       const latestBeforeSave = adapter.getContext?.();
-      if (!latestBeforeSave || latestBeforeSave.chatId !== chatId || latestBeforeSave.chat !== chat || latestBeforeSave.chatMetadata?.[NAMESPACE] !== context.chatMetadata[NAMESPACE]) throw new Error("stale-chat");
+      if (!latestBeforeSave || latestBeforeSave.chatId !== chatId || latestBeforeSave.chat !== chat || latestBeforeSave.chatMetadata?.[NAMESPACE] !== transactionEnvelope || transactionEnvelope.headRevision !== expectedHeadRevision + 1) throw new Error("stale-chat");
       await adapter.saveChat();
+      const latestAfterSave = adapter.getContext?.();
+      if (!latestAfterSave || latestAfterSave.chatId !== chatId || latestAfterSave.chat !== chat || latestAfterSave.chatMetadata?.[NAMESPACE] !== transactionEnvelope || transactionEnvelope.headRevision !== expectedHeadRevision + 1) return result("stale-chat");
       return { ok: true };
     } catch (error) {
+      const latest = adapter.getContext?.();
+      const ownsTransaction = latest?.chatId === chatId && latest.chat === chat && latest.chatMetadata?.[NAMESPACE] === context.chatMetadata[NAMESPACE] && context.chatMetadata[NAMESPACE]?.headRevision === expectedHeadRevision + 1;
+      if (!ownsTransaction) return result("stale-chat", error);
       if (metadataHad) context.chatMetadata[NAMESPACE] = metadataBefore;
       else delete context.chatMetadata[NAMESPACE];
       for (const item of messageBefore) {
@@ -8523,11 +8559,13 @@ function closedGeneration() {
 }
 function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateCheck, validateDamage, resolveCheck, resolveDamage, ledger }) {
   const names = ["DualModelResolveD20Check", "DualModelApplyD20Damage"];
+  const supportsD20 = (preset) => typeof preset?.readActor === "function" && typeof preset?.writeActor === "function";
   const enabled = () => {
-    const config = getActiveGeneration()?.effectiveConfig ?? getConfig();
-    return Boolean(getActiveGeneration()) && config?.enabled && config.rulePresetId !== "narrative" && config.adjudication === "automatic-tool";
+    const generation = getActiveGeneration();
+    const config = generation?.effectiveConfig ?? getConfig();
+    return Boolean(generation) && config?.enabled && supportsD20(generation.preset) && config.adjudication === "automatic-tool";
   };
-  const authorized = (generation) => generation?.effectiveConfig?.enabled && !generation.formalD20Blocked && generation.effectiveConfig.rulePresetId !== "narrative" && generation.effectiveConfig.adjudication === "automatic-tool";
+  const authorized = (generation) => generation?.effectiveConfig?.enabled && !generation.formalD20Blocked && supportsD20(generation.preset) && generation.effectiveConfig.adjudication === "automatic-tool";
   const discard = (generation) => {
     generation.ruleToolFailed = true;
     generation.pendingRuleRecords.length = 0;
@@ -8790,6 +8828,10 @@ function writeAt(root, path, value) {
   if (!parent || key === void 0) throw new Error(`Invalid adapter path: ${path}`);
   parent[key] = value;
 }
+function actorAt(state, actorsPath, id) {
+  const actors = readAt(state, actorsPath);
+  return actors && Object.hasOwn(actors, id) ? actors[id] : void 0;
+}
 function encode(value) {
   return String(value).replace(/~/g, "~0").replace(/\//g, "~1");
 }
@@ -8810,12 +8852,13 @@ function createCustomRuleAdapter(preset) {
       });
     },
     readActor(state, id) {
-      const root = readAt(state, `${d20.actorsPath}/${encode(id)}`);
+      const root = actorAt(state, d20.actorsPath, id);
       if (!root) return void 0;
       return { abilities: readAt(root, d20.abilitiesPath), proficiencyBonus: readAt(root, d20.proficiencyBonusPath), proficientSkills: readAt(root, d20.proficientSkillsPath), hp: readAt(root, d20.hpPath), conditions: readAt(root, d20.conditionsPath) };
     },
     writeActor(state, id, actor) {
-      const root = readAt(state, `${d20.actorsPath}/${encode(id)}`);
+      const root = actorAt(state, d20.actorsPath, id);
+      if (!root) throw new Error(`Unknown actor: ${id}`);
       writeAt(root, d20.hpPath, structuredClone(actor.hp));
       writeAt(root, d20.conditionsPath, structuredClone(actor.conditions));
     }
@@ -8848,6 +8891,15 @@ function overlaps(a, b) {
 function validatePointers(preset) {
   for (const path of [...preset.allowedPaths, ...preset.lockedPaths, ...preset.injection.map((x) => x.path), ...preset.ui.map((x) => x.path)]) decodePointer(path);
   for (const a of preset.allowedPaths) for (const b of preset.lockedPaths) if (overlaps(a, b)) throw new Error(`Conflicting allowed and locked paths: ${a}, ${b}`);
+  if (preset.d20) for (const field of ["actorsPath", "abilitiesPath", "proficiencyBonusPath", "proficientSkillsPath", "hpPath", "conditionsPath"]) {
+    const path = preset.d20[field];
+    try {
+      if (path === "" || typeof path !== "string" || !path.startsWith("/")) throw new Error();
+      decodePointer(path);
+    } catch {
+      throw new Error(`Invalid D20 path: ${field}`);
+    }
+  }
 }
 function createPresetManager({ settings, builtInPresets = [], registerPreset, unregisterPreset = () => {
 }, save, getReferences = () => [], stateStore }) {
@@ -8925,7 +8977,7 @@ function createPresetManager({ settings, builtInPresets = [], registerPreset, un
       return JSON.stringify(clone4(raw), null, 2);
     },
     listPresets() {
-      return settings.customPresets.map(clone4);
+      return [...builtIns.values()].map((item) => ({ id: item.id, name: item.name, presetVersion: item.presetVersion, builtIn: true })).concat(settings.customPresets.map((item) => ({ id: item.id, name: item.name, presetVersion: item.presetVersion, builtIn: false })));
     },
     getPreset,
     bindCharacter(character, id) {
@@ -8941,7 +8993,7 @@ function createPresetManager({ settings, builtInPresets = [], registerPreset, un
       const current = metadata?.dualModelEngine?.preset;
       if (current?.id === preset.id && current.version === preset.presetVersion) return { ok: true, unchanged: true };
       const summary = stateStore.describePresetReset?.(preset) ?? { targetPreset: preset.id };
-      if (!confirmedReset) return { ok: false, reason: "preset-reset-required", summary, exportRawData: this.exportPreset.bind(this, id) };
+      if (!confirmedReset) return { ok: false, reason: "preset-reset-required", summary, ...builtIns.has(id) ? {} : { exportRawData: this.exportPreset.bind(this, id) } };
       return stateStore.resetForPreset(preset);
     },
     async deletePreset(id) {
@@ -8979,7 +9031,7 @@ var adjudicator_schema_default = {
 
 // src/index.js
 async function bootstrap({ adapter, dependencies } = {}) {
-  const runtimeAdapter = adapter ?? (await import("./st-runtime-UZFDFOXW.js")).createRuntimeAdapter();
+  const runtimeAdapter = adapter ?? (await import("./st-runtime-GSBIPEGC.js")).createRuntimeAdapter();
   const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });
   const resolved = dependencies ?? {};
@@ -8993,7 +9045,13 @@ async function bootstrap({ adapter, dependencies } = {}) {
     save: () => runtimeAdapter.saveSettings?.(),
     getReferences: (id) => {
       const context = runtimeAdapter.getContext?.();
-      return context?.chatMetadata?.[NAMESPACE]?.preset?.id === id ? [{ type: "chat", id: context.chatId }] : [];
+      const references = [];
+      if (context?.chatMetadata?.[NAMESPACE]?.preset?.id === id) references.push({ type: "chat", id: context.chatId });
+      const character = context?.character ?? context?.characters?.[context?.characterId];
+      if (character?.data?.extensions?.[NAMESPACE]?.rulePresetId === id) references.push({ type: "character", id: context?.characterId ?? character.id ?? "current" });
+      const persisted = runtimeAdapter.listPresetReferences?.(id);
+      if (Array.isArray(persisted)) references.push(...persisted);
+      return references;
     },
     stateStore: store
   });
@@ -9029,13 +9087,19 @@ async function bootstrap({ adapter, dependencies } = {}) {
       const config = getEffectiveConfig();
       const envelope = store.loadEnvelope?.();
       const value = envelope?.ok ? envelope.value : envelope;
-      if (context?.chatId !== queuedChatId || context?.groupId || !config.enabled || config.rulePresetId !== "d20-lite" || config.adjudication !== "manual" || value?.preset?.id !== "d20-lite") throw new Error("Manual D20 checks are not authorized for this chat configuration");
+      let activePreset;
+      try {
+        activePreset = presetManager.getPreset(value?.preset?.id);
+      } catch {
+        activePreset = null;
+      }
+      if (context?.chatId !== queuedChatId || context?.groupId || !config.enabled || config.rulePresetId !== value?.preset?.id || config.adjudication !== "manual" || typeof activePreset?.readActor !== "function" || typeof activePreset?.writeActor !== "function") throw new Error("Manual D20 checks are not authorized for this chat configuration");
       const ref = value.activeRef;
       const message = context.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === ref?.messageId);
       const branch = message?.swipe_info?.[ref?.swipeId]?.extra?.[NAMESPACE]?.branch;
       if (!ref || !message || (message.swipe_id ?? 0) !== ref.swipeId || !branch || branch.branchId !== ref.branchId || branch.status !== "committed" || !branch.segments?.length) throw new Error("No active committed branch");
       const manualGeneration = { branchId: ref.branchId, baseBranchId: ref.branchId, userMessageId: branch.segments.at(-1).userMessageId ?? null, baseSnapshot: structuredClone(value.activeSnapshot), pendingRuleRecords: [], pendingRuleEffects: [], ruleReplayMode: null, closed: false };
-      const record = await stageCheckRecord({ generation: manualGeneration, input, ledger, signal, resolveCheck: (request, state) => createRuleEngine({ nextUint32, preset: d20LitePreset }).resolveCheck(request, state) });
+      const record = await stageCheckRecord({ generation: manualGeneration, input, ledger, signal, resolveCheck: (request, state) => createRuleEngine({ nextUint32, preset: activePreset }).resolveCheck(request, state) });
       signal.throwIfAborted();
       const committed = await store.commitCurrentBranchAudit({ chatId: context.chatId, expectedHeadRevision: value.headRevision, activeRef: ref, record });
       if (!committed?.ok) throw new Error(committed?.reason ?? "manual audit failed");
@@ -9089,10 +9153,11 @@ async function bootstrap({ adapter, dependencies } = {}) {
     ledger,
     resolveCheck,
     resolveDamage: async (input, state) => {
-      const engine = createRuleEngine({ nextUint32, preset: orchestrator.getActiveGeneration()?.preset ?? d20LitePreset });
-      const hpBefore = state.actors?.[input.target]?.hp?.current;
+      const preset = orchestrator.getActiveGeneration()?.preset ?? d20LitePreset;
+      const engine = createRuleEngine({ nextUint32, preset });
+      const hpBefore = preset.readActor(state, input.target)?.hp?.current;
       const result2 = engine.applyDamage(input, state);
-      return { state: result2.state, audit: { rolls: result2.damage.rolls, raw: result2.damage.rawTotal, total: result2.damage.total, absorbed: result2.damage.absorbed, hpBefore, hpAfter: result2.state.actors?.[input.target]?.hp?.current } };
+      return { state: result2.state, audit: { rolls: result2.damage.rolls, raw: result2.damage.rawTotal, total: result2.damage.total, absorbed: result2.damage.absorbed, hpBefore, hpAfter: preset.readActor(result2.state, input.target)?.hp?.current } };
     }
   });
   const canRegisterTools = typeof runtimeAdapter.registerTool === "function";

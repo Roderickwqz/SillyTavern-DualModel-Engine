@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 const runtimeAdapter = {
     getContext: vi.fn(() => ({ groupId: null })),
@@ -117,5 +118,15 @@ describe('bootstrap', () => {
         const result = await bootstrap({ adapter, dependencies: { toolRegistry: registry, rollbackManager, promptInjector: { refresh: vi.fn(), clear: vi.fn() } } });
         expect(() => result.orchestrator.stop()).toThrow(failure); expect(adapter.off).toHaveBeenCalledTimes(4); expect(rollbackManager.destroy).toHaveBeenCalledOnce();
         expect(() => result.orchestrator.stop()).not.toThrow(); expect(registry.unregister).toHaveBeenCalledTimes(2); expect(adapter.off).toHaveBeenCalledTimes(4); expect(rollbackManager.destroy).toHaveBeenCalledOnce();
+    });
+
+    it('protects custom presets referenced by the current character or enumerable persisted references', async () => {
+        const settings = { enabled: false, customPresets: [] }; const context = { chatId: 'a', groupId: null, chat: [], chatMetadata: {}, character: { data: { extensions: { dualModelEngine: { rulePresetId: 'relationship-meter' } } } } };
+        const adapter = { events: {}, getContext: () => context, getSettings: () => settings, listProfiles: () => [], on: vi.fn(), off: vi.fn(), saveSettings: vi.fn(), listPresetReferences: vi.fn(() => [{ type: 'archived-chat', id: 'old' }]) };
+        const app = await bootstrap({ adapter, dependencies: { promptInjector: { refresh: vi.fn(), clear: vi.fn() } } });
+        await app.presetManager.importPreset(readFileSync('tests/fixtures/custom-preset.json', 'utf8'));
+        await expect(app.presetManager.deletePreset('relationship-meter')).rejects.toThrow('Preset is still referenced');
+        expect(adapter.listPresetReferences).toHaveBeenCalledWith('relationship-meter');
+        app.orchestrator.stop();
     });
 });
