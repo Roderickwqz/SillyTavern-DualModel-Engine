@@ -21,3 +21,10 @@ it('reuses persisted identities and synchronizes every swipe without replacing b
 it('hashes UTF-8 text as a sha256 fingerprint', async () => {
     expect(await hashText('hello 😀')).toBe('sha256:701734ab010f0b6dbb1cd1ce3c474b226d1abff267affc16c2bfd6ba1bb52396');
 });
+
+it('skips malformed swipe entries while preserving valid swipe branches', () => {
+    const branch = { branchId: 'valid', segments: [] };
+    const message = { extra: {}, swipe_info: [null, 'invalid', { extra: { dualModelEngine: { branch } } }] };
+    expect(ensureMessageId(message, () => 'msg-1')).toBe('msg-1');
+    expect(message.swipe_info[2].extra.dualModelEngine).toEqual({ messageId: 'msg-1', branch });
+});

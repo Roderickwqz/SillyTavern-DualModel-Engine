@@ -166,3 +166,69 @@ it('lists deduplicated cloned rule records and returns missing context as a resu
     context.chatMetadata = {};
     expect(store.loadEnvelope()).toEqual({ ok: false, reason: 'missing-envelope' });
 });
+
+it('rejects an old revision after a real 18-to-10-to-18 ABA change without hashing or saving', async () => {
+    const { store, current, context, saveChat } = setup({ metadata: envelope({ stateVersion: 18, headRevision: 7 }) });
+    context.chatMetadata.dualModelEngine.stateVersion = 10;
+    context.chatMetadata.dualModelEngine.headRevision = 8;
+    context.chatMetadata.dualModelEngine.stateVersion = 18;
+    context.chatMetadata.dualModelEngine.headRevision = 9;
+    expect(await store.commitSegment(commitInput(current, {
+        baseStateVersion: 18, expectedHeadRevision: 7, nextState: { version: 19, value: 19 },
+    }))).toEqual({ ok: false, reason: 'head-conflict' });
+    expect(saveChat).not.toHaveBeenCalled();
+});
+
+it('revalidates after a delayed hash and rejects a changed revision without saving', async () => {
+    let resolveHash;
+    const hashText = vi.fn(() => new Promise(resolve => { resolveHash = resolve; }));
+    const { context, current, saveChat } = setup();
+    const store = createStateStore({ adapter: { getContext: () => context, saveChat }, makeId: () => 'generated', hashText });
+    const pending = store.commitSegment(commitInput(current));
+    context.chatMetadata.dualModelEngine.headRevision = 8;
+    resolveHash('hash:answer');
+    expect(await pending).toEqual({ ok: false, reason: 'head-conflict' });
+    expect(hashText).toHaveBeenCalledTimes(1);
+    expect(saveChat).not.toHaveBeenCalled();
+});
+
+it('restores every swipe identity when a multi-swipe commit save fails', async () => {
+    const saveChat = vi.fn().mockRejectedValue(new Error('disk full'));
+    const { store, current, context } = setup({ saveChat });
+    current.swipe_info.push({ extra: { dualModelEngine: { branch: { branchId: 'copied', segments: [] } } } });
+    const before = structuredClone(context);
+    expect(await store.commitSegment(commitInput(current))).toMatchObject({ ok: false, reason: 'save-failed' });
+    expect(context).toEqual(before);
+});
+
+it('restores a multi-swipe descendant and its selected mirror exactly when invalidation save fails', async () => {
+    const first = { branchId: 'first', status: 'committed', segments: [] };
+    const second = { branchId: 'second', status: 'committed', segments: [] };
+    const saveChat = vi.fn().mockRejectedValue(new Error('disk full'));
+    const { store, context } = setup({ saveChat });
+    const later = message(first, 1);
+    later.swipe_info.push({ extra: { dualModelEngine: { messageId: 'm1', branch: second } } });
+    later.extra.dualModelEngine = structuredClone(later.swipe_info[1].extra.dualModelEngine);
+    context.chat.push(later);
+    const before = structuredClone(context);
+    expect(await store.markStaleAfter(0)).toMatchObject({ ok: false, reason: 'save-failed' });
+    expect(context).toEqual(before);
+});
+
+it('rejects malformed envelopes and restore identities before mutation or save', async () => {
+    const { store, current, context, saveChat } = setup({ metadata: envelope({ headRevision: Number.NaN }) });
+    expect(await store.commitSegment(commitInput(current))).toEqual({ ok: false, reason: 'invalid-envelope' });
+    expect(await store.markStaleAfter(0)).toEqual({ ok: false, reason: 'invalid-envelope' });
+    context.chatMetadata.dualModelEngine = envelope();
+    const branch = { branchId: '', segments: [{ postSnapshot: { version: 3 } }] };
+    current.swipe_info[0].extra.dualModelEngine = { messageId: '', branch };
+    expect(await store.restoreBranch(current, 0)).toEqual({ ok: false, reason: 'invalid-identity' });
+    expect(saveChat).not.toHaveBeenCalled();
+});
+
+it('returns invalid input without mutating when ensureBranch receives an invalid swipe index', () => {
+    const { store, current } = setup();
+    const before = structuredClone(current);
+    expect(() => store.ensureBranch(current, -1, { version: 2 }, 2, 'b1')).toThrow('Invalid swipe index');
+    expect(current).toEqual(before);
+});

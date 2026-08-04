@@ -9,6 +9,20 @@ function clone(value) {
     return structuredClone(value);
 }
 
+function isPlainObject(value) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+}
+
+function isRevision(value) {
+    return Number.isSafeInteger(value) && value >= 0;
+}
+
+function validEnvelope(envelope) {
+    return isPlainObject(envelope) && isRevision(envelope.stateVersion) && isRevision(envelope.headRevision);
+}
+
 function getNamespace(message, swipeId) {
     return message?.swipe_info?.[swipeId]?.extra?.[NAMESPACE] ?? null;
 }
@@ -16,7 +30,8 @@ function getNamespace(message, swipeId) {
 export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashText: textHash }) {
     function loadEnvelope() {
         const envelope = adapter.getContext?.()?.chatMetadata?.[NAMESPACE];
-        return envelope && typeof envelope === 'object' ? { ok: true, value: envelope } : result('missing-envelope');
+        if (!envelope) return result('missing-envelope');
+        return validEnvelope(envelope) ? { ok: true, value: envelope } : result('invalid-envelope');
     }
 
     function getBranch(message, swipeId) {
@@ -24,9 +39,11 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
     }
 
     function ensureBranch(message, swipeId, baseSnapshot, baseStateVersion, branchId, replaceExisting = false) {
+        if (!isPlainObject(message) || !Array.isArray(message.swipe_info)
+            || !Number.isSafeInteger(swipeId) || swipeId < 0 || swipeId >= message.swipe_info.length
+            || !isPlainObject(message.swipe_info[swipeId])) throw new Error('Invalid swipe index');
+        const baseSnapshotCopy = clone(baseSnapshot);
         ensureMessageId(message, makeId);
-        message.swipe_info ??= [];
-        message.swipe_info[swipeId] ??= { extra: {} };
         const swipe = message.swipe_info[swipeId];
         swipe.extra ??= {};
         swipe.extra[NAMESPACE] ??= {};
@@ -36,7 +53,7 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
             current.branch = {
                 branchId: branchId ?? makeId(),
                 baseStateVersion,
-                baseSnapshot: clone(baseSnapshot),
+                baseSnapshot: baseSnapshotCopy,
                 segments: [],
                 status: 'pending',
             };
@@ -48,6 +65,7 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
     function validCommitContext(input, context, envelope) {
         if (!context || context.chatId !== input.chatId) return 'stale-chat';
         if (!envelope) return 'missing-envelope';
+        if (!validEnvelope(envelope)) return 'invalid-envelope';
         if (!input.branchId || !input.requestId || !input.messageId) return 'missing-identity';
         if (!Array.isArray(context.chat) || !context.chat.includes(input.message)
             || input.message?.extra?.[NAMESPACE]?.messageId !== input.messageId) return 'stale-message';
@@ -75,9 +93,14 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
             return result('hash-failed', error);
         }
 
-        const metadataBefore = clone(envelope);
+        const contextAfterHash = adapter.getContext?.();
+        const envelopeAfterHash = contextAfterHash?.chatMetadata?.[NAMESPACE];
+        const staleAfterHash = validCommitContext(input, contextAfterHash, envelopeAfterHash);
+        if (staleAfterHash) return result(staleAfterHash);
+
+        const metadataBefore = clone(envelopeAfterHash);
         const messageExtraBefore = clone(input.message.extra);
-        const swipeBefore = clone(input.message.swipe_info[input.swipeId]);
+        const swipesBefore = clone(input.message.swipe_info);
         try {
             const branch = ensureBranch(input.message, input.swipeId, input.baseSnapshot, input.baseStateVersion, input.branchId, !input.isContinue);
             const segment = {
@@ -91,18 +114,18 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
             if (input.isContinue) branch.segments.push(segment);
             else branch.segments = [segment];
             branch.status = 'committed';
-            envelope.stateVersion = input.nextState.version;
-            envelope.headRevision += 1;
-            envelope.activeSnapshot = clone(input.nextState);
-            envelope.activeRef = { messageId: input.messageId, swipeId: input.swipeId, branchId: input.branchId };
-            envelope.lastCommittedRequestId = input.requestId;
-            envelope.taskStatus = { state: 'idle', requestId: null };
+            envelopeAfterHash.stateVersion = input.nextState.version;
+            envelopeAfterHash.headRevision += 1;
+            envelopeAfterHash.activeSnapshot = clone(input.nextState);
+            envelopeAfterHash.activeRef = { messageId: input.messageId, swipeId: input.swipeId, branchId: input.branchId };
+            envelopeAfterHash.lastCommittedRequestId = input.requestId;
+            envelopeAfterHash.taskStatus = { state: 'idle', requestId: null };
             await adapter.saveChat();
-            return { ok: true, stateVersion: envelope.stateVersion, headRevision: envelope.headRevision, branch: clone(branch) };
+            return { ok: true, stateVersion: envelopeAfterHash.stateVersion, headRevision: envelopeAfterHash.headRevision, branch: clone(branch) };
         } catch (error) {
-            context.chatMetadata[NAMESPACE] = metadataBefore;
+            contextAfterHash.chatMetadata[NAMESPACE] = metadataBefore;
             input.message.extra = messageExtraBefore;
-            input.message.swipe_info[input.swipeId] = swipeBefore;
+            input.message.swipe_info = swipesBefore;
             return result('save-failed', error);
         }
     }
@@ -111,12 +134,16 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         const context = adapter.getContext?.();
         const envelope = context?.chatMetadata?.[NAMESPACE];
         if (!envelope) return result('missing-envelope');
+        if (!validEnvelope(envelope)) return result('invalid-envelope');
         if (!Array.isArray(context.chat) || !context.chat.includes(message)) return result('stale-message');
         if ((message.swipe_id ?? 0) !== swipeId || !message.swipe_info?.[swipeId]) return result('stale-swipe');
         const namespace = getNamespace(message, swipeId);
         const branch = namespace?.branch;
         const snapshot = branch?.segments?.at(-1)?.postSnapshot;
         if (!snapshot) return result('missing-snapshot');
+        if (typeof namespace.messageId !== 'string' || !namespace.messageId
+            || typeof branch.branchId !== 'string' || !branch.branchId) return result('invalid-identity');
+        if (!isPlainObject(snapshot) || !isRevision(snapshot.version)) return result('invalid-snapshot');
 
         const metadataBefore = clone(envelope);
         const messageExtraBefore = clone(message.extra);
@@ -142,15 +169,18 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         const context = adapter.getContext?.();
         const envelope = context?.chatMetadata?.[NAMESPACE];
         if (!envelope) return result('missing-envelope');
+        if (!validEnvelope(envelope)) return result('invalid-envelope');
         if (!Array.isArray(context.chat) || !Number.isInteger(messageIndex)) return result('invalid-context');
         const metadataBefore = clone(envelope);
-        const branchBefore = [];
+        const messagesBefore = new Map();
         try {
             for (const message of context.chat.slice(messageIndex + 1)) {
                 for (let swipeId = 0; swipeId < (message.swipe_info?.length ?? 0); swipeId += 1) {
                     const swipe = message.swipe_info[swipeId];
                     if (getNamespace(message, swipeId)?.branch) {
-                        branchBefore.push([message, swipeId, clone(swipe), clone(message.extra)]);
+                        if (!messagesBefore.has(message)) {
+                            messagesBefore.set(message, { extra: clone(message.extra), swipes: clone(message.swipe_info) });
+                        }
                         swipe.extra[NAMESPACE].branch.status = 'stale';
                         if ((message.swipe_id ?? 0) === swipeId) message.extra[NAMESPACE] = clone(swipe.extra[NAMESPACE]);
                     }
@@ -161,9 +191,9 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
             return { ok: true };
         } catch (error) {
             context.chatMetadata[NAMESPACE] = metadataBefore;
-            for (const [message, swipeId, swipe, extra] of branchBefore) {
-                message.swipe_info[swipeId] = swipe;
-                message.extra = extra;
+            for (const [message, before] of messagesBefore) {
+                message.extra = before.extra;
+                message.swipe_info = before.swipes;
             }
             return result('save-failed', error);
         }

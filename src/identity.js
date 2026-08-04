@@ -5,13 +5,18 @@ function namespace(extra) {
     return extra[NAMESPACE];
 }
 
+function isObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 export function ensureMessageId(message, makeId = () => crypto.randomUUID()) {
     message.extra ??= {};
     const current = namespace(message.extra);
     current.messageId ??= makeId();
     const messageId = current.messageId;
 
-    for (const swipe of message.swipe_info ?? []) {
+    for (const swipe of Array.isArray(message.swipe_info) ? message.swipe_info : []) {
+        if (!isObject(swipe)) continue;
         swipe.extra ??= {};
         namespace(swipe.extra).messageId = messageId;
     }
