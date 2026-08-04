@@ -171,7 +171,15 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     const confirmAction = resolved.showConfirm ?? (async details => { const context = runtimeAdapter.getContext?.(); if (typeof context?.Popup !== 'function') return globalThis.window?.confirm(details.message ?? details.content?.textContent ?? 'Confirm') ?? false; const content = details.content instanceof globalThis.HTMLElement ? details.content : Object.assign(document.createElement('div'), { textContent: details.message ?? JSON.stringify(details) }); return (await new context.Popup(content, context.POPUP_TYPE?.CONFIRM, '', {}).show()) === context.POPUP_RESULT?.AFFIRMATIVE; });
     const currentInvalidIndex = resolved.currentInvalidIndex ?? (() => { const index = firstInvalidHistoryIndex(runtimeAdapter); return index < 0 ? undefined : index; });
     let selectedCheckId = null;
-    const selectedCheck = resolved.selectedCheck ?? (() => { const ref = store.loadEnvelope?.().value?.activeRef; return ledger.list().find(record => record.checkId === selectedCheckId && record.branchId === ref?.branchId) ?? null; });
+    const selectedCheck = resolved.selectedCheck ?? (() => {
+        const value = store.loadEnvelope?.().value; const ref = value?.activeRef;
+        const checks = runtimeAdapter.getContext?.()?.chat?.flatMap(message => message?.swipe_info?.flatMap(swipe => {
+            const branch = swipe?.extra?.[NAMESPACE]?.branch;
+            return branch?.branchId === ref?.branchId ? branch.segments?.flatMap(segment => segment.checks ?? []) ?? [] : [];
+        }) ?? []) ?? [];
+        const checkId = selectedCheckId ?? checks.findLast(record => record?.kind === 'check')?.checkId;
+        return checks.find(record => record?.kind === 'check' && record.checkId === checkId) ?? null;
+    });
     const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: id => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), validateDamage: validate(damageValidator), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex, pickFile: resolved.pickPresetFile ?? pickPresetFile, selectedCheck, download: resolved.download, diffState });
     let ui;
     try {
@@ -193,7 +201,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
             diffState,
             getPresetPolicy: () => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; const preset = presetManager.getPreset(envelope?.preset?.id); return { allowedPaths: preset?.allowedPaths ?? [], lockedPaths: preset?.lockedPaths?.filter(path => path !== '/version') ?? [], ruleLockedPaths: preset?.ruleLockedPaths ?? [] }; },
             getPresetUiFields: () => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; return presetManager.getPreset(envelope?.preset?.id)?.ui ?? []; },
-            listChecks: () => { const ref = (store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE])?.activeRef; return ref ? ledger.list().filter(record => record.branchId === ref.branchId) : []; },
+            listChecks: () => { const ref = (store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE])?.activeRef; return ref ? (runtimeAdapter.getContext?.()?.chat ?? []).flatMap(message => message?.swipe_info?.flatMap(swipe => swipe?.extra?.[NAMESPACE]?.branch?.branchId === ref.branchId ? swipe.extra[NAMESPACE].branch.segments?.flatMap(segment => segment.checks ?? []) ?? [] : []) ?? []) : []; },
             onSelectCheck: id => { selectedCheckId = id; },
             listHistory: () => (runtimeAdapter.getContext?.()?.chat ?? []).flatMap(message => (message.swipe_info ?? []).flatMap(swipe => { const branch = swipe?.extra?.[NAMESPACE]?.branch; return (branch?.segments ?? []).map(segment => ({ ...segment, status: branch.status ?? segment.status ?? 'committed' })); })),
             listDiagnostics: () => { const settings = runtimeAdapter.getSettings?.() ?? {}; return settings.diagnostics ?? settings[NAMESPACE]?.diagnostics ?? []; },
@@ -233,8 +241,17 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         }
         throw error;
     }
-    const stopOrchestrator = orchestrator.stop.bind(orchestrator); let orchestratorStopped = false;
-    orchestrator.stop = () => { let first; try { ui?.destroy(); } catch (error) { first = error; } if (canRegisterTools) try { toolRegistry.unregister(); } catch (error) { first ??= error; } if (!orchestratorStopped) try { stopOrchestrator(); orchestratorStopped = true; } catch (error) { first ??= error; } if (first) throw first; };
+    const stopOrchestrator = orchestrator.stop.bind(orchestrator);
+    let uiDestroyed = false; let toolsUnregistered = !canRegisterTools; let orchestratorStopped = false; let queueDisposed = false;
+    function stop() {
+        let first;
+        if (!uiDestroyed) try { ui?.destroy(); uiDestroyed = true; } catch (error) { first = error; uiDestroyed = true; }
+        if (!toolsUnregistered) try { toolRegistry.unregister(); toolsUnregistered = true; } catch (error) { first ??= error; }
+        if (!orchestratorStopped) try { stopOrchestrator(); orchestratorStopped = true; } catch (error) { first ??= error; }
+        if (!queueDisposed) try { queue.dispose?.(); queueDisposed = true; } catch (error) { first ??= error; }
+        if (first) throw first;
+    }
+    orchestrator.stop = stop;
 
     return {
         name: 'dualModelEngine',
@@ -246,6 +263,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         adjudicator,
         presetManager,
         ui,
+        async stop() { stop(); },
     };
 }
 

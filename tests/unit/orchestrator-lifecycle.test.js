@@ -71,3 +71,45 @@ it('pins replay validation to the existing envelope preset', async () => {
     await expect(subject.replayTurn({ messageIndex: 1, swipeId: 0, baseSnapshot: { version: 0 } })).resolves.toMatchObject({ ok: true });
     expect(value.validator.validatePatch).toHaveBeenCalledWith('custom-a', expect.anything(), expect.objectContaining({ allowedPaths: ['/custom-a'] }));
 });
+
+it('refreshes rollback tracking exactly once after a successful Recorder commit', async () => {
+    const value = createOrchestratorTestDependencies({ chat: [{ is_user: true, mes: 'go', extra: { dualModelEngine: { messageId: 'u1' } } }] });
+    value.rollbackManager = { refresh: vi.fn() };
+    const subject = createOrchestrator(value);
+
+    await subject.beforeGeneration('normal');
+    value.context.chat.push({ is_user: false, mes: 'answer', extra: {}, swipe_id: 0, swipe_info: [{ extra: {} }] });
+    await subject.afterGeneration();
+    await value.queue.waitForIdle('chat-a');
+
+    expect(value.rollbackManager.refresh).toHaveBeenCalledOnce();
+});
+
+it('does not refresh rollback tracking when the Recorder commit fails', async () => {
+    const value = createOrchestratorTestDependencies({ chat: [{ is_user: true, mes: 'go', extra: { dualModelEngine: { messageId: 'u1' } } }], commit: { ok: false, reason: 'save-failed' } });
+    value.rollbackManager = { refresh: vi.fn() };
+    const subject = createOrchestrator(value);
+
+    await subject.beforeGeneration('normal');
+    value.context.chat.push({ is_user: false, mes: 'answer', extra: {}, swipe_id: 0, swipe_info: [{ extra: {} }] });
+    await subject.afterGeneration();
+    await value.queue.waitForIdle('chat-a');
+
+    expect(value.rollbackManager.refresh).not.toHaveBeenCalled();
+});
+
+it('keeps a committed Recorder segment when rollback refresh throws', async () => {
+    const value = createOrchestratorTestDependencies({ chat: [{ is_user: true, mes: 'go', extra: { dualModelEngine: { messageId: 'u1' } } }] });
+    value.rollbackManager = { refresh: vi.fn(() => { throw new Error('refresh failed'); }) };
+    value.store.markBranchFailed = vi.fn();
+    const subject = createOrchestrator(value);
+
+    await subject.beforeGeneration('normal');
+    value.context.chat.push({ is_user: false, mes: 'answer', extra: {}, swipe_id: 0, swipe_info: [{ extra: {} }] });
+    await subject.afterGeneration();
+    await value.queue.waitForIdle('chat-a');
+
+    expect(value.rollbackManager.refresh).toHaveBeenCalledOnce();
+    expect(value.store.markBranchFailed).not.toHaveBeenCalled();
+    expect(value.recordDiagnostic).toHaveBeenCalledWith(expect.objectContaining({ reason: 'rollback-refresh-failed' }));
+});

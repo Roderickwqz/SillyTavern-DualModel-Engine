@@ -49,7 +49,9 @@ export function createChatActions(deps) {
         },
         reroll: () => transaction('reroll', async captured => {
             const records = deps.ledger.list(); const old = deps.selectedCheck?.() ?? records.findLast(record => record.kind === 'check' && record.branchId === captured.ref.branchId);
-            if (!old?.request || old.kind !== 'check' || old.branchId !== captured.ref.branchId) return { ok: false, reason: 'missing-check' };
+            const message = captured.messages.find(item => item?.extra?.dualModelEngine?.messageId === captured.ref.messageId);
+            const activeChecks = message?.swipe_info?.[captured.ref.swipeId]?.extra?.dualModelEngine?.branch?.segments?.flatMap(segment => segment.checks ?? []) ?? [];
+            if (!old?.request || old.kind !== 'check' || (old.branchId !== captured.ref.branchId && !activeChecks.some(record => record?.checkId === old.checkId))) return { ok: false, reason: 'missing-check' };
             const preset = deps.preset(captured.preset.id); if (!preset?.readActor || !preset?.writeActor) return { ok: false, reason: 'rules-unavailable' };
             let result;
             try { result = createRuleEngine({ preset, nextUint32: deps.nextUint32 }).resolveCheck(old.request, captured.envelope.activeSnapshot); }

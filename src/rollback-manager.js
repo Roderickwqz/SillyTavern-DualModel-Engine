@@ -112,7 +112,12 @@ export function createRollbackManager({ adapter, store, queue, confirm = async (
             if (!isWritable()) return { ok: false, reason: 'read-only' };
             const boundary = changedBoundary();
             if (replacementDeletion(boundary)) { replacement.deleted = true; refresh(); return { ok: true, ignored: 'regenerate-replacement' }; }
-            await store.auditActiveRef(); const value = await invalidateForDelete(boundary); refresh(); return value;
+            const audit = await store.auditActiveRef();
+            // A removed non-tail message leaves descendants in the chat, so they
+            // must be invalidated even though the former active ref is gone.
+            // Tail removal instead restores the last surviving valid branch.
+            const value = boundary < context().chat.length || audit?.ok ? await invalidateForDelete(boundary) : await recoverAfterDelete();
+            refresh(); return value;
         });
             on(events.MESSAGE_SWIPE_DELETED, event => {
             if (!isWritable()) return { ok: false, reason: 'read-only' };

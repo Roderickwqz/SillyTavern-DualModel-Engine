@@ -104,7 +104,12 @@ export function createOrchestrator(deps) {
         const applied = deps.applyPatch({ state: authoritativeState, patch: response.patch, policy: recorderPolicy, validateState: state => deps.validator.validateState(captured.effectiveConfig.rulePresetId, state) });
         if (!applied.ok) throw new Error(JSON.stringify(applied.errors)); applied.value.version = captured.baseVersion + 1;
         const committed = await deps.store.commitSegment({ chatId: captured.chatId, message, messageId: captured.assistantMessageId, branchId: captured.branchId, swipeId: captured.swipeId, expectedHeadRevision: captured.expectedHeadRevision, baseStateVersion: captured.baseVersion, baseSnapshot: captured.baseSnapshot, requestId: captured.requestId, userMessageId: captured.userMessageId, patch: response.patch, checks: clone(captured.checks), assistantText, nextState: applied.value, isContinue: captured.type === 'continue', allowBaseVersionMismatch: ['swipe', 'regenerate'].includes(captured.type), baseBranchId: captured.baseBranchId, baseMessageId: captured.targetMessageId, baseSwipeId: captured.baseSwipeId, signal });
-        if (committed?.ok) deps.ledger?.commit(captured.pendingRuleRecords); return committed;
+        if (committed?.ok) {
+            deps.ledger?.commit(captured.pendingRuleRecords);
+            try { deps.rollbackManager?.refresh?.(); }
+            catch (error) { diagnostic({ requestId: captured.requestId, reason: 'rollback-refresh-failed', error }); }
+        }
+        return committed;
     }
     async function replayTurn({ messageIndex, swipeId, baseSnapshot, signal }) {
         const current = context(); const config = clone(deps.getConfig());
