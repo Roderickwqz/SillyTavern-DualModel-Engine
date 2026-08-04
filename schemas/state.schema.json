@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["version", "scene", "characters", "inventory", "quests", "world_facts", "promises", "secrets", "open_threads", "director_hints"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "integer", "minimum": 0 },
+    "scene": {
+      "type": "object",
+      "required": ["location", "time"],
+      "additionalProperties": false,
+      "properties": { "location": { "type": "string", "maxLength": 500 }, "time": { "type": "string", "maxLength": 500 } }
+    },
+    "characters": {
+      "type": "object",
+      "maxProperties": 100,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["attitude", "trust", "injuries"],
+        "additionalProperties": false,
+        "properties": {
+          "attitude": { "type": "string", "maxLength": 200 },
+          "trust": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "injuries": { "type": "array", "maxItems": 50, "items": { "type": "string", "maxLength": 300 } }
+        }
+      }
+    },
+    "inventory": { "type": "array", "maxItems": 500, "items": { "type": "string", "maxLength": 300 } },
+    "quests": { "type": "array", "maxItems": 200, "items": { "type": "string", "maxLength": 500 } },
+    "world_facts": { "type": "array", "maxItems": 500, "items": { "type": "string", "maxLength": 500 } },
+    "promises": { "type": "array", "maxItems": 200, "items": { "type": "string", "maxLength": 500 } },
+    "secrets": { "type": "array", "maxItems": 200, "items": { "type": "string", "maxLength": 500 } },
+    "open_threads": { "type": "array", "maxItems": 200, "items": { "type": "string", "maxLength": 500 } },
+    "director_hints": { "type": "array", "maxItems": 100, "items": { "type": "string", "maxLength": 500 } }
+  }
+}
