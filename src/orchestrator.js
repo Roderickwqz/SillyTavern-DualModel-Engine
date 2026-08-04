@@ -67,7 +67,13 @@ export function createOrchestrator(deps) {
         const settledRefresh = refresh.then(() => ({ ok: true }), error => ({ ok: false, error }));
         const refreshResult = await Promise.race([settledRefresh, captured.cancelled.then(() => ({ cancelled: true }))]);
         if (refreshResult.cancelled) {
-            void settledRefresh.then(async () => { try { if (stopped) { deps.promptInjector.clear(); return; } if (promptEpoch === capturedRefreshEpoch && !generation && context().chatId === captured.chatId) await initializeChat(); } catch (error) { diagnostic({ requestId: captured.requestId, reason: 'prompt-refresh-recovery-failed', error }); } });
+            void settledRefresh.then(async () => {
+                if (stopped || captured.cancelReason === 'host-stopped') {
+                    try { deps.promptInjector.clear(); } catch (error) { diagnostic({ requestId: captured.requestId, reason: 'prompt-clear-failed', error }); }
+                    return;
+                }
+                try { if (promptEpoch === capturedRefreshEpoch && !generation && context().chatId === captured.chatId) await initializeChat(); } catch (error) { diagnostic({ requestId: captured.requestId, reason: 'prompt-refresh-recovery-failed', error }); }
+            });
             return { ignored: true, reason: 'generation-cancelled' };
         }
         if (!refreshResult.ok) { if (generation === captured) generation = null; diagnostic({ reason: 'prompt-refresh-failed', error: refreshResult.error }); return { ignored: true, reason: 'prompt-refresh-failed' }; }

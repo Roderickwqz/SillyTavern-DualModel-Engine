@@ -6746,11 +6746,15 @@ function createOrchestrator(deps) {
     const refreshResult = await Promise.race([settledRefresh, captured.cancelled.then(() => ({ cancelled: true }))]);
     if (refreshResult.cancelled) {
       void settledRefresh.then(async () => {
-        try {
-          if (stopped) {
+        if (stopped || captured.cancelReason === "host-stopped") {
+          try {
             deps.promptInjector.clear();
-            return;
+          } catch (error) {
+            diagnostic({ requestId: captured.requestId, reason: "prompt-clear-failed", error });
           }
+          return;
+        }
+        try {
           if (promptEpoch === capturedRefreshEpoch && !generation && context().chatId === captured.chatId) await initializeChat();
         } catch (error) {
           diagnostic({ requestId: captured.requestId, reason: "prompt-refresh-recovery-failed", error });
