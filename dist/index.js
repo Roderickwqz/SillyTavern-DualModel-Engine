@@ -4052,7 +4052,7 @@ var require_core = __commonJS({
         uriResolver
       };
     }
-    var Ajv2 = class {
+    var Ajv = class {
       constructor(opts = {}) {
         this.schemas = {};
         this.refs = {};
@@ -4422,9 +4422,9 @@ var require_core = __commonJS({
         }
       }
     };
-    Ajv2.ValidationError = validation_error_1.default;
-    Ajv2.MissingRefError = ref_error_1.default;
-    exports.default = Ajv2;
+    Ajv.ValidationError = validation_error_1.default;
+    Ajv.MissingRefError = ref_error_1.default;
+    exports.default = Ajv;
     function checkOptions(checkOpts, options, msg, log = "error") {
       for (const key in checkOpts) {
         const opt = key;
@@ -6535,7 +6535,7 @@ var require_ajv = __commonJS({
     var draft7MetaSchema = require_json_schema_draft_07();
     var META_SUPPORT_DATA = ["/properties"];
     var META_SCHEMA_ID = "http://json-schema.org/draft-07/schema";
-    var Ajv2 = class extends core_1.default {
+    var Ajv = class extends core_1.default {
       _addVocabularies() {
         super._addVocabularies();
         draft7_1.default.forEach((v) => this.addVocabulary(v));
@@ -6554,11 +6554,11 @@ var require_ajv = __commonJS({
         return this.opts.defaultMeta = super.defaultMeta() || (this.getSchema(META_SCHEMA_ID) ? META_SCHEMA_ID : void 0);
       }
     };
-    exports.Ajv = Ajv2;
-    module.exports = exports = Ajv2;
-    module.exports.Ajv = Ajv2;
+    exports.Ajv = Ajv;
+    module.exports = exports = Ajv;
+    module.exports.Ajv = Ajv;
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.default = Ajv2;
+    exports.default = Ajv;
     var validate_1 = require_validate();
     Object.defineProperty(exports, "KeywordCxt", { enumerable: true, get: function() {
       return validate_1.KeywordCxt;
@@ -6595,22 +6595,14 @@ var require_ajv = __commonJS({
 
 // src/index.js
 var import_ajv = __toESM(require_ajv(), 1);
-var validateBootstrapResult = new import_ajv.default().compile({
-  type: "object",
-  properties: { name: { const: "dualModelEngine" } },
-  required: ["name"],
-  additionalProperties: false
-});
 async function bootstrap() {
-  const result = { name: "dualModelEngine" };
-  if (!validateBootstrapResult(result)) {
-    throw new Error("DualModel Engine bootstrap result is invalid");
-  }
-  return result;
+  return { name: "dualModelEngine" };
 }
 if (typeof document !== "undefined") {
   void bootstrap();
 }
+var export_Ajv = import_ajv.default;
 export {
+  export_Ajv as Ajv,
   bootstrap
 };

@@ -1,20 +1,7 @@
-import Ajv from 'ajv';
-
-const validateBootstrapResult = new Ajv().compile({
-    type: 'object',
-    properties: { name: { const: 'dualModelEngine' } },
-    required: ['name'],
-    additionalProperties: false,
-});
+export { default as Ajv } from 'ajv';
 
 export async function bootstrap() {
-    const result = { name: 'dualModelEngine' };
-
-    if (!validateBootstrapResult(result)) {
-        throw new Error('DualModel Engine bootstrap result is invalid');
-    }
-
-    return result;
+    return { name: 'dualModelEngine' };
 }
 
 if (typeof document !== 'undefined') {

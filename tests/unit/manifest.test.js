@@ -1,4 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 describe('extension package', () => {
@@ -14,9 +16,22 @@ describe('extension package', () => {
         expect(existsSync('dist/style.css')).toBe(true);
     });
 
-    it('bundles Ajv into the committed extension entry point', () => {
-        const entryPoint = readFileSync('dist/index.js', 'utf8');
+    it('loads its bundled Ajv export without dynamic evaluation', async () => {
+        const originalFunction = globalThis.Function;
+        globalThis.Function = function blockedDynamicEvaluation() {
+            throw new Error('dynamic evaluation is blocked by CSP');
+        };
 
-        expect(entryPoint).toContain('node_modules/ajv/dist/ajv.js');
+        let extension;
+        try {
+            const entryPointUrl = pathToFileURL(resolve('dist/index.js'));
+            extension = await import(`${entryPointUrl.href}?csp=${Date.now()}`);
+        } finally {
+            globalThis.Function = originalFunction;
+        }
+
+        expect(typeof extension.Ajv).toBe('function');
+        const ajv = new extension.Ajv();
+        expect(ajv.validate({ type: 'string' }, 'ready')).toBe(true);
     });
 });
