@@ -78,7 +78,7 @@ export function createRollbackManager({ adapter, store, queue, confirm = async (
         }
         return { ok: true, lastValidVersion };
     }
-    function recalculate(startIndex) { return serialize(`recalculate-${startIndex}`, signal => recalculateNow(startIndex, signal)); }
+    function recalculate(startIndex, options = {}) { const guard = options.guard ?? options.isCurrent; return serialize(`recalculate-${startIndex}`, signal => { if (typeof guard === 'function' && !guard()) return { ok: false, reason: 'stale' }; return recalculateNow(startIndex, signal); }); }
     async function invalidateAndRecalculate(startIndex, options, signal) {
         const invalidated = await store.invalidateFrom(startIndex, options); if (!invalidated?.ok) return invalidated;
         let accepted;

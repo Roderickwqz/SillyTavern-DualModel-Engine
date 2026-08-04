@@ -64,6 +64,12 @@ it('resummary sends the pinned capture and does not commit a stale candidate', a
     expect(h.store.commitCurrentBranchMutation).not.toHaveBeenCalled();
 });
 
+it.each(['chat', 'context', 'ref', 'head', 'preset'])('does not recalculate after confirmation changes the captured %s', async changed => {
+    const h = host(); const rollbackManager = { buildRecalculationPlan: () => [{ messageIndex: 0 }], recalculate: vi.fn(async () => ({ ok: true })) }; h.deps.rollbackManager = rollbackManager; h.deps.currentInvalidIndex = () => 0;
+    h.deps.confirm.mockImplementationOnce(async () => { if (changed === 'chat') h.context.chatId = 'other'; if (changed === 'context') h.context.chat = []; if (changed === 'ref') h.envelope.activeRef = { ...h.envelope.activeRef, branchId: 'other' }; if (changed === 'head') h.envelope.headRevision++; if (changed === 'preset') h.envelope.preset = { id: 'other' }; return true; });
+    await expect(h.actions.recalculate()).resolves.toEqual({ ok: false, reason: 'stale' }); expect(rollbackManager.recalculate).not.toHaveBeenCalled();
+});
+
 it('resummary sends only visible canonical user and assistant content', async () => {
     const h = host(); h.context.chat = [{ is_user: true, mes: 'player', extra: { secret: 1 } }, { mes: 'selected', swipe_id: 0, swipe_info: [{ mes: 'selected' }, { mes: 'not selected' }] }, { is_system: true, mes: 'skip' }];
     await h.actions.resummarize();
