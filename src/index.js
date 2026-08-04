@@ -36,13 +36,21 @@ function diffState(before, after, path = '') {
     return operations;
 }
 function pickPresetFile() {
-    if (typeof document === 'undefined') return Promise.resolve(null);
+    if (typeof document === 'undefined' || !document.body) return Promise.resolve(null);
     return new Promise(resolve => {
         const input = document.createElement('input'); input.type = 'file'; input.accept = 'application/json,.json'; input.hidden = true;
         const finish = value => { input.remove(); resolve(value); };
         input.addEventListener('change', () => finish(input.files?.[0] ?? null), { once: true });
+        input.addEventListener('cancel', () => finish(null), { once: true });
         document.body.append(input); input.click();
     });
+}
+function firstInvalidHistoryIndex(adapter) {
+    const chat = adapter.getContext?.()?.chat ?? [];
+    return chat.findIndex(message => (message.swipe_info ?? []).some(swipe => {
+        const branch = swipe?.extra?.[NAMESPACE]?.branch;
+        return ['stale', 'invalidated', 'failed'].includes(branch?.status) || (branch?.segments ?? []).some(segment => ['stale', 'invalidated', 'failed'].includes(segment?.status));
+    }));
 }
 
 export async function bootstrap({ adapter, dependencies } = {}) {
@@ -128,7 +136,8 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     });
     const canRegisterTools = typeof runtimeAdapter.registerTool === 'function';
     const confirmAction = resolved.showConfirm ?? (async details => { const context = runtimeAdapter.getContext?.(); if (typeof context?.Popup !== 'function') return globalThis.window?.confirm(details.message ?? details.content?.textContent ?? 'Confirm') ?? false; const content = details.content instanceof globalThis.HTMLElement ? details.content : Object.assign(document.createElement('div'), { textContent: details.message ?? JSON.stringify(details) }); return (await new context.Popup(content, context.POPUP_TYPE?.CONFIRM, '', {}).show()) === context.POPUP_RESULT?.AFFIRMATIVE; });
-    const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: id => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), validateDamage: validate(damageValidator), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex: resolved.currentInvalidIndex, pickFile: resolved.pickPresetFile ?? pickPresetFile, selectedCheck: resolved.selectedCheck, download: resolved.download });
+    const currentInvalidIndex = resolved.currentInvalidIndex ?? (() => { const index = firstInvalidHistoryIndex(runtimeAdapter); return index < 0 ? undefined : index; });
+    const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: id => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), validateDamage: validate(damageValidator), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex, pickFile: resolved.pickPresetFile ?? pickPresetFile, selectedCheck: resolved.selectedCheck, download: resolved.download, diffState });
     let ui;
     try {
         orchestrator.start();
@@ -167,7 +176,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
             },
             rollbackManager,
             recalculateCurrentBranch: chatActions.recalculate,
-            currentInvalidIndex: resolved.currentInvalidIndex,
+            currentInvalidIndex,
             rerollSelectedCheck: chatActions.reroll,
             applyManualDamage: input => chatActions.applyDamage(input),
             resummarizeCurrentBranch: chatActions.resummarize,

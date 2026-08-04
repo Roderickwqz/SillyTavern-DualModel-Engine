@@ -52,8 +52,20 @@ it('resummary sends the pinned capture and does not commit a stale candidate', a
     const h = host();
     h.deps.queue.enqueue = async (_id, _key, task) => { h.envelope.preset = { id: 'other', version: 1 }; return task(new AbortController().signal); };
     await expect(h.actions.resummarize()).resolves.toMatchObject({ reason: 'stale' });
-    expect(h.deps.modelService.requestSummary).toHaveBeenCalledWith({ profileId: 'rec', presetId: 'd20', messages: h.context.chat, version: 2 });
+    expect(h.deps.modelService.requestSummary).toHaveBeenCalledWith({ profileId: 'rec', presetId: 'd20', messages: [{ role: 'assistant', content: 'visible assistant' }], version: 2 });
     expect(h.store.commitCurrentBranchMutation).not.toHaveBeenCalled();
+});
+
+it('resummary sends only visible canonical user and assistant content', async () => {
+    const h = host(); h.context.chat = [{ is_user: true, mes: 'player', extra: { secret: 1 } }, { mes: 'selected', swipe_id: 0, swipe_info: [{ mes: 'selected' }, { mes: 'not selected' }] }, { is_system: true, mes: 'skip' }];
+    await h.actions.resummarize();
+    expect(h.deps.modelService.requestSummary).toHaveBeenCalledWith(expect.objectContaining({ messages: [{ role: 'user', content: 'player' }, { role: 'assistant', content: 'selected' }] }));
+});
+
+it('never rerolls a selected check from another branch', async () => {
+    const h = host({ selectedCheck: () => ({ kind: 'check', branchId: 'other', request: { actor: 'player' } }) });
+    await expect(h.actions.reroll()).resolves.toMatchObject({ reason: 'missing-check' });
+    expect(h.deps.nextUint32).not.toHaveBeenCalled();
 });
 
 it('imports asynchronously without changing settings on rejected or oversized files', async () => {

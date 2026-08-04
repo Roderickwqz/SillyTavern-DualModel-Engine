@@ -26,6 +26,9 @@ function rawExport(envelope, records) {
     // This is deliberately a whitelist: profile IDs and any future credentials stay local.
     return { schemaVersion: envelope.schemaVersion, preset: structuredClone(envelope.preset), stateVersion: envelope.stateVersion, activeSnapshot: structuredClone(envelope.activeSnapshot), activeRef: structuredClone(envelope.activeRef), records: structuredClone(records) };
 }
+function summaryMessages(messages) {
+    return messages.filter(message => !message?.is_system && !message?.extra?.tool_invocations && !message?.extra?.tool_call_id).map(message => ({ role: message.is_user ? 'user' : 'assistant', content: String(message.mes ?? '') }));
+}
 
 export function createChatActions(deps) {
     const download = deps.download ?? browserDownload;
@@ -37,13 +40,13 @@ export function createChatActions(deps) {
         recalculate: async () => {
             const captured = current(deps); if (!captured) return { ok: false, reason: 'not-writable' };
             const index = deps.currentInvalidIndex?.(); const plan = deps.rollbackManager.buildRecalculationPlan?.(index);
-            if (!plan) return { ok: false, reason: 'no-recalculation-boundary' };
+            if (!plan || (Array.isArray(plan) && !plan.length) || plan.count === 0) return { ok: false, reason: 'no-recalculation-boundary' };
             if (!await deps.confirm({ action: 'recalculate', plan })) return { ok: false, reason: 'cancelled' };
             return deps.rollbackManager.recalculate(index);
         },
         reroll: () => transaction('reroll', async captured => {
             const records = deps.ledger.list(); const old = deps.selectedCheck?.() ?? records.findLast(record => record.kind === 'check' && record.branchId === captured.ref.branchId);
-            if (!old?.request || old.kind !== 'check') return { ok: false, reason: 'missing-check' };
+            if (!old?.request || old.kind !== 'check' || old.branchId !== captured.ref.branchId) return { ok: false, reason: 'missing-check' };
             const preset = deps.preset(captured.preset.id); if (!preset?.readActor || !preset?.writeActor) return { ok: false, reason: 'rules-unavailable' };
             let result;
             try { result = createRuleEngine({ preset, nextUint32: deps.nextUint32 }).resolveCheck(old.request, captured.envelope.activeSnapshot); }
@@ -74,12 +77,13 @@ export function createChatActions(deps) {
         resummarize: async () => {
             const captured = current(deps); if (!captured) return { ok: false, reason: 'not-writable' };
             let candidate;
-            try { candidate = await deps.modelService.requestSummary({ profileId: deps.config().recorderProfileId, presetId: captured.preset.id, messages: captured.messages, version: captured.stateVersion + 1 }); }
+            try { candidate = await deps.modelService.requestSummary({ profileId: deps.config().recorderProfileId, presetId: captured.preset.id, messages: summaryMessages(captured.messages), version: captured.stateVersion + 1 }); }
             catch (error) { return { ok: false, reason: 'summary-failed', errors: [{ message: safeText(error?.message ?? error) }] }; }
             if (!candidate?.state || typeof candidate.state !== 'object' || Array.isArray(candidate.state)) return { ok: false, reason: 'invalid-state', errors: [{ message: 'Summary did not return a state object' }] };
             candidate = structuredClone(candidate.state); candidate.version = captured.stateVersion + 1;
             const valid = deps.validateState(captured.preset.id, candidate); if (!valid.ok) return { ok: false, reason: 'invalid-state', errors: valid.errors };
-            if (!await deps.confirm({ action: 'resummarize', candidate: safeText(candidate) })) return { ok: false, reason: 'cancelled' };
+            const operations = deps.diffState?.(captured.envelope.activeSnapshot, candidate) ?? [];
+            if (!await deps.confirm({ action: 'resummarize', candidate: safeText(candidate), operations })) return { ok: false, reason: 'cancelled' };
             return deps.queue.enqueue(captured.context.chatId, `resummarize-${deps.makeId()}`, async signal => { signal.throwIfAborted(); if (!same(deps, captured)) return { ok: false, reason: 'stale' }; return deps.store.commitCurrentBranchMutation({ chatId: captured.context.chatId, expectedHeadRevision: captured.headRevision, baseVersion: captured.stateVersion, activeRef: captured.ref, nextState: candidate, patch: { operations: [] }, source: 'resummarize' }); });
         },
         importPreset: async () => { try { const file = await deps.pickFile?.(); if (!file) return { ok: false, reason: 'cancelled' }; return await deps.presetManager.importPreset(await file.text()); } catch (error) { return { ok: false, reason: 'invalid-preset', error: safeText(error?.message ?? error) }; } },

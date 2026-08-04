@@ -9481,6 +9481,9 @@ function rawExport(envelope, records) {
   if (!envelope) return { schemaVersion: void 0, preset: void 0, stateVersion: void 0, activeSnapshot: void 0, activeRef: void 0, records };
   return { schemaVersion: envelope.schemaVersion, preset: structuredClone(envelope.preset), stateVersion: envelope.stateVersion, activeSnapshot: structuredClone(envelope.activeSnapshot), activeRef: structuredClone(envelope.activeRef), records: structuredClone(records) };
 }
+function summaryMessages(messages) {
+  return messages.filter((message) => !message?.is_system && !message?.extra?.tool_invocations && !message?.extra?.tool_call_id).map((message) => ({ role: message.is_user ? "user" : "assistant", content: String(message.mes ?? "") }));
+}
 function createChatActions(deps) {
   const download = deps.download ?? browserDownload;
   async function transaction(label, work) {
@@ -9498,14 +9501,14 @@ function createChatActions(deps) {
       if (!captured) return { ok: false, reason: "not-writable" };
       const index = deps.currentInvalidIndex?.();
       const plan = deps.rollbackManager.buildRecalculationPlan?.(index);
-      if (!plan) return { ok: false, reason: "no-recalculation-boundary" };
+      if (!plan || Array.isArray(plan) && !plan.length || plan.count === 0) return { ok: false, reason: "no-recalculation-boundary" };
       if (!await deps.confirm({ action: "recalculate", plan })) return { ok: false, reason: "cancelled" };
       return deps.rollbackManager.recalculate(index);
     },
     reroll: () => transaction("reroll", async (captured) => {
       const records = deps.ledger.list();
       const old = deps.selectedCheck?.() ?? records.findLast((record2) => record2.kind === "check" && record2.branchId === captured.ref.branchId);
-      if (!old?.request || old.kind !== "check") return { ok: false, reason: "missing-check" };
+      if (!old?.request || old.kind !== "check" || old.branchId !== captured.ref.branchId) return { ok: false, reason: "missing-check" };
       const preset = deps.preset(captured.preset.id);
       if (!preset?.readActor || !preset?.writeActor) return { ok: false, reason: "rules-unavailable" };
       let result2;
@@ -9551,7 +9554,7 @@ function createChatActions(deps) {
       if (!captured) return { ok: false, reason: "not-writable" };
       let candidate;
       try {
-        candidate = await deps.modelService.requestSummary({ profileId: deps.config().recorderProfileId, presetId: captured.preset.id, messages: captured.messages, version: captured.stateVersion + 1 });
+        candidate = await deps.modelService.requestSummary({ profileId: deps.config().recorderProfileId, presetId: captured.preset.id, messages: summaryMessages(captured.messages), version: captured.stateVersion + 1 });
       } catch (error) {
         return { ok: false, reason: "summary-failed", errors: [{ message: safeText(error?.message ?? error) }] };
       }
@@ -9560,7 +9563,8 @@ function createChatActions(deps) {
       candidate.version = captured.stateVersion + 1;
       const valid = deps.validateState(captured.preset.id, candidate);
       if (!valid.ok) return { ok: false, reason: "invalid-state", errors: valid.errors };
-      if (!await deps.confirm({ action: "resummarize", candidate: safeText(candidate) })) return { ok: false, reason: "cancelled" };
+      const operations = deps.diffState?.(captured.envelope.activeSnapshot, candidate) ?? [];
+      if (!await deps.confirm({ action: "resummarize", candidate: safeText(candidate), operations })) return { ok: false, reason: "cancelled" };
       return deps.queue.enqueue(captured.context.chatId, `resummarize-${deps.makeId()}`, async (signal) => {
         signal.throwIfAborted();
         if (!same(deps, captured)) return { ok: false, reason: "stale" };
@@ -9621,7 +9625,7 @@ function diffState(before, after, path = "") {
   return operations;
 }
 function pickPresetFile() {
-  if (typeof document === "undefined") return Promise.resolve(null);
+  if (typeof document === "undefined" || !document.body) return Promise.resolve(null);
   return new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
@@ -9632,9 +9636,17 @@ function pickPresetFile() {
       resolve(value);
     };
     input.addEventListener("change", () => finish(input.files?.[0] ?? null), { once: true });
+    input.addEventListener("cancel", () => finish(null), { once: true });
     document.body.append(input);
     input.click();
   });
+}
+function firstInvalidHistoryIndex(adapter) {
+  const chat = adapter.getContext?.()?.chat ?? [];
+  return chat.findIndex((message) => (message.swipe_info ?? []).some((swipe) => {
+    const branch = swipe?.extra?.[NAMESPACE]?.branch;
+    return ["stale", "invalidated", "failed"].includes(branch?.status) || (branch?.segments ?? []).some((segment) => ["stale", "invalidated", "failed"].includes(segment?.status));
+  }));
 }
 async function bootstrap({ adapter, dependencies } = {}) {
   const runtimeAdapter = adapter ?? (await import("./st-runtime-SR4MNLUA.js")).createRuntimeAdapter();
@@ -9775,7 +9787,11 @@ async function bootstrap({ adapter, dependencies } = {}) {
     const content = details.content instanceof globalThis.HTMLElement ? details.content : Object.assign(document.createElement("div"), { textContent: details.message ?? JSON.stringify(details) });
     return await new context.Popup(content, context.POPUP_TYPE?.CONFIRM, "", {}).show() === context.POPUP_RESULT?.AFFIRMATIVE;
   });
-  const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: (id) => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), validateDamage: validate2(damageValidator), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex: resolved.currentInvalidIndex, pickFile: resolved.pickPresetFile ?? pickPresetFile, selectedCheck: resolved.selectedCheck, download: resolved.download });
+  const currentInvalidIndex = resolved.currentInvalidIndex ?? (() => {
+    const index = firstInvalidHistoryIndex(runtimeAdapter);
+    return index < 0 ? void 0 : index;
+  });
+  const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: (id) => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), validateDamage: validate2(damageValidator), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex, pickFile: resolved.pickPresetFile ?? pickPresetFile, selectedCheck: resolved.selectedCheck, download: resolved.download, diffState });
   let ui;
   try {
     orchestrator.start();
@@ -9849,7 +9865,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
       },
       rollbackManager,
       recalculateCurrentBranch: chatActions.recalculate,
-      currentInvalidIndex: resolved.currentInvalidIndex,
+      currentInvalidIndex,
       rerollSelectedCheck: chatActions.reroll,
       applyManualDamage: (input) => chatActions.applyDamage(input),
       resummarizeCurrentBranch: chatActions.resummarize,
