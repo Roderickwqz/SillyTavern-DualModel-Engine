@@ -189,6 +189,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         await orchestrator.initializeChat();
         ui = createUIController({
             adapter: runtimeAdapter, queue, capabilities: probeHostCapabilities(runtimeAdapter), presetManager,
+            getToolProbe: () => runtimeAdapter.getSettings?.().toolProbe,
             getGlobalConfig: () => runtimeAdapter.getGlobalSettings?.() ?? runtimeAdapter.getSettings?.() ?? {},
             getCharacterConfig: () => { const character = runtimeAdapter.getCurrentCharacter?.(); return character?.data?.extensions?.[NAMESPACE] ?? {}; },
             getChatConfig: () => runtimeAdapter.getChatMetadata?.()?.[NAMESPACE]?.configOverrides ?? {},

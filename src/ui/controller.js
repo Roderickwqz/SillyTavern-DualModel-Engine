@@ -17,6 +17,8 @@ export function createUIController(deps) {
     const diagnostic = () => {
         const reasons = (deps.capabilities?.reasons ?? []).filter(reason => reason !== 'Group chats are not supported' && reason !== 'No supported Recorder connection profile is configured');
         const profiles = deps.listProfiles?.() ?? [];
+        const probe = deps.getToolProbe?.();
+        if (probe && !probe.supported && probe.reason) reasons.push(`Tool calling unavailable: ${probe.reason}`);
         if (getContext().groupId) reasons.push('Group chats are not supported');
         if (!profiles.length) reasons.push('No supported Recorder connection profile is configured');
         for (const scope of ['global', 'character', 'chat']) {

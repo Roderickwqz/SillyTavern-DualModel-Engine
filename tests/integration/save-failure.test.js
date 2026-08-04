@@ -1,14 +1,16 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { bootstrap } from '../../src/index.js';
 import { createAcceptanceHost } from '../fixtures/fake-host.js';
 
-it('keeps the canonical plugin persistence projection byte-identical when every save fails', async () => {
-    const host = createAcceptanceHost();
+it('keeps the canonical plugin persistence projection byte-identical when a Recorder save fails', async () => {
+    let release;
+    const host = createAcceptanceHost({ requestPatch: input => new Promise(resolve => { release = () => resolve({ patch: { base_version: input.baseVersion, operations: [] } }); }) });
     const app = host.attach(await bootstrap({ adapter: host.adapter, dependencies: host.dependencies }));
-    const before = host.snapshotPluginData();
-    host.failAllSaves();
+    await host.beginTurn('act'); await host.endTurn('result');
+    await vi.waitFor(() => expect(host.recorderRequests()).toHaveLength(1));
+    const before = host.snapshotPluginData(); host.failAllSaves();
 
-    await host.runNarrativeTurn('act', 'result');
+    release(); await host.waitFor('acceptance-chat'); await Promise.resolve(); await Promise.resolve();
 
     expect(host.snapshotPluginData()).toBe(before);
     host.failAllSaves(false);

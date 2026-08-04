@@ -39,7 +39,7 @@ export function createNarrativeHost(options = {}) {
 
 // Stateful adapter used by cross-component acceptance tests.  Its workflow
 // methods drive the public bootstrap composition root rather than bypassing it.
-export function createAcceptanceHost({ requestPatch } = {}) {
+export function createAcceptanceHost({ requestPatch, requestProfile } = {}) {
     const listeners = new Map(); const tools = new Map(); const queue = createChatTaskQueue(); let sequence = 0; let failSaves = false;
     const recorderRequests = [];
     const settings = { enabled: true, recorderProfileId: 'recorder', rulePresetId: 'narrative', adjudication: 'automatic-tool', injectionBudget: 1200, customPresets: [] };
@@ -53,7 +53,7 @@ export function createAcceptanceHost({ requestPatch } = {}) {
         registerTool: definition => tools.set(definition.name, definition), unregisterTool: name => tools.delete(name),
         saveChat: async () => { if (failSaves) throw new Error('forced-save-failure'); }, saveSettings: async () => { if (failSaves) throw new Error('forced-save-failure'); },
         saveGlobalSettings: async value => { Object.assign(settings, value); if (failSaves) throw new Error('forced-save-failure'); },
-        countTokens: async text => Math.ceil(text.length / 3), setPrompt: () => {}, clearPrompt: () => {}, requestProfile: async () => ({ content: JSON.stringify({ base_version: 0, operations: [] }) }),
+        countTokens: async text => Math.ceil(text.length / 3), setPrompt: () => {}, clearPrompt: () => {}, requestProfile: async (...args) => requestProfile?.(...args) ?? ({ content: JSON.stringify({ base_version: 0, operations: [] }) }),
     };
     let app;
     const id = prefix => `${prefix}-${++sequence}`;
@@ -72,16 +72,31 @@ export function createAcceptanceHost({ requestPatch } = {}) {
         reloadAdapter() { return adapter; },
         currentPresetId: () => context.chatMetadata.dualModelEngine?.preset?.id,
         currentState: () => structuredClone(context.chatMetadata.dualModelEngine?.activeSnapshot),
-        snapshotPluginData: () => JSON.stringify({ metadata: context.chatMetadata.dualModelEngine ?? null, branches: context.chat.flatMap(message => (message.swipe_info ?? []).map(swipe => swipe.extra?.dualModelEngine?.branch).filter(Boolean)), settings: { customPresets: settings.customPresets } }),
+        snapshotPluginData: () => JSON.stringify({ metadata: context.chatMetadata.dualModelEngine ?? null, messages: context.chat.map(message => ({ extra: message.extra?.dualModelEngine ?? null, swipes: (message.swipe_info ?? []).map(swipe => swipe.extra?.dualModelEngine ?? null) })), settings: { customPresets: settings.customPresets } }),
         failAllSaves(value = true) { failSaves = value; },
         setGroup(value = 'group') { context.groupId = value; }, setChat(idValue) { context.chatId = idValue; },
         seedChat(messages) { context.chat.splice(0, context.chat.length, ...structuredClone(messages)); },
+        async beginTurn(player, type = 'normal') { appendUser(player); return app.orchestrator.beforeGeneration(type); },
+        async endTurn(assistant) { appendAssistant(assistant); return app.orchestrator.afterGeneration(); },
+        waitFor(chatId) { return wait(chatId); },
+        async switchChatNow(idValue) { context.chatId = idValue; await emit('chat'); },
+        async switchSwipeNow(swipeId) { const index = context.chat.length - 1; const message = context.chat[index]; message.swipe_id = swipeId; await emit('swiped', index); },
         async runNarrativeTurn(player, assistant) { appendUser(player); const started = await app.orchestrator.beforeGeneration('normal'); if (!started?.ok) return started; appendAssistant(assistant); const ended = await app.orchestrator.afterGeneration(); await wait(); return ended?.queued ? { ok: context.chatMetadata.dualModelEngine?.stateVersion > 0, started, ended, diagnostics: settings.diagnostics } : ended; },
         async runContinue(delta) { const message = context.chat.findLast(item => !item.is_user); const started = await app.orchestrator.beforeGeneration('continue'); message.mes += delta; const ended = await app.orchestrator.afterGeneration(); await wait(); return ended?.queued ? { ok: true, started, ended } : ended; },
         async bindD20() { settings.rulePresetId = 'd20-lite'; const bound = await app.presetManager.bindChat(context.chatMetadata, 'd20-lite', { confirmedReset: true }); await app.orchestrator.initializeChat(); const actor = { abilities: { strength: 10, dexterity: 14, constitution: 10, intelligence: 10, wisdom: 10, charisma: 10 }, proficientSkills: ['sleight_of_hand'], proficiencyBonus: 2, hp: { current: 10, max: 10, temporary: 0 }, conditions: [] }; const envelope = context.chatMetadata.dualModelEngine; envelope.initialSnapshot.actors.player = structuredClone(actor); envelope.activeSnapshot.actors.player = structuredClone(actor); await app.orchestrator.initializeChat(); return bound; },
         async runFormalCheck(request) { const chatId = context.chatId; appendUser(request.action); await app.orchestrator.beforeGeneration('normal'); const staged = await tools.get('DualModelResolveD20Check').action(request); appendAssistant('The lock opens.'); const ended = await app.orchestrator.afterGeneration(); await wait(chatId); return { record: app.ledger.list().find(record => record.checkId === staged.checkId), staged, ended, records: app.ledger.list(), diagnostics: settings.diagnostics, envelope: structuredClone(context.chatMetadata.dualModelEngine) }; },
         async createSwipeAndRunSameCheck(request) { const chatId = context.chatId; const message = context.chat.findLast(item => !item.is_user); message.swipe_id = 1; message.mes = 'A different outcome.'; message.swipe_info.push({ extra: {} }); await emit('swiped', context.chat.length - 1); await app.orchestrator.beforeGeneration('swipe'); const staged = await tools.get('DualModelResolveD20Check').action(request); await app.orchestrator.afterGeneration(); await wait(chatId); return { record: app.ledger.list().find(record => record.checkId === staged.checkId), staged, records: app.ledger.list(), envelope: structuredClone(context.chatMetadata.dualModelEngine) }; },
-        async importAndBindPreset(text) { await app.presetManager.importPreset(text); return app.presetManager.bindChat(context.chatMetadata, 'relationship-meter', { confirmedReset: true }); },
+        async importAndBindPreset() {
+            let settingsHost = document.querySelector('#extensions_settings');
+            if (!settingsHost) { settingsHost = document.createElement('div'); settingsHost.id = 'extensions_settings'; document.body.append(settingsHost); }
+            await app.ui.mount(); await app.ui.render();
+            settingsHost.querySelector('[data-dme-action="import-preset"]')?.click();
+            await Promise.resolve(); await Promise.resolve(); await app.ui.render();
+            const select = settingsHost.querySelector('[data-scope="chat"] [data-dme-field="rulePresetId"]');
+            select.value = 'relationship-meter'; select.dispatchEvent(new globalThis.Event('change', { bubbles: true }));
+            await wait(); await Promise.resolve(); await app.ui.render();
+            return { ok: context.chatMetadata.dualModelEngine?.preset?.id === 'relationship-meter' };
+        },
         async explicitReroll() {
             let settingsHost = document.querySelector('#extensions_settings');
             if (!settingsHost) { settingsHost = document.createElement('div'); settingsHost.id = 'extensions_settings'; document.body.append(settingsHost); }
