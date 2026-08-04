@@ -1,6 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { createOrchestrator } from '../../src/orchestrator.js';
 import { bootstrap } from '../../src/index.js';
+import { createOrchestratorTestDependencies } from '../fixtures/fake-host.js';
 
 function deps(overrides = {}) {
     const adapter = { events: { CHAT_CHANGED: 'a', GENERATION_AFTER_COMMANDS: 'b', GENERATION_ENDED: 'c', GENERATION_STOPPED: 'd' }, getContext: () => ({ chatId: 'x', chat: [] }), on: vi.fn(), off: vi.fn() };
@@ -47,4 +48,26 @@ it('keeps an existing snapshot readable and disables writes when its pinned pres
     await expect(subject.beforeGeneration('normal')).resolves.toEqual({ ignored: true, reason: 'missing-preset' });
     expect(value.promptInjector.clear).toHaveBeenCalled();
     expect(value.recordDiagnostic).toHaveBeenCalledWith(expect.objectContaining({ reason: 'missing-preset', presetId: 'missing' }));
+});
+
+it('pins generation validation config to the existing envelope preset', async () => {
+    const value = createOrchestratorTestDependencies({ chat: [{ is_user: true, mes: 'go', extra: { dualModelEngine: { messageId: 'u1' } } }] });
+    const envelope = { stateVersion: 0, headRevision: 2, activeSnapshot: { version: 0, inventory: [] }, preset: { id: 'custom-a', version: 1 } };
+    value.store.loadEnvelope = () => envelope; value.getConfig = () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'custom-b', injectionBudget: 100 });
+    value.getPreset = id => ({ id, allowedPaths: [`/${id}`], lockedPaths: ['/version'], injection: [] });
+    const subject = createOrchestrator(value);
+    await expect(subject.beforeGeneration('normal')).resolves.toMatchObject({ ok: true });
+    expect(subject.getActiveGeneration()).toMatchObject({ preset: { id: 'custom-a' }, effectiveConfig: { rulePresetId: 'custom-a' } });
+});
+
+it('pins replay validation to the existing envelope preset', async () => {
+    const assistant = { is_user: false, mes: 'answer', swipe_id: 0, extra: { dualModelEngine: { messageId: 'a1' } }, swipe_info: [{ extra: {} }] };
+    const branch = { branchId: 'b1', segments: [{ checks: [] }] }; const value = createOrchestratorTestDependencies({ chat: [{ is_user: true, mes: 'go', extra: { dualModelEngine: { messageId: 'u1' } } }, assistant] });
+    const envelope = { stateVersion: 0, headRevision: 2, activeSnapshot: { version: 0 }, preset: { id: 'custom-a', version: 1 } };
+    value.store.loadEnvelope = () => envelope; value.store.getBranch = () => branch; value.store.commitSegment = vi.fn(async () => ({ ok: true }));
+    value.getConfig = () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'custom-b', injectionBudget: 100 }); value.getPreset = id => ({ id, allowedPaths: [`/${id}`], lockedPaths: ['/version'], injection: [] });
+    value.modelService.requestPatch = vi.fn(async () => ({ patch: { base_version: 0, operations: [] } })); value.validator.validatePatch = vi.fn(() => ({ ok: true }));
+    const subject = createOrchestrator(value);
+    await expect(subject.replayTurn({ messageIndex: 1, swipeId: 0, baseSnapshot: { version: 0 } })).resolves.toMatchObject({ ok: true });
+    expect(value.validator.validatePatch).toHaveBeenCalledWith('custom-a', expect.anything(), expect.objectContaining({ allowedPaths: ['/custom-a'] }));
 });

@@ -58,7 +58,8 @@ export function createOrchestrator(deps) {
         if (!deps.hasProfile(config.recorderProfileId)) { diagnostic({ reason: 'missing-recorder-profile', profileId: config.recorderProfileId }); return { ignored: true, reason: 'missing-recorder-profile' }; }
         const preset = presetOrNull(envelope.preset?.id ?? config.rulePresetId);
         if (!preset) { deps.promptInjector.clear(); return { ignored: true, reason: 'missing-preset' }; }
-        activeChatId = current.chatId; generation = capture(type, current, envelope, config, preset); if (!generation) { diagnostic({ reason: 'missing-source-branch' }); return { ignored: true, reason: 'missing-source-branch' }; }
+        const pinnedConfig = { ...config, rulePresetId: envelope.preset.id, presetVersion: envelope.preset.version };
+        activeChatId = current.chatId; generation = capture(type, current, envelope, pinnedConfig, preset); if (!generation) { diagnostic({ reason: 'missing-source-branch' }); return { ignored: true, reason: 'missing-source-branch' }; }
         const captured = generation; let adjudication = { injectedText: '' };
         try {
             adjudication = await deps.adjudicator?.resolveBeforeGeneration?.({ strategy: captured.effectiveConfig.adjudication, recorderProfileId: captured.effectiveConfig.recorderProfileId, playerText: captured.playerText, baseSnapshot: captured.baseSnapshot, branchId: captured.branchId, baseBranchId: captured.baseBranchId, userMessageId: captured.userMessageId, generation: captured, signal: captured.abortController.signal }) ?? adjudication;
@@ -109,21 +110,22 @@ export function createOrchestrator(deps) {
         const current = context(); const config = clone(deps.getConfig());
         if (current.groupId || !config.enabled) return { ok: false, reason: 'read-only' };
         if (!deps.hasProfile(config.recorderProfileId)) return { ok: false, reason: 'missing-recorder-profile' };
-        const preset = presetOrNull(config.rulePresetId); if (!preset) return { ok: false, reason: 'missing-preset' };
         const message = current.chat[messageIndex];
         if (!message || message.is_user || message.is_system || (message.swipe_id ?? 0) !== swipeId) return { ok: false, reason: 'stale-message' };
         const branch = deps.store.getBranch(message, swipeId); if (!branch?.branchId) return { ok: false, reason: 'missing-source-branch' };
         const envelope = envelopeValue(deps.store.loadEnvelope()); if (!envelope) return { ok: false, reason: 'missing-envelope' };
+        const pinnedConfig = { ...config, rulePresetId: envelope.preset.id, presetVersion: envelope.preset.version };
+        const preset = presetOrNull(pinnedConfig.rulePresetId); if (!preset) return { ok: false, reason: 'missing-preset' };
         const previousUser = current.chat.slice(0, messageIndex).findLast(item => item?.is_user);
         const capturedMessageId = messageId(message); const capturedText = message.mes ?? ''; const capturedUserId = previousUser ? messageId(previousUser) : null; const capturedUserText = previousUser?.mes ?? '';
         const checks = clone(branch.segments?.flatMap(segment => segment.checks ?? []) ?? []);
         try {
-            const response = await deps.modelService.requestPatch({ profileId: config.recorderProfileId, baseVersion: baseSnapshot.version, oldState: baseSnapshot, playerText: capturedUserText, assistantText: capturedText, checks, signal });
+            const response = await deps.modelService.requestPatch({ profileId: pinnedConfig.recorderProfileId, baseVersion: baseSnapshot.version, oldState: baseSnapshot, playerText: capturedUserText, assistantText: capturedText, checks, signal });
             const latest = context(); const latestMessage = latest.chat?.find(item => item?.extra?.dualModelEngine?.messageId === capturedMessageId); const latestUser = capturedUserId ? latest.chat?.find(item => item?.extra?.dualModelEngine?.messageId === capturedUserId) : null;
             if (latest.chatId !== current.chatId || !latestMessage || latestMessage.mes !== capturedText || (latestMessage.swipe_id ?? 0) !== swipeId || (capturedUserId && (!latestUser || latestUser.mes !== capturedUserText))) return { ok: false, reason: 'assistant-text-mismatch' };
-            const validation = deps.validator.validatePatch(config.rulePresetId, response.patch, { expectedVersion: baseSnapshot.version, allowedPaths: preset.allowedPaths, lockedPaths: [...preset.lockedPaths, ...(preset.ruleLockedPaths ?? [])] });
+            const validation = deps.validator.validatePatch(pinnedConfig.rulePresetId, response.patch, { expectedVersion: baseSnapshot.version, allowedPaths: preset.allowedPaths, lockedPaths: [...preset.lockedPaths, ...(preset.ruleLockedPaths ?? [])] });
             if (!validation.ok) return { ok: false, reason: 'invalid-patch' };
-            const applied = deps.applyPatch({ state: baseSnapshot, patch: response.patch, policy: preset, validateState: state => deps.validator.validateState(config.rulePresetId, state) });
+            const applied = deps.applyPatch({ state: baseSnapshot, patch: response.patch, policy: preset, validateState: state => deps.validator.validateState(pinnedConfig.rulePresetId, state) });
             if (!applied.ok) return { ok: false, reason: 'invalid-state' }; applied.value.version = baseSnapshot.version + 1;
             const committed = await deps.store.commitSegment({ chatId: current.chatId, message: latestMessage, messageId: capturedMessageId, branchId: branch.branchId, swipeId, expectedHeadRevision: envelope.headRevision, baseStateVersion: baseSnapshot.version, baseSnapshot, requestId: deps.makeId?.() ?? crypto.randomUUID(), userMessageId: capturedUserId, patch: response.patch, checks, assistantText: capturedText, nextState: applied.value, isContinue: false, signal });
             return committed.ok ? { ok: true, snapshot: clone(applied.value), stateVersion: applied.value.version } : committed;
