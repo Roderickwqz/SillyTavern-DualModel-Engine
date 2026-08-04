@@ -87,6 +87,15 @@ it('rejects an audit for a pending branch without mutation', async () => {
     expect(saveChat).not.toHaveBeenCalled();
 });
 
+it('commits a current-branch state mutation atomically and rolls it back on save failure', async () => {
+    const branch = { branchId: 'b1', status: 'committed', segments: [{ checks: [], postSnapshot: { version: 2, value: 2 } }] };
+    const { store, context, current, saveChat } = setup({ current: message(branch), metadata: envelope({ activeRef: { messageId: 'm1', swipeId: 0, branchId: 'b1' } }) });
+    await expect(store.commitCurrentBranchMutation({ chatId: 'chat-a', expectedHeadRevision: 7, baseVersion: 2, activeRef: context.chatMetadata.dualModelEngine.activeRef, nextState: { version: 3, value: 9 }, patch: { operations: [{ op: 'replace', path: '/value', value: 9 }] }, source: 'user-editor' })).resolves.toMatchObject({ ok: true, stateVersion: 3, headRevision: 8 });
+    expect(current.swipe_info[0].extra.dualModelEngine.branch.segments.at(-1)).toMatchObject({ source: 'user-editor', postSnapshot: { version: 3, value: 9 } }); expect(saveChat).toHaveBeenCalledOnce();
+    const failing = setup({ current: message(branch), metadata: envelope({ activeRef: { messageId: 'm1', swipeId: 0, branchId: 'b1' } }), saveChat: vi.fn().mockRejectedValue(new Error('disk')) }); const before = structuredClone(failing.context);
+    await expect(failing.store.commitCurrentBranchMutation({ chatId: 'chat-a', expectedHeadRevision: 7, baseVersion: 2, activeRef: failing.context.chatMetadata.dualModelEngine.activeRef, nextState: { version: 3, value: 9 }, patch: { operations: [] }, source: 'user-editor' })).resolves.toMatchObject({ ok: false, reason: 'save-failed' }); expect(failing.context).toEqual(before);
+});
+
 it('does not mutate after a delayed hash when its commit signal is aborted', async () => {
     let resolveHash; const hashText = vi.fn(() => new Promise(resolve => { resolveHash = resolve; })); const { context, current, saveChat } = setup(); const store = createStateStore({ adapter: { getContext: () => context, saveChat }, makeId: () => 'generated', hashText }); const controller = new AbortController(); const before = structuredClone(context);
     const pending = store.commitSegment(commitInput(current, { signal: controller.signal })); await vi.waitFor(() => expect(hashText).toHaveBeenCalledOnce()); controller.abort(); resolveHash('hash:answer');

@@ -1,4 +1,8 @@
 import template from './settings.html?raw';
+import { createStateTab } from './state-tab.js';
+import { renderAudit, renderStatusBar } from './audit-tab.js';
+import { renderRules } from './rules-tab.js';
+import { renderDiagnostics } from './diagnostics-tab.js';
 
 const MIN_BUDGET = 256;
 const MAX_BUDGET = 8192;
@@ -45,7 +49,15 @@ export function createUIController(deps) {
         setText('[data-dme-role="chat-disabled-reason"]', isGroup ? 'Chat settings are unavailable in group chats.' : '');
         setText('[data-dme-role="task-status"]', status);
         setText('[data-dme-role="diagnostic-reasons"]', diagnostic().join('\n'));
-        const exportButton = root.querySelector('[data-dme-action="export-preset"]'); if (exportButton) exportButton.disabled = !exportRawData;
+        const exportButton = root.querySelector('[data-dme-action="export-preset"]'); if (exportButton) exportButton.disabled = !exportRawData && !deps.downloadPreset;
+        const envelope = deps.getEnvelope?.() ?? getContext().chatMetadata?.dualModelEngine;
+        const state = envelope?.activeSnapshot;
+        const editor = root.querySelector('[data-dme-role="state-json"]'); if (editor && document.activeElement !== editor) editor.value = JSON.stringify(state ?? {}, null, 2);
+        renderAudit(root.querySelector('[data-dme-role="checks-list"]'), deps.listChecks?.() ?? []);
+        renderAudit(root.querySelector('[data-dme-role="history-list"]'), deps.listHistory?.() ?? []);
+        renderRules(root.querySelector('[data-dme-role="rules-list"]'), presets);
+        renderDiagnostics(root.querySelector('[data-dme-role="diagnostics-json"]'), deps.listDiagnostics?.() ?? diagnostic());
+        renderStatusBar(root.querySelector('[data-dme-role="status-bar"]'), state, deps.getPresetUiFields?.() ?? [], deps.readStatePath ?? (() => undefined));
     }
     async function save(scope, patch) {
         if (scope === 'global') return deps.saveGlobalConfig(copy({ ...deps.getGlobalConfig?.(), ...patch }));
@@ -87,8 +99,24 @@ export function createUIController(deps) {
         await render();
     }
     async function onClick(event) {
-        if (event.target.dataset.dmeAction === 'export-preset' && exportRawData) { status = String(await exportRawData()); await render(); return; }
-        if (event.target.dataset.dmeAction !== 'probe-tools' || probePending) return;
+        const target = event.target.closest?.('[data-dme-action], [data-dme-tab]');
+        if (!target || !root?.contains(target)) return;
+        if (target.dataset.dmeTab) { for (const button of root.querySelectorAll('[role="tab"]')) { const selected = button === target; button.setAttribute('aria-selected', String(selected)); const panel = root.querySelector(`#${button.getAttribute('aria-controls')}`); if (panel) panel.hidden = !selected; } return; }
+        const action = target.dataset.dmeAction;
+        const safe = async fn => { try { await fn?.(); } catch (error) { status = error?.message ?? String(error); } await render(); };
+        if (action === 'edit-state') { root.querySelector('[data-dme-role="state-json"]')?.focus(); return; }
+        if (action === 'save-state') return safe(async () => {
+            const envelope = deps.getEnvelope?.() ?? getContext().chatMetadata?.dualModelEngine; const before = envelope?.activeSnapshot;
+            const text = root.querySelector('[data-dme-role="state-json"]')?.value ?? '';
+            const tab = createStateTab({ validateState: deps.validateState ?? (() => ({ ok: true, errors: [] })), diffState: deps.diffState ?? (() => []), confirm: confirmAction, commitManualPatch: deps.commitManualPatch ?? (async () => ({ ok: false, reason: 'unavailable' })) });
+            const parsed = tab.parse(text); if (!parsed.ok) { status = 'Invalid state JSON'; return; }
+            const policy = deps.getPresetPolicy?.() ?? {}; const result = await tab.saveStateEdit(before, parsed.value, [...(policy.lockedPaths ?? []), ...(policy.ruleLockedPaths ?? [])], [...(policy.allowedPaths ?? []), ...(policy.lockedPaths ?? []), ...(policy.ruleLockedPaths ?? [])]);
+            root.querySelector('[data-dme-role="patch-preview"]').textContent = JSON.stringify(result.operations ?? tab.preview(before, parsed.value), null, 2); status = result.reason ?? (result.ok ? 'State saved' : 'State not saved');
+        });
+        const actions = { recalculate: () => deps.rollbackManager?.recalculate?.(deps.currentInvalidIndex?.()), reroll: deps.rerollSelectedCheck, 'apply-damage': deps.applyManualDamage, resummarize: deps.resummarizeCurrentBranch, 'import-preset': deps.importPresetFromPicker, 'export-preset': deps.downloadPreset ?? exportRawData, 'export-raw': deps.downloadRawData };
+        if (actions[action]) return safe(actions[action]);
+        if (action === 'export-preset' && exportRawData) { status = String(await exportRawData()); await render(); return; }
+        if (action !== 'probe-tools' || probePending) return;
         probePending = Promise.resolve(deps.runToolProbe?.()).then(result => deps.saveProbeResult?.(result)).catch(error => { status = error.message ?? String(error); }).finally(() => { probePending = null; });
         await probePending; await render();
     }

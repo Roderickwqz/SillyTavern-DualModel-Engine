@@ -25,7 +25,15 @@
     <output data-dme-role="chat-disabled-reason" aria-live="polite"></output>
   </fieldset>
   <output data-dme-role="task-status" aria-live="polite"></output>
+  <div role="tablist" aria-label="DualModel chat tools">
+    <button type="button" role="tab" aria-controls="dme-state" aria-selected="true" data-dme-tab="state">State</button><button type="button" role="tab" aria-controls="dme-checks" aria-selected="false" data-dme-tab="checks">Checks</button><button type="button" role="tab" aria-controls="dme-history" aria-selected="false" data-dme-tab="history">History</button><button type="button" role="tab" aria-controls="dme-rules" aria-selected="false" data-dme-tab="rules">Rules</button><button type="button" role="tab" aria-controls="dme-diagnostics" aria-selected="false" data-dme-tab="diagnostics">Diagnostics</button>
+  </div>
+  <aside data-dme-role="status-bar" aria-live="polite"></aside>
+  <section id="dme-state" role="tabpanel"><textarea data-dme-role="state-json"></textarea><pre data-dme-role="patch-preview"></pre><button type="button" data-dme-action="edit-state">Edit state</button><button type="button" data-dme-action="save-state">Save state</button></section>
+  <section id="dme-checks" role="tabpanel" hidden><div data-dme-role="checks-list"></div><button type="button" data-dme-action="reroll">Reroll</button><button type="button" data-dme-action="apply-damage">Apply damage</button></section>
+  <section id="dme-history" role="tabpanel" hidden><div data-dme-role="history-list"></div><button type="button" data-dme-action="recalculate">Recalculate</button><button type="button" data-dme-action="resummarize">Resummarize</button></section>
+  <section id="dme-rules" role="tabpanel" hidden><div data-dme-role="rules-list"></div><button type="button" data-dme-action="import-preset">Import</button><button type="button" data-dme-action="export-preset">Export</button></section>
+  <section id="dme-diagnostics" role="tabpanel" hidden><pre data-dme-role="diagnostics-json"></pre><button type="button" data-dme-action="export-raw">Export raw data</button></section>
   <button type="button" data-dme-action="probe-tools">Probe tool calling</button>
-  <button type="button" data-dme-action="export-preset" disabled>Export preset data</button>
   <pre data-dme-role="diagnostic-reasons"></pre>
 </section>

@@ -7317,6 +7317,39 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
       return result("save-failed", error);
     }
   }
+  async function commitCurrentBranchMutation({ chatId, expectedHeadRevision, baseVersion, activeRef, nextState, patch, source = "user-editor", record = null }) {
+    const context = adapter.getContext?.();
+    const envelope = context?.chatMetadata?.[NAMESPACE];
+    if (!validEnvelope(envelope) || context?.chatId !== chatId || !Array.isArray(context?.chat)) return result("stale-chat");
+    if (envelope.headRevision !== expectedHeadRevision) return result("head-conflict");
+    if (envelope.stateVersion !== baseVersion || nextState?.version !== baseVersion + 1) return result("state-conflict");
+    if (!activeRef || envelope.activeRef?.messageId !== activeRef.messageId || envelope.activeRef?.swipeId !== activeRef.swipeId || envelope.activeRef?.branchId !== activeRef.branchId) return result("active-ref-conflict");
+    const message = context.chat.find((item) => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId);
+    const branch = getBranch(message, activeRef.swipeId);
+    if (!message || (message.swipe_id ?? 0) !== activeRef.swipeId || branch?.branchId !== activeRef.branchId || branch.status !== "committed" || !branch.segments?.length) return result("missing-active-branch");
+    const capturedChat = context.chat;
+    const metadataBefore = clone2(envelope);
+    const extraBefore = clone2(message.extra);
+    const swipesBefore = clone2(message.swipe_info);
+    try {
+      const latest = adapter.getContext?.();
+      if (latest?.chatId !== chatId || latest.chat !== capturedChat || latest.chatMetadata?.[NAMESPACE] !== envelope || envelope.headRevision !== expectedHeadRevision || envelope.stateVersion !== baseVersion) return result("stale-chat");
+      const segment = { source, patch: clone2(patch ?? { operations: [] }), checks: record ? [clone2(record)] : [], postSnapshot: clone2(nextState) };
+      branch.segments.push(segment);
+      message.extra[NAMESPACE] = clone2(message.swipe_info[activeRef.swipeId].extra[NAMESPACE]);
+      envelope.activeSnapshot = clone2(nextState);
+      envelope.stateVersion = nextState.version;
+      envelope.headRevision += 1;
+      envelope.taskStatus = { state: "idle", requestId: null };
+      await adapter.saveChat();
+      return { ok: true, stateVersion: envelope.stateVersion, headRevision: envelope.headRevision, record: record ? clone2(record) : void 0 };
+    } catch (error) {
+      context.chatMetadata[NAMESPACE] = metadataBefore;
+      message.extra = extraBefore;
+      message.swipe_info = swipesBefore;
+      return result("save-failed", error);
+    }
+  }
   async function restoreBranch(message, swipeId) {
     const context = adapter.getContext?.();
     const envelope = context?.chatMetadata?.[NAMESPACE];
@@ -7592,7 +7625,7 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     }
     return [...records.values()].map(clone2);
   }
-  return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, commitCurrentBranchAudit, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef, describePresetReset, resetForPreset };
+  return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, commitCurrentBranchAudit, commitCurrentBranchMutation, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef, describePresetReset, resetForPreset };
 }
 
 // src/json-patch.js
@@ -9059,7 +9092,75 @@ function createPresetManager({ settings, builtInPresets = [], registerPreset, un
 }
 
 // src/ui/settings.html?raw
-var settings_default = '<section id="dualmodel-settings" class="dualmodel-panel" aria-label="DualModel Engine">\n  <h3>DualModel Engine</h3>\n  <fieldset data-scope="global"><legend>Global defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <label>Update policy <select data-dme-field="updatePolicy"><option value="after-each-reply">After each reply</option><option value="manual">Manual</option></select></label>\n    <label><input data-dme-field="showStatusBar" type="checkbox"> Show status bar</label>\n  </fieldset>\n  <fieldset data-scope="character" data-dme-role="character-settings"><legend>Current character defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n  </fieldset>\n  <fieldset data-scope="chat" data-dme-role="chat-settings"><legend>Current chat</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <output data-dme-role="chat-disabled-reason" aria-live="polite"></output>\n  </fieldset>\n  <output data-dme-role="task-status" aria-live="polite"></output>\n  <button type="button" data-dme-action="probe-tools">Probe tool calling</button>\n  <button type="button" data-dme-action="export-preset" disabled>Export preset data</button>\n  <pre data-dme-role="diagnostic-reasons"></pre>\n</section>\n';
+var settings_default = '<section id="dualmodel-settings" class="dualmodel-panel" aria-label="DualModel Engine">\n  <h3>DualModel Engine</h3>\n  <fieldset data-scope="global"><legend>Global defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <label>Update policy <select data-dme-field="updatePolicy"><option value="after-each-reply">After each reply</option><option value="manual">Manual</option></select></label>\n    <label><input data-dme-field="showStatusBar" type="checkbox"> Show status bar</label>\n  </fieldset>\n  <fieldset data-scope="character" data-dme-role="character-settings"><legend>Current character defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n  </fieldset>\n  <fieldset data-scope="chat" data-dme-role="chat-settings"><legend>Current chat</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <output data-dme-role="chat-disabled-reason" aria-live="polite"></output>\n  </fieldset>\n  <output data-dme-role="task-status" aria-live="polite"></output>\n  <div role="tablist" aria-label="DualModel chat tools">\n    <button type="button" role="tab" aria-controls="dme-state" aria-selected="true" data-dme-tab="state">State</button><button type="button" role="tab" aria-controls="dme-checks" aria-selected="false" data-dme-tab="checks">Checks</button><button type="button" role="tab" aria-controls="dme-history" aria-selected="false" data-dme-tab="history">History</button><button type="button" role="tab" aria-controls="dme-rules" aria-selected="false" data-dme-tab="rules">Rules</button><button type="button" role="tab" aria-controls="dme-diagnostics" aria-selected="false" data-dme-tab="diagnostics">Diagnostics</button>\n  </div>\n  <aside data-dme-role="status-bar" aria-live="polite"></aside>\n  <section id="dme-state" role="tabpanel"><textarea data-dme-role="state-json"></textarea><pre data-dme-role="patch-preview"></pre><button type="button" data-dme-action="edit-state">Edit state</button><button type="button" data-dme-action="save-state">Save state</button></section>\n  <section id="dme-checks" role="tabpanel" hidden><div data-dme-role="checks-list"></div><button type="button" data-dme-action="reroll">Reroll</button><button type="button" data-dme-action="apply-damage">Apply damage</button></section>\n  <section id="dme-history" role="tabpanel" hidden><div data-dme-role="history-list"></div><button type="button" data-dme-action="recalculate">Recalculate</button><button type="button" data-dme-action="resummarize">Resummarize</button></section>\n  <section id="dme-rules" role="tabpanel" hidden><div data-dme-role="rules-list"></div><button type="button" data-dme-action="import-preset">Import</button><button type="button" data-dme-action="export-preset">Export</button></section>\n  <section id="dme-diagnostics" role="tabpanel" hidden><pre data-dme-role="diagnostics-json"></pre><button type="button" data-dme-action="export-raw">Export raw data</button></section>\n  <button type="button" data-dme-action="probe-tools">Probe tool calling</button>\n  <pre data-dme-role="diagnostic-reasons"></pre>\n</section>\n';
+
+// src/ui/state-tab.js
+function touches(operation, path) {
+  return operation.path === path || operation.path.startsWith(`${path}/`) || path.startsWith(`${operation.path}/`);
+}
+function createStateTab({ validateState, diffState: diffState2, confirm, commitManualPatch }) {
+  return {
+    parse(text) {
+      try {
+        return { ok: true, value: JSON.parse(text) };
+      } catch (error) {
+        return { ok: false, reason: "invalid-json", error };
+      }
+    },
+    preview(before, after) {
+      return diffState2(before, after);
+    },
+    async saveStateEdit(before, after, lockedPaths = [], allowedPaths = null) {
+      if (after?.version !== before?.version) return { ok: false, reason: "system-locked-version" };
+      const validation = validateState(after);
+      if (!validation?.ok) return { ok: false, reason: "invalid-state", errors: validation?.errors ?? [] };
+      const operations = diffState2(before, after);
+      if (!operations.length) return { ok: true, unchanged: true, operations };
+      if (allowedPaths && operations.some((operation) => !allowedPaths.some((path) => operation.path === path || operation.path.startsWith(`${path}/`)))) return { ok: false, reason: "path-not-allowed", operations };
+      const touchedLocked = lockedPaths.filter((path) => operations.some((operation) => touches(operation, path)));
+      if (touchedLocked.length && !await confirm({ action: "edit-locked-state", lockedPaths: touchedLocked, operations })) return { ok: false, reason: "cancelled" };
+      return commitManualPatch({ baseVersion: before.version, operations, nextState: after, source: "user-editor" });
+    }
+  };
+}
+
+// src/ui/audit-tab.js
+function renderAudit(container, records = []) {
+  container.replaceChildren();
+  for (const record of records) {
+    const row = document.createElement("article");
+    row.className = `dualmodel-audit dualmodel-audit--${record.status ?? "committed"}`;
+    const title = document.createElement("strong");
+    title.textContent = `${record.kind ?? "record"}: ${record.action ?? record.path ?? record.reason ?? ""}`;
+    const detail = document.createElement("pre");
+    detail.textContent = JSON.stringify(record, null, 2);
+    row.append(title, detail);
+    container.append(row);
+  }
+}
+function renderStatusBar(container, state, uiFields = [], readPath = () => void 0) {
+  container.replaceChildren();
+  for (const field of uiFields) {
+    const item = document.createElement("span");
+    item.textContent = `${field.label}: ${JSON.stringify(readPath(state, field.path))}`;
+    container.append(item);
+  }
+}
+
+// src/ui/rules-tab.js
+function renderRules(container, presets = []) {
+  container.replaceChildren();
+  for (const preset of presets) {
+    const item = document.createElement("div");
+    item.textContent = `${preset.name ?? preset.id} v${preset.presetVersion ?? ""}`;
+    container.append(item);
+  }
+}
+
+// src/ui/diagnostics-tab.js
+function renderDiagnostics(container, value) {
+  container.textContent = JSON.stringify(value ?? [], null, 2);
+}
 
 // src/ui/controller.js
 var MIN_BUDGET = 256;
@@ -9125,7 +9226,16 @@ function createUIController(deps) {
     setText('[data-dme-role="task-status"]', status);
     setText('[data-dme-role="diagnostic-reasons"]', diagnostic().join("\n"));
     const exportButton = root.querySelector('[data-dme-action="export-preset"]');
-    if (exportButton) exportButton.disabled = !exportRawData;
+    if (exportButton) exportButton.disabled = !exportRawData && !deps.downloadPreset;
+    const envelope = deps.getEnvelope?.() ?? getContext().chatMetadata?.dualModelEngine;
+    const state = envelope?.activeSnapshot;
+    const editor = root.querySelector('[data-dme-role="state-json"]');
+    if (editor && document.activeElement !== editor) editor.value = JSON.stringify(state ?? {}, null, 2);
+    renderAudit(root.querySelector('[data-dme-role="checks-list"]'), deps.listChecks?.() ?? []);
+    renderAudit(root.querySelector('[data-dme-role="history-list"]'), deps.listHistory?.() ?? []);
+    renderRules(root.querySelector('[data-dme-role="rules-list"]'), presets);
+    renderDiagnostics(root.querySelector('[data-dme-role="diagnostics-json"]'), deps.listDiagnostics?.() ?? diagnostic());
+    renderStatusBar(root.querySelector('[data-dme-role="status-bar"]'), state, deps.getPresetUiFields?.() ?? [], deps.readStatePath ?? (() => void 0));
   }
   async function save(scope, patch) {
     if (scope === "global") return deps.saveGlobalConfig(copy({ ...deps.getGlobalConfig?.(), ...patch }));
@@ -9193,12 +9303,53 @@ function createUIController(deps) {
     await render();
   }
   async function onClick(event) {
-    if (event.target.dataset.dmeAction === "export-preset" && exportRawData) {
+    const target = event.target.closest?.("[data-dme-action], [data-dme-tab]");
+    if (!target || !root?.contains(target)) return;
+    if (target.dataset.dmeTab) {
+      for (const button of root.querySelectorAll('[role="tab"]')) {
+        const selected = button === target;
+        button.setAttribute("aria-selected", String(selected));
+        const panel = root.querySelector(`#${button.getAttribute("aria-controls")}`);
+        if (panel) panel.hidden = !selected;
+      }
+      return;
+    }
+    const action = target.dataset.dmeAction;
+    const safe = async (fn) => {
+      try {
+        await fn?.();
+      } catch (error) {
+        status = error?.message ?? String(error);
+      }
+      await render();
+    };
+    if (action === "edit-state") {
+      root.querySelector('[data-dme-role="state-json"]')?.focus();
+      return;
+    }
+    if (action === "save-state") return safe(async () => {
+      const envelope = deps.getEnvelope?.() ?? getContext().chatMetadata?.dualModelEngine;
+      const before = envelope?.activeSnapshot;
+      const text = root.querySelector('[data-dme-role="state-json"]')?.value ?? "";
+      const tab = createStateTab({ validateState: deps.validateState ?? (() => ({ ok: true, errors: [] })), diffState: deps.diffState ?? (() => []), confirm: confirmAction, commitManualPatch: deps.commitManualPatch ?? (async () => ({ ok: false, reason: "unavailable" })) });
+      const parsed = tab.parse(text);
+      if (!parsed.ok) {
+        status = "Invalid state JSON";
+        return;
+      }
+      const policy = deps.getPresetPolicy?.() ?? {};
+      const result2 = await tab.saveStateEdit(before, parsed.value, [...policy.lockedPaths ?? [], ...policy.ruleLockedPaths ?? []], [...policy.allowedPaths ?? [], ...policy.lockedPaths ?? [], ...policy.ruleLockedPaths ?? []]);
+      root.querySelector('[data-dme-role="patch-preview"]').textContent = JSON.stringify(result2.operations ?? tab.preview(before, parsed.value), null, 2);
+      status = result2.reason ?? (result2.ok ? "State saved" : "State not saved");
+    });
+    const actions = { recalculate: () => deps.rollbackManager?.recalculate?.(deps.currentInvalidIndex?.()), reroll: deps.rerollSelectedCheck, "apply-damage": deps.applyManualDamage, resummarize: deps.resummarizeCurrentBranch, "import-preset": deps.importPresetFromPicker, "export-preset": deps.downloadPreset ?? exportRawData, "export-raw": deps.downloadRawData };
+    if (actions[action]) return safe(actions[action]);
+    if (action === "export-preset" && exportRawData) {
       status = String(await exportRawData());
       await render();
       return;
     }
-    if (event.target.dataset.dmeAction !== "probe-tools" || probePending) return;
+    if (action !== "probe-tools" || probePending) return;
     probePending = Promise.resolve(deps.runToolProbe?.()).then((result2) => deps.saveProbeResult?.(result2)).catch((error) => {
       status = error.message ?? String(error);
     }).finally(() => {
@@ -9278,6 +9429,16 @@ var adjudicator_schema_default = {
 };
 
 // src/index.js
+function pointer(part) {
+  return String(part).replaceAll("~", "~0").replaceAll("/", "~1");
+}
+function diffState(before, after, path = "") {
+  if (JSON.stringify(before) === JSON.stringify(after)) return [];
+  if (!before || !after || typeof before !== "object" || typeof after !== "object" || Array.isArray(before) || Array.isArray(after)) return [{ op: before === void 0 ? "add" : after === void 0 ? "remove" : "replace", path, ...after === void 0 ? {} : { value: structuredClone(after) } }];
+  const operations = [];
+  for (const key of /* @__PURE__ */ new Set([...Object.keys(before), ...Object.keys(after)])) operations.push(...diffState(before[key], after[key], `${path}/${pointer(key)}`));
+  return operations;
+}
 async function bootstrap({ adapter, dependencies } = {}) {
   const runtimeAdapter = adapter ?? (await import("./st-runtime-SR4MNLUA.js")).createRuntimeAdapter();
   const presets = [narrativePreset, d20LitePreset];
@@ -9433,6 +9594,38 @@ async function bootstrap({ adapter, dependencies } = {}) {
       saveChatConfig: (value, identity) => runtimeAdapter.saveChatSettings?.(value, identity),
       listProfiles: () => runtimeAdapter.listProfiles?.() ?? [],
       listPresets: () => presetManager.listPresets(),
+      getEnvelope: () => store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE],
+      validateState: (state) => {
+        const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE];
+        return validator.validateState(envelope?.preset?.id, state);
+      },
+      diffState,
+      getPresetPolicy: () => {
+        const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE];
+        const preset = presetManager.getPreset(envelope?.preset?.id);
+        return { allowedPaths: preset?.allowedPaths ?? [], lockedPaths: preset?.lockedPaths?.filter((path) => path !== "/version") ?? [], ruleLockedPaths: preset?.ruleLockedPaths ?? [] };
+      },
+      getPresetUiFields: () => {
+        const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE];
+        return presetManager.getPreset(envelope?.preset?.id)?.ui ?? [];
+      },
+      commitManualPatch: async (input) => {
+        const context = runtimeAdapter.getContext?.();
+        const envelope = store.loadEnvelope?.().value;
+        if (!context?.chatId || context.groupId || orchestrator.getActiveGeneration?.()) return { ok: false, reason: "not-writable" };
+        const captured = { chatId: context.chatId, chat: context.chat, metadata: context.chatMetadata, ref: structuredClone(envelope?.activeRef), head: envelope?.headRevision };
+        return queue.enqueue(captured.chatId, `editor-${makeId()}`, async (signal) => {
+          signal.throwIfAborted();
+          const latest = runtimeAdapter.getContext?.();
+          const value = store.loadEnvelope?.().value;
+          if (latest?.chatId !== captured.chatId || latest.chat !== captured.chat || latest.chatMetadata !== captured.metadata || JSON.stringify(value?.activeRef) !== JSON.stringify(captured.ref) || value?.headRevision !== captured.head || value?.stateVersion !== input.baseVersion) return { ok: false, reason: "stale" };
+          const nextState = structuredClone(input.nextState);
+          nextState.version = input.baseVersion + 1;
+          const valid = validator.validateState(value.preset?.id, nextState);
+          if (!valid.ok) return { ok: false, reason: "invalid-state", errors: valid.errors };
+          return store.commitCurrentBranchMutation({ chatId: captured.chatId, expectedHeadRevision: captured.head, baseVersion: input.baseVersion, activeRef: captured.ref, nextState, patch: { base_version: input.baseVersion, operations: input.operations }, source: input.source });
+        });
+      },
       bindCharacterPreset: async (id) => {
         const character = runtimeAdapter.getCurrentCharacter?.();
         if (!character) throw new Error("Current character is unavailable");

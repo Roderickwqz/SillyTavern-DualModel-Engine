@@ -179,6 +179,27 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         catch (error) { context.chatMetadata[NAMESPACE] = metadataBefore; message.extra = extraBefore; message.swipe_info = swipesBefore; return result('save-failed', error); }
     }
 
+    // One save transaction for edits which change canonical state and append an audit trail.
+    async function commitCurrentBranchMutation({ chatId, expectedHeadRevision, baseVersion, activeRef, nextState, patch, source = 'user-editor', record = null }) {
+        const context = adapter.getContext?.(); const envelope = context?.chatMetadata?.[NAMESPACE];
+        if (!validEnvelope(envelope) || context?.chatId !== chatId || !Array.isArray(context?.chat)) return result('stale-chat');
+        if (envelope.headRevision !== expectedHeadRevision) return result('head-conflict');
+        if (envelope.stateVersion !== baseVersion || nextState?.version !== baseVersion + 1) return result('state-conflict');
+        if (!activeRef || envelope.activeRef?.messageId !== activeRef.messageId || envelope.activeRef?.swipeId !== activeRef.swipeId || envelope.activeRef?.branchId !== activeRef.branchId) return result('active-ref-conflict');
+        const message = context.chat.find(item => item?.extra?.[NAMESPACE]?.messageId === activeRef.messageId);
+        const branch = getBranch(message, activeRef.swipeId);
+        if (!message || (message.swipe_id ?? 0) !== activeRef.swipeId || branch?.branchId !== activeRef.branchId || branch.status !== 'committed' || !branch.segments?.length) return result('missing-active-branch');
+        const capturedChat = context.chat; const metadataBefore = clone(envelope); const extraBefore = clone(message.extra); const swipesBefore = clone(message.swipe_info);
+        try {
+            const latest = adapter.getContext?.();
+            if (latest?.chatId !== chatId || latest.chat !== capturedChat || latest.chatMetadata?.[NAMESPACE] !== envelope || envelope.headRevision !== expectedHeadRevision || envelope.stateVersion !== baseVersion) return result('stale-chat');
+            const segment = { source, patch: clone(patch ?? { operations: [] }), checks: record ? [clone(record)] : [], postSnapshot: clone(nextState) };
+            branch.segments.push(segment); message.extra[NAMESPACE] = clone(message.swipe_info[activeRef.swipeId].extra[NAMESPACE]);
+            envelope.activeSnapshot = clone(nextState); envelope.stateVersion = nextState.version; envelope.headRevision += 1; envelope.taskStatus = { state: 'idle', requestId: null };
+            await adapter.saveChat(); return { ok: true, stateVersion: envelope.stateVersion, headRevision: envelope.headRevision, record: record ? clone(record) : undefined };
+        } catch (error) { context.chatMetadata[NAMESPACE] = metadataBefore; message.extra = extraBefore; message.swipe_info = swipesBefore; return result('save-failed', error); }
+    }
+
     async function restoreBranch(message, swipeId) {
         const context = adapter.getContext?.();
         const envelope = context?.chatMetadata?.[NAMESPACE];
@@ -409,5 +430,5 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         return [...records.values()].map(clone);
     }
 
-    return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, commitCurrentBranchAudit, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef, describePresetReset, resetForPreset };
+    return { loadEnvelope, ensureEnvelope, prepareSwipeGeneration, getBranch, ensureBranch, commitSegment, commitCurrentBranchAudit, commitCurrentBranchMutation, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords, findLastValidSnapshot, invalidateFrom, removeBranch, restoreInitialSnapshot, auditActiveRef, describePresetReset, resetForPreset };
 }

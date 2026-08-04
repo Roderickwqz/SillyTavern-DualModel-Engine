@@ -26,6 +26,15 @@ import { NAMESPACE } from './constants.js';
 
 export { createOrchestrator } from './orchestrator.js';
 
+function pointer(part) { return String(part).replaceAll('~', '~0').replaceAll('/', '~1'); }
+function diffState(before, after, path = '') {
+    if (JSON.stringify(before) === JSON.stringify(after)) return [];
+    if (!before || !after || typeof before !== 'object' || typeof after !== 'object' || Array.isArray(before) || Array.isArray(after)) return [{ op: before === undefined ? 'add' : after === undefined ? 'remove' : 'replace', path, ...(after === undefined ? {} : { value: structuredClone(after) }) }];
+    const operations = [];
+    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) operations.push(...diffState(before[key], after[key], `${path}/${pointer(key)}`));
+    return operations;
+}
+
 export async function bootstrap({ adapter, dependencies } = {}) {
     const runtimeAdapter = adapter ?? (await import('./st-runtime.js')).createRuntimeAdapter();
     const presets = [narrativePreset, d20LitePreset];
@@ -123,6 +132,23 @@ export async function bootstrap({ adapter, dependencies } = {}) {
             saveCharacterConfig: value => runtimeAdapter.saveCurrentCharacter?.(value),
             saveChatConfig: (value, identity) => runtimeAdapter.saveChatSettings?.(value, identity),
             listProfiles: () => runtimeAdapter.listProfiles?.() ?? [], listPresets: () => presetManager.listPresets(),
+            getEnvelope: () => store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE],
+            validateState: state => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; return validator.validateState(envelope?.preset?.id, state); },
+            diffState,
+            getPresetPolicy: () => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; const preset = presetManager.getPreset(envelope?.preset?.id); return { allowedPaths: preset?.allowedPaths ?? [], lockedPaths: preset?.lockedPaths?.filter(path => path !== '/version') ?? [], ruleLockedPaths: preset?.ruleLockedPaths ?? [] }; },
+            getPresetUiFields: () => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; return presetManager.getPreset(envelope?.preset?.id)?.ui ?? []; },
+            commitManualPatch: async input => {
+                const context = runtimeAdapter.getContext?.(); const envelope = store.loadEnvelope?.().value;
+                if (!context?.chatId || context.groupId || orchestrator.getActiveGeneration?.()) return { ok: false, reason: 'not-writable' };
+                const captured = { chatId: context.chatId, chat: context.chat, metadata: context.chatMetadata, ref: structuredClone(envelope?.activeRef), head: envelope?.headRevision };
+                return queue.enqueue(captured.chatId, `editor-${makeId()}`, async signal => {
+                    signal.throwIfAborted(); const latest = runtimeAdapter.getContext?.(); const value = store.loadEnvelope?.().value;
+                    if (latest?.chatId !== captured.chatId || latest.chat !== captured.chat || latest.chatMetadata !== captured.metadata || JSON.stringify(value?.activeRef) !== JSON.stringify(captured.ref) || value?.headRevision !== captured.head || value?.stateVersion !== input.baseVersion) return { ok: false, reason: 'stale' };
+                    const nextState = structuredClone(input.nextState); nextState.version = input.baseVersion + 1;
+                    const valid = validator.validateState(value.preset?.id, nextState); if (!valid.ok) return { ok: false, reason: 'invalid-state', errors: valid.errors };
+                    return store.commitCurrentBranchMutation({ chatId: captured.chatId, expectedHeadRevision: captured.head, baseVersion: input.baseVersion, activeRef: captured.ref, nextState, patch: { base_version: input.baseVersion, operations: input.operations }, source: input.source });
+                });
+            },
             bindCharacterPreset: async id => {
                 const character = runtimeAdapter.getCurrentCharacter?.(); if (!character) throw new Error('Current character is unavailable');
                 character.data ??= {}; character.data.extensions ??= {}; const had = Object.hasOwn(character.data.extensions, NAMESPACE); const before = structuredClone(character.data.extensions[NAMESPACE]);
