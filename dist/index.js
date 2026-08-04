@@ -9151,7 +9151,7 @@ function createStateTab({ validateState, diffState: diffState2, confirm, commitM
 }
 
 // src/ui/audit-tab.js
-function renderAudit(container, records = []) {
+function renderAudit(container, records = [], { selectedCheckId = null } = {}) {
   container.replaceChildren();
   for (const record of records) {
     const row = document.createElement("article");
@@ -9160,6 +9160,15 @@ function renderAudit(container, records = []) {
     title.textContent = `${record.kind ?? "record"}: ${record.action ?? record.path ?? record.reason ?? ""}`;
     const detail = document.createElement("pre");
     detail.textContent = JSON.stringify(record, null, 2);
+    if (record.kind === "check" && record.checkId) {
+      const select = document.createElement("input");
+      select.type = "radio";
+      select.name = "dme-selected-check";
+      select.dataset.dmeCheckId = record.checkId;
+      select.checked = record.checkId === selectedCheckId;
+      select.setAttribute("aria-label", `Select check ${record.checkId}`);
+      row.append(select);
+    }
     row.append(title, detail);
     container.append(row);
   }
@@ -9204,6 +9213,7 @@ function createUIController(deps) {
   let profileDiagnostic = "";
   let probePending = null;
   let exportRawData = null;
+  let selectedCheckId = null;
   const listeners = [];
   const getContext = () => deps.adapter?.getContext?.() ?? {};
   const diagnostic = () => {
@@ -9257,7 +9267,9 @@ function createUIController(deps) {
     const state = envelope?.activeSnapshot;
     const editor = root.querySelector('[data-dme-role="state-json"]');
     if (editor && document.activeElement !== editor) editor.value = JSON.stringify(state ?? {}, null, 2);
-    renderAudit(root.querySelector('[data-dme-role="checks-list"]'), deps.listChecks?.() ?? []);
+    const checks = deps.listChecks?.() ?? [];
+    if (!checks.some((check) => check.checkId === selectedCheckId)) selectedCheckId = null;
+    renderAudit(root.querySelector('[data-dme-role="checks-list"]'), checks, { selectedCheckId });
     renderAudit(root.querySelector('[data-dme-role="history-list"]'), deps.listHistory?.() ?? []);
     renderRules(root.querySelector('[data-dme-role="rules-list"]'), presets);
     renderDiagnostics(root.querySelector('[data-dme-role="diagnostics-json"]'), deps.listDiagnostics?.() ?? diagnostic());
@@ -9330,6 +9342,11 @@ function createUIController(deps) {
   }
   async function onClick(event) {
     const target = event.target.closest?.("[data-dme-action], [data-dme-tab]");
+    if (event.target.matches?.("[data-dme-check-id]")) {
+      selectedCheckId = event.target.dataset.dmeCheckId;
+      deps.onSelectCheck?.(selectedCheckId);
+      return;
+    }
     if (!target || !root?.contains(target)) return;
     if (target.dataset.dmeTab) {
       for (const button of root.querySelectorAll('[role="tab"]')) {
@@ -9825,7 +9842,12 @@ async function bootstrap({ adapter, dependencies } = {}) {
     const index = firstInvalidHistoryIndex(runtimeAdapter);
     return index < 0 ? void 0 : index;
   });
-  const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: (id) => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), validateDamage: validate2(damageValidator), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex, pickFile: resolved.pickPresetFile ?? pickPresetFile, selectedCheck: resolved.selectedCheck, download: resolved.download, diffState });
+  let selectedCheckId = null;
+  const selectedCheck = resolved.selectedCheck ?? (() => {
+    const ref = store.loadEnvelope?.().value?.activeRef;
+    return ledger.list().find((record) => record.checkId === selectedCheckId && record.branchId === ref?.branchId) ?? null;
+  });
+  const chatActions = createChatActions({ adapter: runtimeAdapter, store, queue, ledger, modelService, presetManager, orchestrator, makeId, nextUint32, preset: (id) => presetManager.getPreset(id), validateState: (id, state) => validator.validateState(id, state), validateDamage: validate2(damageValidator), config: getEffectiveConfig, rollbackManager, confirm: confirmAction, currentInvalidIndex, pickFile: resolved.pickPresetFile ?? pickPresetFile, selectedCheck, download: resolved.download, diffState });
   let ui;
   try {
     orchestrator.start();
@@ -9866,6 +9888,9 @@ async function bootstrap({ adapter, dependencies } = {}) {
       listChecks: () => {
         const ref = (store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE])?.activeRef;
         return ref ? ledger.list().filter((record) => record.branchId === ref.branchId) : [];
+      },
+      onSelectCheck: (id) => {
+        selectedCheckId = id;
       },
       listHistory: () => (runtimeAdapter.getContext?.()?.chat ?? []).flatMap((message) => (message.swipe_info ?? []).flatMap((swipe) => {
         const branch = swipe?.extra?.[NAMESPACE]?.branch;

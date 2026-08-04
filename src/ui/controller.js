@@ -12,7 +12,7 @@ function budget(value) { return Math.max(MIN_BUDGET, Math.min(MAX_BUDGET, Number
 function copy(value) { return structuredClone(value ?? {}); }
 
 export function createUIController(deps) {
-    let root = null; let status = ''; let profileDiagnostic = ''; let probePending = null; let exportRawData = null; const listeners = [];
+    let root = null; let status = ''; let profileDiagnostic = ''; let probePending = null; let exportRawData = null; let selectedCheckId = null; const listeners = [];
     const getContext = () => deps.adapter?.getContext?.() ?? {};
     const diagnostic = () => {
         const reasons = (deps.capabilities?.reasons ?? []).filter(reason => reason !== 'Group chats are not supported' && reason !== 'No supported Recorder connection profile is configured');
@@ -53,7 +53,8 @@ export function createUIController(deps) {
         const envelope = deps.getEnvelope?.() ?? getContext().chatMetadata?.dualModelEngine;
         const state = envelope?.activeSnapshot;
         const editor = root.querySelector('[data-dme-role="state-json"]'); if (editor && document.activeElement !== editor) editor.value = JSON.stringify(state ?? {}, null, 2);
-        renderAudit(root.querySelector('[data-dme-role="checks-list"]'), deps.listChecks?.() ?? []);
+        const checks = deps.listChecks?.() ?? []; if (!checks.some(check => check.checkId === selectedCheckId)) selectedCheckId = null;
+        renderAudit(root.querySelector('[data-dme-role="checks-list"]'), checks, { selectedCheckId });
         renderAudit(root.querySelector('[data-dme-role="history-list"]'), deps.listHistory?.() ?? []);
         renderRules(root.querySelector('[data-dme-role="rules-list"]'), presets);
         renderDiagnostics(root.querySelector('[data-dme-role="diagnostics-json"]'), deps.listDiagnostics?.() ?? diagnostic());
@@ -100,6 +101,7 @@ export function createUIController(deps) {
     }
     async function onClick(event) {
         const target = event.target.closest?.('[data-dme-action], [data-dme-tab]');
+        if (event.target.matches?.('[data-dme-check-id]')) { selectedCheckId = event.target.dataset.dmeCheckId; deps.onSelectCheck?.(selectedCheckId); return; }
         if (!target || !root?.contains(target)) return;
         if (target.dataset.dmeTab) { for (const button of root.querySelectorAll('[role="tab"]')) { const selected = button === target; button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1; const panel = root.querySelector(`#${button.getAttribute('aria-controls')}`); if (panel) panel.hidden = !selected; } return; }
         const action = target.dataset.dmeAction;
