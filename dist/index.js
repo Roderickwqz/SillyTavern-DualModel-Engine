@@ -9281,7 +9281,10 @@ function createUIController(deps) {
     const editor = root.querySelector('[data-dme-role="state-json"]');
     if (editor && document.activeElement !== editor) editor.value = JSON.stringify(state ?? {}, null, 2);
     const checks = deps.listChecks?.() ?? [];
-    if (!checks.some((check) => check.checkId === selectedCheckId)) selectedCheckId = null;
+    if (selectedCheckId && !checks.some((check) => check.checkId === selectedCheckId)) {
+      selectedCheckId = null;
+      deps.onSelectCheck?.(null);
+    }
     renderAudit(root.querySelector('[data-dme-role="checks-list"]'), checks, { selectedCheckId });
     renderAudit(root.querySelector('[data-dme-role="history-list"]'), deps.listHistory?.() ?? []);
     renderRules(root.querySelector('[data-dme-role="rules-list"]'), presets);
@@ -9706,17 +9709,50 @@ function firstInvalidHistoryIndex(adapter) {
     return ["stale", "invalidated", "failed"].includes(branch?.status) || (branch?.segments ?? []).some((segment) => ["stale", "invalidated", "failed"].includes(segment?.status));
   });
 }
+function createDiagnosticRecorder(adapter, { limit = 100 } = {}) {
+  return async (value) => {
+    try {
+      const settings = adapter.getSettings?.();
+      if (!settings || typeof settings !== "object") return;
+      const diagnostics = Array.isArray(settings.diagnostics) ? settings.diagnostics : [];
+      settings.diagnostics = [...diagnostics, structuredClone(value)].slice(-limit);
+      if (typeof adapter.saveSettings === "function") await adapter.saveSettings();
+      else if (typeof adapter.saveGlobalSettings === "function") await adapter.saveGlobalSettings(settings);
+    } catch {
+    }
+  };
+}
+function createManualPatchCommitter({ adapter, store, queue, orchestrator, validator, makeId }) {
+  return async (input) => {
+    const context = adapter.getContext?.();
+    const envelope = store.loadEnvelope?.().value;
+    if (!context?.chatId || context.groupId || orchestrator.getActiveGeneration?.()) return { ok: false, reason: "not-writable" };
+    const message = context.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === envelope?.activeRef?.messageId);
+    const swipe = message?.swipe_info?.[envelope?.activeRef?.swipeId];
+    const branch = swipe?.extra?.[NAMESPACE]?.branch;
+    const captured = { chatId: context.chatId, chat: context.chat, metadata: context.chatMetadata, envelope, preset: structuredClone(envelope?.preset), ref: structuredClone(envelope?.activeRef), head: envelope?.headRevision, message, swipe, branch };
+    return queue.enqueue(captured.chatId, `editor-${makeId()}`, async (signal) => {
+      signal.throwIfAborted();
+      const latest = adapter.getContext?.();
+      const value = store.loadEnvelope?.().value;
+      const latestMessage = latest?.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === captured.ref?.messageId);
+      const latestSwipe = latestMessage?.swipe_info?.[captured.ref?.swipeId];
+      if (latest?.groupId || orchestrator.getActiveGeneration?.() || latest?.chatId !== captured.chatId || latest.chat !== captured.chat || latest.chatMetadata !== captured.metadata || value !== captured.envelope || JSON.stringify(value?.preset) !== JSON.stringify(captured.preset) || JSON.stringify(value?.activeRef) !== JSON.stringify(captured.ref) || value?.headRevision !== captured.head || value?.stateVersion !== input.baseVersion || latestMessage !== captured.message || latestSwipe !== captured.swipe || latestSwipe?.extra?.[NAMESPACE]?.branch !== captured.branch) return { ok: false, reason: "stale" };
+      const nextState = structuredClone(input.nextState);
+      nextState.version = input.baseVersion + 1;
+      const valid = validator.validateState(value.preset?.id, nextState);
+      if (!valid.ok) return { ok: false, reason: "invalid-state", errors: valid.errors };
+      const committed = await store.commitCurrentBranchMutation({ chatId: captured.chatId, expectedHeadRevision: captured.head, baseVersion: input.baseVersion, activeRef: captured.ref, nextState, patch: { base_version: input.baseVersion, operations: input.operations }, source: input.source });
+      if (!committed?.ok) return committed;
+      const audit = await store.auditActiveRef?.();
+      return audit?.ok ? committed : { ok: false, reason: audit?.reason ?? "audit-failed" };
+    });
+  };
+}
 async function bootstrap({ adapter, dependencies } = {}) {
   const runtimeAdapter = adapter ?? (await import("./st-runtime-SR4MNLUA.js")).createRuntimeAdapter();
   const resolved = dependencies ?? {};
-  const recordDiagnostic = resolved.recordDiagnostic ?? (async (value) => {
-    const settings2 = runtimeAdapter.getSettings?.();
-    if (!settings2 || typeof settings2 !== "object") return;
-    const diagnostics = Array.isArray(settings2.diagnostics) ? settings2.diagnostics : [];
-    settings2.diagnostics = [...diagnostics, structuredClone(value)].slice(-100);
-    if (typeof runtimeAdapter.saveSettings === "function") await runtimeAdapter.saveSettings();
-    else if (typeof runtimeAdapter.saveGlobalSettings === "function") await runtimeAdapter.saveGlobalSettings(settings2);
-  });
+  const recordDiagnostic = resolved.recordDiagnostic ?? createDiagnosticRecorder(runtimeAdapter);
   const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });
   const store = resolved.store ?? createStateStore({ adapter: runtimeAdapter, hashText });
@@ -9914,31 +9950,7 @@ async function bootstrap({ adapter, dependencies } = {}) {
         const settings2 = runtimeAdapter.getSettings?.() ?? {};
         return settings2.diagnostics ?? settings2[NAMESPACE]?.diagnostics ?? [];
       },
-      commitManualPatch: async (input) => {
-        const context = runtimeAdapter.getContext?.();
-        const envelope = store.loadEnvelope?.().value;
-        if (!context?.chatId || context.groupId || orchestrator.getActiveGeneration?.()) return { ok: false, reason: "not-writable" };
-        const message = context.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === envelope?.activeRef?.messageId);
-        const swipe = message?.swipe_info?.[envelope?.activeRef?.swipeId];
-        const branch = swipe?.extra?.[NAMESPACE]?.branch;
-        const captured = { chatId: context.chatId, chat: context.chat, metadata: context.chatMetadata, envelope, preset: structuredClone(envelope?.preset), ref: structuredClone(envelope?.activeRef), head: envelope?.headRevision, message, swipe, branch };
-        return queue.enqueue(captured.chatId, `editor-${makeId()}`, async (signal) => {
-          signal.throwIfAborted();
-          const latest = runtimeAdapter.getContext?.();
-          const value = store.loadEnvelope?.().value;
-          const latestMessage = latest?.chat?.find((item) => item?.extra?.[NAMESPACE]?.messageId === captured.ref?.messageId);
-          const latestSwipe = latestMessage?.swipe_info?.[captured.ref?.swipeId];
-          if (latest?.groupId || orchestrator.getActiveGeneration?.() || latest?.chatId !== captured.chatId || latest.chat !== captured.chat || latest.chatMetadata !== captured.metadata || value !== captured.envelope || JSON.stringify(value?.preset) !== JSON.stringify(captured.preset) || JSON.stringify(value?.activeRef) !== JSON.stringify(captured.ref) || value?.headRevision !== captured.head || value?.stateVersion !== input.baseVersion || latestMessage !== captured.message || latestSwipe !== captured.swipe || latestSwipe?.extra?.[NAMESPACE]?.branch !== captured.branch) return { ok: false, reason: "stale" };
-          const nextState = structuredClone(input.nextState);
-          nextState.version = input.baseVersion + 1;
-          const valid = validator.validateState(value.preset?.id, nextState);
-          if (!valid.ok) return { ok: false, reason: "invalid-state", errors: valid.errors };
-          const committed = await store.commitCurrentBranchMutation({ chatId: captured.chatId, expectedHeadRevision: captured.head, baseVersion: input.baseVersion, activeRef: captured.ref, nextState, patch: { base_version: input.baseVersion, operations: input.operations }, source: input.source });
-          if (!committed?.ok) return committed;
-          const audit = await store.auditActiveRef?.();
-          return audit?.ok ? committed : { ok: false, reason: audit?.reason ?? "audit-failed" };
-        });
-      },
+      commitManualPatch: createManualPatchCommitter({ adapter: runtimeAdapter, store, queue, orchestrator, validator, makeId }),
       rollbackManager,
       recalculateCurrentBranch: chatActions.recalculate,
       currentInvalidIndex,
@@ -10033,5 +10045,7 @@ var export_Ajv = import_ajv3.default;
 export {
   export_Ajv as Ajv,
   bootstrap,
+  createDiagnosticRecorder,
+  createManualPatchCommitter,
   createOrchestrator
 };

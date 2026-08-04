@@ -6,7 +6,7 @@ function host(overrides = {}) {
     const context = { chatId: 'c', chat: [{ mes: 'visible assistant', swipe_id: 0, extra: { dualModelEngine: { messageId: 'm' } }, swipe_info: [{ mes: 'selected swipe', extra: { dualModelEngine: { branch: { branchId: 'b', status: 'committed', segments: [{}] } } } }] }], chatMetadata: { dualModelEngine: envelope } };
     const store = { loadEnvelope: vi.fn(() => ({ ok: true, value: envelope })), commitCurrentBranchAudit: vi.fn(async () => ({ ok: true })), commitCurrentBranchMutation: vi.fn(async () => ({ ok: true })) };
     const old = { kind: 'check', checkId: 'old', branchId: 'b', signature: 'pick', request: { actor: 'player', ability: 'dexterity', skill: 'stealth', advantage: 'normal', dc: 12 }, result: { total: 4 } };
-    const ledger = { list: () => [old], reroll: (previous, value) => ({ ...value, checkId: 'new', supersedes: previous.checkId }), commit: vi.fn(), createRecord: value => ({ ...value, checkId: 'damage' }) };
+    const ledger = { list: () => [old], reroll: (previous, value) => ({ ...value, checkId: 'new', supersedes: previous.checkId }), commit: vi.fn(), createRecord: vi.fn(value => ({ ...value, checkId: 'damage' })) };
     const preset = { readActor: (state, id) => state.actors[id], writeActor: (state, id, actor) => { state.actors[id] = actor; }, skillAbilities: { stealth: 'dexterity' }, naturalRollPolicy: 'normal' };
     const deps = { adapter: { getContext: () => context }, store, ledger, queue: { enqueue: (_id, _key, task) => task(new AbortController().signal) }, orchestrator: { getActiveGeneration: () => null }, config: () => ({ enabled: true, recorderProfileId: 'rec' }), makeId: () => 'x', nextUint32: vi.fn(() => 1), preset: () => preset, validateState: vi.fn(() => ({ ok: true, errors: [] })), validateDamage: vi.fn(() => ({ ok: true, errors: [] })), modelService: { requestSummary: vi.fn(async () => ({ state: { version: 2, actors: {} } })) }, confirm: vi.fn(async () => true), download: vi.fn(), ...overrides };
     return { context, envelope, store, ledger, deps, actions: createChatActions(deps) };
@@ -48,6 +48,14 @@ it('stages damage once, confirms its HP preview, then commits that exact result'
     expect(h.store.commitCurrentBranchMutation).toHaveBeenCalledWith(expect.objectContaining({ nextState: expect.objectContaining({ actors: expect.objectContaining({ player: expect.objectContaining({ hp: expect.objectContaining({ current: 8, temporary: 0 }) }) }) }) }));
 });
 
+it.each(['cancelled', 'stale'])('uses RNG once and creates no damage ledger record when damage is %s', async reason => {
+    const h = host();
+    if (reason === 'cancelled') h.deps.confirm.mockResolvedValue(false);
+    if (reason === 'stale') h.deps.queue.enqueue = async (_id, _key, work) => { h.envelope.headRevision++; return work(new AbortController().signal); };
+    await expect(h.actions.applyDamage({ target: 'player', expression: '1d6', damageType: 'fire' })).resolves.toMatchObject({ reason });
+    expect(h.deps.nextUint32).toHaveBeenCalledTimes(1); expect(h.ledger.createRecord).not.toHaveBeenCalled(); expect(h.ledger.commit).not.toHaveBeenCalled();
+});
+
 it('resummary sends the pinned capture and does not commit a stale candidate', async () => {
     const h = host();
     h.deps.queue.enqueue = async (_id, _key, task) => { h.envelope.preset = { id: 'other', version: 1 }; return task(new AbortController().signal); };
@@ -60,6 +68,13 @@ it('resummary sends only visible canonical user and assistant content', async ()
     const h = host(); h.context.chat = [{ is_user: true, mes: 'player', extra: { secret: 1 } }, { mes: 'selected', swipe_id: 0, swipe_info: [{ mes: 'selected' }, { mes: 'not selected' }] }, { is_system: true, mes: 'skip' }];
     await h.actions.resummarize();
     expect(h.deps.modelService.requestSummary).toHaveBeenCalledWith(expect.objectContaining({ messages: [{ role: 'user', content: 'player' }, { role: 'assistant', content: 'selected' }] }));
+});
+
+it('returns the store save failure unchanged and confirms the exact resummary operations', async () => {
+    const h = host({ diffState: vi.fn(() => [{ op: 'replace', path: '/actors/player/name', value: 'Ada' }]) }); h.store.commitCurrentBranchMutation.mockResolvedValue({ ok: false, reason: 'save-failed' });
+    await expect(h.actions.resummarize()).resolves.toEqual({ ok: false, reason: 'save-failed' });
+    expect(h.deps.confirm).toHaveBeenCalledWith(expect.objectContaining({ action: 'resummarize', operations: [{ op: 'replace', path: '/actors/player/name', value: 'Ada' }] }));
+    expect(h.store.commitCurrentBranchMutation).toHaveBeenCalledWith(expect.objectContaining({ patch: { operations: [{ op: 'replace', path: '/actors/player/name', value: 'Ada' }] } }));
 });
 
 it('never rerolls a selected check from another branch', async () => {
@@ -88,6 +103,12 @@ it('creates and revokes a browser download URL and raw export is whitelisted', a
     expect(create).toHaveBeenCalledOnce(); expect(click).toHaveBeenCalledOnce(); expect(revoke).toHaveBeenCalledWith('blob:test');
     expect(rawExport({ schemaVersion: 1, recorderProfileId: 'secret', credentials: { token: 'secret' }, preset: { id: 'p' } }, [])).not.toHaveProperty('credentials');
     create.mockRestore(); revoke.mockRestore(); click.mockRestore();
+});
+
+it.each(['URL', 'Blob', 'document'])('returns export-failed when browser %s support is absent', async missing => {
+    const h = host({ download: undefined }); const original = globalThis[missing];
+    try { Object.defineProperty(globalThis, missing, { configurable: true, value: undefined }); await expect(h.actions.exportRaw()).resolves.toMatchObject({ ok: false, reason: 'export-failed' }); }
+    finally { Object.defineProperty(globalThis, missing, { configurable: true, value: original }); }
 });
 
 it('does not commit a ledger record when the store reports stale', async () => {

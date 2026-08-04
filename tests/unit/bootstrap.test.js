@@ -16,7 +16,7 @@ const createRuntimeAdapter = vi.fn(() => runtimeAdapter);
 
 vi.mock('../../src/st-runtime.js', () => ({ createRuntimeAdapter }));
 
-import { bootstrap } from '../../src/index.js';
+import { bootstrap, createDiagnosticRecorder, createManualPatchCommitter } from '../../src/index.js';
 
 describe('bootstrap', () => {
     beforeEach(() => {
@@ -128,5 +128,45 @@ describe('bootstrap', () => {
         await expect(app.presetManager.deletePreset('relationship-meter')).rejects.toThrow('Preset is still referenced');
         expect(adapter.listPresetReferences).toHaveBeenCalledWith('relationship-meter');
         app.orchestrator.stop();
+    });
+});
+
+describe('bootstrap composition helpers', () => {
+    it('records cloned bounded diagnostics and does not fall back when saveSettings returns undefined', async () => {
+        const settings = { diagnostics: Array.from({ length: 100 }, (_, index) => ({ index })) };
+        const adapter = { getSettings: () => settings, saveSettings: vi.fn(async () => undefined), saveGlobalSettings: vi.fn() };
+        const record = createDiagnosticRecorder(adapter);
+        const value = { nested: { safe: true } }; await record(value); value.nested.safe = false;
+        expect(settings.diagnostics).toHaveLength(100); expect(settings.diagnostics.at(-1)).toEqual({ nested: { safe: true } }); expect(adapter.saveGlobalSettings).not.toHaveBeenCalled();
+    });
+
+    it('swallows diagnostic save rejection so callers keep their primary flow', async () => {
+        const adapter = { getSettings: () => ({}), saveSettings: vi.fn(async () => { throw new Error('disk'); }) };
+        await expect(createDiagnosticRecorder(adapter)({ reason: 'primary-failure' })).resolves.toBeUndefined();
+    });
+
+    it('commits a captured manual patch then reports an audit failure observably', async () => {
+        const envelope = { stateVersion: 2, headRevision: 3, preset: { id: 'p' }, activeRef: { messageId: 'm', swipeId: 0, branchId: 'b' } };
+        const branch = { branchId: 'b' }; const swipe = { extra: { dualModelEngine: { branch } } }; const message = { extra: { dualModelEngine: { messageId: 'm' } }, swipe_info: [swipe] };
+        const context = { chatId: 'c', groupId: null, chat: [message], chatMetadata: { dualModelEngine: envelope } };
+        const store = { loadEnvelope: () => ({ value: envelope }), commitCurrentBranchMutation: vi.fn(async () => ({ ok: true })), auditActiveRef: vi.fn(async () => ({ ok: false, reason: 'audit-broke' })) };
+        const commit = createManualPatchCommitter({ adapter: { getContext: () => context }, store, queue: { enqueue: (_id, _key, work) => work(new AbortController().signal) }, orchestrator: { getActiveGeneration: () => null }, validator: { validateState: () => ({ ok: true }) }, makeId: () => 'x' });
+        await expect(commit({ baseVersion: 2, operations: [{ op: 'replace', path: '/x', value: 1 }], nextState: { version: 2 }, source: 'user-editor' })).resolves.toEqual({ ok: false, reason: 'audit-broke' });
+        expect(store.commitCurrentBranchMutation).toHaveBeenCalledWith(expect.objectContaining({ chatId: 'c', expectedHeadRevision: 3, activeRef: { messageId: 'm', swipeId: 0, branchId: 'b' }, patch: { base_version: 2, operations: [{ op: 'replace', path: '/x', value: 1 }] } }));
+    });
+
+    it('returns the committed result after a successful manual-patch audit', async () => {
+        const envelope = { stateVersion: 2, headRevision: 3, preset: { id: 'p' }, activeRef: { messageId: 'm', swipeId: 0, branchId: 'b' } }; const branch = { branchId: 'b' }; const swipe = { extra: { dualModelEngine: { branch } } }; const message = { extra: { dualModelEngine: { messageId: 'm' } }, swipe_info: [swipe] }; const context = { chatId: 'c', groupId: null, chat: [message], chatMetadata: { dualModelEngine: envelope } };
+        const store = { loadEnvelope: () => ({ value: envelope }), commitCurrentBranchMutation: vi.fn(async () => ({ ok: true, revision: 4 })), auditActiveRef: vi.fn(async () => ({ ok: true })) }; const commit = createManualPatchCommitter({ adapter: { getContext: () => context }, store, queue: { enqueue: (_id, _key, work) => work(new AbortController().signal) }, orchestrator: { getActiveGeneration: () => null }, validator: { validateState: () => ({ ok: true }) }, makeId: () => 'x' });
+        await expect(commit({ baseVersion: 2, operations: [], nextState: { version: 2 }, source: 'user-editor' })).resolves.toEqual({ ok: true, revision: 4 }); expect(store.auditActiveRef).toHaveBeenCalledOnce();
+    });
+
+    it.each(['group', 'generation', 'envelope', 'message', 'swipe', 'branch'])('does not commit a manual patch after queued %s replacement', async kind => {
+        const envelope = { stateVersion: 2, headRevision: 3, preset: { id: 'p' }, activeRef: { messageId: 'm', swipeId: 0, branchId: 'b' } };
+        const branch = { branchId: 'b' }; const swipe = { extra: { dualModelEngine: { branch } } }; const message = { extra: { dualModelEngine: { messageId: 'm' } }, swipe_info: [swipe] }; const context = { chatId: 'c', groupId: null, chat: [message], chatMetadata: { dualModelEngine: envelope } };
+        const generation = { active: null }; const store = { loadEnvelope: () => ({ value: context.chatMetadata.dualModelEngine }), commitCurrentBranchMutation: vi.fn(), auditActiveRef: vi.fn() };
+        const queue = { enqueue: async (_id, _key, work) => { if (kind === 'group') context.groupId = 'g'; if (kind === 'generation') generation.active = {}; if (kind === 'envelope') context.chatMetadata.dualModelEngine = structuredClone(envelope); if (kind === 'message') context.chat[0] = structuredClone(message); if (kind === 'swipe') context.chat[0].swipe_info[0] = structuredClone(swipe); if (kind === 'branch') context.chat[0].swipe_info[0].extra.dualModelEngine.branch = structuredClone(branch); return work(new AbortController().signal); } };
+        const commit = createManualPatchCommitter({ adapter: { getContext: () => context }, store, queue, orchestrator: { getActiveGeneration: () => generation.active }, validator: { validateState: () => ({ ok: true }) }, makeId: () => 'x' });
+        await expect(commit({ baseVersion: 2, operations: [], nextState: { version: 2 }, source: 'user-editor' })).resolves.toEqual({ ok: false, reason: 'stale' }); expect(store.commitCurrentBranchMutation).not.toHaveBeenCalled();
     });
 });

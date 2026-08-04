@@ -32,6 +32,12 @@ describe('UI controller', () => {
         expect(document.querySelector('[data-dme-role="diagnostic-reasons"] img')).toBeNull();
     });
 
+    it('renders persisted diagnostics as nonempty safe text', async () => {
+        const deps = dependencies(); deps.listDiagnostics = () => [{ reason: '<img src=x onerror=alert(1)>' }];
+        const ui = createUIController(deps); await ui.mount(); const output = document.querySelector('[data-dme-role="diagnostics-json"]');
+        expect(output.textContent).toContain('<img'); expect(output.textContent).not.toBe(''); expect(output.querySelector('img')).toBeNull();
+    });
+
     it('disables chat writes for groups and cleans up on destroy', async () => {
         const deps = dependencies({ isGroupChat: true }); const ui = createUIController(deps); await ui.mount(); await ui.mount();
         expect(document.querySelector('[data-dme-role="chat-settings"]').disabled).toBe(true);
@@ -68,6 +74,13 @@ describe('UI controller', () => {
     it('uses current group state instead of a stale capability snapshot', async () => {
         const deps = dependencies(); const ui = createUIController(deps); await ui.mount(); deps.context.groupId = 'new-group'; await ui.render();
         expect(document.querySelector('[data-dme-role="chat-settings"]').disabled).toBe(true);
+    });
+
+    it('selects a concrete check and clears it when the active check list changes', async () => {
+        const deps = dependencies(); let checks = [{ kind: 'check', checkId: 'older', action: 'old' }, { kind: 'check', checkId: 'latest', action: 'new' }]; deps.listChecks = () => checks; deps.onSelectCheck = vi.fn(); deps.rerollSelectedCheck = vi.fn(async () => ({ ok: true }));
+        const ui = createUIController(deps); await ui.mount(); document.querySelector('[data-dme-check-id="older"]').click();
+        expect(deps.onSelectCheck).toHaveBeenCalledWith('older'); document.querySelector('[data-dme-action="reroll"]').click(); await Promise.resolve(); expect(deps.rerollSelectedCheck).toHaveBeenCalledOnce();
+        checks = []; await ui.render(); expect(deps.onSelectCheck).toHaveBeenLastCalledWith(null);
     });
 
     it('refreshes after a confirmed reset replaces the current envelope', async () => {

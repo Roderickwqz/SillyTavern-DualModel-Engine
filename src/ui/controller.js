@@ -53,7 +53,7 @@ export function createUIController(deps) {
         const envelope = deps.getEnvelope?.() ?? getContext().chatMetadata?.dualModelEngine;
         const state = envelope?.activeSnapshot;
         const editor = root.querySelector('[data-dme-role="state-json"]'); if (editor && document.activeElement !== editor) editor.value = JSON.stringify(state ?? {}, null, 2);
-        const checks = deps.listChecks?.() ?? []; if (!checks.some(check => check.checkId === selectedCheckId)) selectedCheckId = null;
+        const checks = deps.listChecks?.() ?? []; if (selectedCheckId && !checks.some(check => check.checkId === selectedCheckId)) { selectedCheckId = null; deps.onSelectCheck?.(null); }
         renderAudit(root.querySelector('[data-dme-role="checks-list"]'), checks, { selectedCheckId });
         renderAudit(root.querySelector('[data-dme-role="history-list"]'), deps.listHistory?.() ?? []);
         renderRules(root.querySelector('[data-dme-role="rules-list"]'), presets);
