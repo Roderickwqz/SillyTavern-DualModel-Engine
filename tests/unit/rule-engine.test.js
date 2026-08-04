@@ -3,6 +3,7 @@ import Ajv from 'ajv';
 import d20Schema from '../../schemas/d20.schema.json';
 import { createRuleEngine } from '../../src/rule-engine.js';
 import { d20LitePreset } from '../../src/rules/d20-lite.js';
+import { narrativePreset } from '../../src/rules/narrative.js';
 import { createStateValidator } from '../../src/state-validator.js';
 import { d20TestPreset, d20TestState } from '../fixtures/d20.js';
 
@@ -32,6 +33,11 @@ describe('D20 rule engine', () => {
         const input = { actor: 'player', action: 'lift', ability: 'dexterity', skill: 'athletics', dc: 10, advantage: 'normal' };
         expect(() => engine.resolveCheck(input, d20TestState())).toThrow('Ability does not match skill: athletics');
         expect(() => engine.resolveCheck({ ...input, ability: 'strength', skill: 'unknown' }, d20TestState())).toThrow('Unknown skill: unknown');
+    });
+
+    it('rejects an invalid advantage mode before consuming randomness', () => {
+        const engine = createRuleEngine({ nextUint32: () => { throw new Error('should not roll'); }, preset: d20TestPreset() });
+        expect(() => engine.resolveCheck({ actor: 'player', action: 'test', ability: 'dexterity', skill: 'sleight_of_hand', dc: 10, advantage: 'both' }, d20TestState())).toThrow('Invalid advantage mode: both');
     });
 
     it('makes natural 1 and 20 authoritative critical outcomes', () => {
@@ -87,13 +93,56 @@ describe('D20 rule engine', () => {
         expect(validator.validateState('d20-lite', invalid)).toMatchObject({ ok: false, errors: expect.arrayContaining([expect.objectContaining({ instancePath: '/actors/player/hp/current' })]) });
     });
 
+    it.each([
+        ['missing required actor field', (state) => { delete state.actors.player.hp; }],
+        ['extra actor field', (state) => { state.actors.player.cheat = true; }],
+        ['ability below bound', (state) => { state.actors.player.abilities.strength = 0; }],
+        ['ability above bound', (state) => { state.actors.player.abilities.strength = 31; }],
+        ['proficiency above bound', (state) => { state.actors.player.proficiencyBonus = 11; }],
+        ['HP above bound', (state) => { state.actors.player.hp.max = 1000001; }],
+        ['duplicate skills', (state) => { state.actors.player.proficientSkills = ['stealth', 'stealth']; }],
+        ['too many conditions', (state) => { state.actors.player.conditions = Array.from({ length: 101 }, () => 'poisoned'); }],
+        ['condition too long', (state) => { state.actors.player.conditions = ['x'.repeat(201)]; }],
+        ['too many actors', (state) => { state.actors = Object.fromEntries(Array.from({ length: 101 }, (_, index) => [`actor-${index}`, d20TestState().actors.player])); }],
+    ])('rejects D20 state with %s', (_name, mutate) => {
+        const validator = createStateValidator({ presets: [d20LitePreset] });
+        const state = d20TestState();
+        mutate(state);
+        expect(validator.validateState('d20-lite', state).ok).toBe(false);
+    });
+
     it('rejects model-supplied rolls, modifiers, outcomes, and HP through D20 input schemas', () => {
         const ajv = new Ajv({ strict: false });
         const validateCheck = ajv.compile(d20Schema.$defs.checkInput);
         const validateDamage = ajv.compile(d20Schema.$defs.damageInput);
         const check = { actor: 'player', action: 'pick lock', ability: 'dexterity', skill: 'sleight_of_hand', dc: 12, advantage: 'normal', reason: 'locked' };
         const damage = { target: 'player', expression: '1d6', damageType: 'piercing', reason: 'trap' };
+        expect(validateCheck(check)).toBe(true);
+        expect(validateDamage(damage)).toBe(true);
         expect(validateCheck({ ...check, modifier: 99, roll: 20, outcome: 'success' })).toBe(false);
         expect(validateDamage({ ...damage, hp: 0, total: 999 })).toBe(false);
+    });
+
+    it('deeply freezes independent built-in preset data without changing Narrative', () => {
+        const narrativeInitial = structuredClone(narrativePreset.initialState);
+        const narrativeAllowed = structuredClone(narrativePreset.allowedPaths);
+        const narrativeLocked = structuredClone(narrativePreset.lockedPaths);
+        const narrativeInjection = structuredClone(narrativePreset.injection);
+        expect(d20LitePreset.initialState).not.toBe(narrativePreset.initialState);
+        expect(d20LitePreset.allowedPaths).not.toBe(narrativePreset.allowedPaths);
+        expect(d20LitePreset.lockedPaths).not.toBe(narrativePreset.lockedPaths);
+        expect(d20LitePreset.injection[0]).not.toBe(narrativePreset.injection[0]);
+        expect(Object.isFrozen(d20LitePreset)).toBe(true);
+        expect(Object.isFrozen(d20LitePreset.initialState)).toBe(true);
+        expect(Object.isFrozen(d20LitePreset.injection[0])).toBe(true);
+        expect(Object.isFrozen(d20LitePreset.stateSchema)).toBe(true);
+        expect(() => d20LitePreset.allowedPaths.pop()).toThrow();
+        expect(() => { d20LitePreset.initialState.scene.location = 'changed'; }).toThrow();
+        expect(() => { d20LitePreset.injection[0].label = 'changed'; }).toThrow();
+        expect(() => { d20LitePreset.stateSchema.properties.actors.maxProperties = 1; }).toThrow();
+        expect(narrativePreset.initialState).toEqual(narrativeInitial);
+        expect(narrativePreset.allowedPaths).toEqual(narrativeAllowed);
+        expect(narrativePreset.lockedPaths).toEqual(narrativeLocked);
+        expect(narrativePreset.injection).toEqual(narrativeInjection);
     });
 });

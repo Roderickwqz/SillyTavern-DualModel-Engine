@@ -23,7 +23,13 @@ describe('dice engine', () => {
     });
 
     it('refuses production dice when Web Crypto is unavailable', () => {
-        expect(() => createWebCryptoUint32({})).toThrow('Web Crypto is unavailable');
+        const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+        try {
+            delete globalThis.crypto;
+            expect(() => createWebCryptoUint32()).toThrow('Web Crypto is unavailable');
+        } finally {
+            if (original) Object.defineProperty(globalThis, 'crypto', original);
+        }
     });
 
     it('reads uint32 values only from Web Crypto', () => {
@@ -31,5 +37,18 @@ describe('dice engine', () => {
         const next = createWebCryptoUint32({ getRandomValues: (array) => { array[0] = 123; words.push(array); return array; } });
         expect(next()).toBe(123);
         expect(words[0]).toBeInstanceOf(Uint32Array);
+    });
+
+    it('uses globalThis.crypto by default without leaking a test replacement', () => {
+        const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+        const replacement = { getRandomValues: (array) => { array[0] = 321; return array; } };
+        try {
+            Object.defineProperty(globalThis, 'crypto', { configurable: true, value: replacement });
+            expect(createWebCryptoUint32()()).toBe(321);
+        } finally {
+            if (original) Object.defineProperty(globalThis, 'crypto', original);
+            else delete globalThis.crypto;
+        }
+        expect(globalThis.crypto).not.toBe(replacement);
     });
 });

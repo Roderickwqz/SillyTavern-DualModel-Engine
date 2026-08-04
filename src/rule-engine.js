@@ -16,6 +16,10 @@ function assertCheckAuthority(input, preset) {
     if (input.ability !== ability) throw new Error(`Ability does not match skill: ${input.skill}`);
 }
 
+function assertAdvantage(advantage) {
+    if (!['normal', 'advantage', 'disadvantage'].includes(advantage)) throw new Error(`Invalid advantage mode: ${advantage}`);
+}
+
 function assertActor(actorId, actor) {
     if (!actor) throw new Error(`Unknown actor: ${actorId}`);
 }
@@ -25,6 +29,7 @@ export function createRuleEngine({ nextUint32, preset }) {
     return {
         resolveCheck(input, state) {
             assertCheckAuthority(input, preset);
+            assertAdvantage(input.advantage);
             const actor = preset.readActor(state, input.actor);
             assertActor(input.actor, actor);
             const rolls = Array.from({ length: input.advantage === 'normal' ? 1 : 2 }, () => rollDie(20, nextUint32));

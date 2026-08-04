@@ -8,7 +8,7 @@ function nextValue(nextUint32) {
     return value;
 }
 
-export function createWebCryptoUint32(cryptoObject = crypto) {
+export function createWebCryptoUint32(cryptoObject = globalThis.crypto) {
     if (typeof cryptoObject?.getRandomValues !== 'function') throw new Error('Web Crypto is unavailable');
     return () => cryptoObject.getRandomValues(new Uint32Array(1))[0];
 }
