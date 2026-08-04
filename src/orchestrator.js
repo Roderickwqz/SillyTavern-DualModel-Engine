@@ -5,57 +5,66 @@ const conflicts = new Set(['stale-chat', 'stale-message', 'stale-swipe', 'branch
 export function createOrchestrator(deps) {
     const supported = new Set(['normal', 'swipe', 'regenerate', 'continue']);
     let activeChatId = null; let generation = null; let started = false; const unbind = [];
-    const diagnostic = value => { try { return deps.recordDiagnostic?.(value); } catch { return undefined; } };
+    const diagnostic = value => { try { return Promise.resolve(deps.recordDiagnostic?.(value)).catch(() => undefined); } catch { return undefined; } };
     function context() { return deps.adapter.getContext(); }
     function messageId(message) { return deps.ensureMessageId ? deps.ensureMessageId(message) : (message.extra?.dualModelEngine?.messageId); }
     async function initializeChat() {
         const current = context(); activeChatId = current.chatId; const config = deps.getConfig();
-        if (current.groupId || !config.enabled) { deps.promptInjector.clear(); return { enabled: false, reason: current.groupId ? 'group-chat' : 'disabled' }; }
-        const envelope = envelopeValue(deps.store.loadEnvelope()); const preset = deps.getPreset(envelope.preset.id);
+        if (current.groupId || !config.enabled) { try { deps.promptInjector.clear(); } catch (error) { diagnostic({ reason: 'prompt-clear-failed', error }); } return { enabled: false, reason: current.groupId ? 'group-chat' : 'disabled' }; }
+        const loaded = deps.store.loadEnvelope(); const envelope = envelopeValue(loaded);
+        if (!envelope || loaded?.ok === false) { diagnostic({ reason: 'missing-envelope' }); deps.promptInjector.clear(); return { enabled: false, reason: 'missing-envelope' }; }
+        const preset = deps.getPreset(envelope.preset.id);
         try { await deps.promptInjector.refresh({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection }); } catch (error) { diagnostic({ reason: 'prompt-refresh-failed', error }); }
         return { enabled: true };
     }
     function capture(type, current, envelope, config, preset) {
-        const target = ['swipe', 'continue', 'regenerate'].includes(type) ? current.chat.findLast(m => !m.is_user && !m.is_system) : null;
+        const target = ['swipe', 'continue', 'regenerate'].includes(type) ? current.chat.findLast(isFinalAssistant) : null;
         const targetId = target ? messageId(target) : null;
         const previousUser = current.chat.findLast(m => m.is_user);
-        const branch = type === 'continue' ? deps.store.getBranch?.(target, target?.swipe_id ?? 0)?.branchId : null;
-        return { type, chatId: current.chatId, expectedHeadRevision: envelope.headRevision, baseVersion: envelope.stateVersion, baseSnapshot: clone(envelope.activeSnapshot), effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantTextLength: type === 'continue' ? (target?.mes?.length ?? 0) : 0, playerText: previousUser?.mes ?? '', userMessageId: previousUser ? messageId(previousUser) : null };
+        const existing = deps.store.getBranch?.(target, target?.swipe_id ?? 0);
+        const prepared = ['swipe', 'regenerate'].includes(type) ? deps.prepareSwipeGeneration?.({ type, target, envelope }) : null;
+        const branch = type === 'continue' ? existing?.branchId : null;
+        return { type, chatId: current.chatId, expectedHeadRevision: envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (['swipe', 'regenerate'].includes(type) ? existing?.branchId ?? null : null), effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === 'continue' ? (target?.mes ?? '') : null, playerText: previousUser?.mes ?? '', userMessageId: previousUser ? messageId(previousUser) : null };
     }
     async function beforeGeneration(type) {
         if (!supported.has(type)) return { ignored: true, reason: 'unsupported-generation-type' };
         if (generation) return { ignored: true, reason: 'tool-recursion' };
         await deps.queue.waitForIdle(activeChatId ?? context().chatId);
-        const current = context(); const envelope = envelopeValue(deps.store.loadEnvelope()); const config = clone(deps.getConfig());
+        const current = context(); const loaded = deps.store.loadEnvelope(); const envelope = envelopeValue(loaded); const config = clone(deps.getConfig());
+        if (!envelope || loaded?.ok === false) { diagnostic({ reason: 'missing-envelope' }); return { ignored: true, reason: 'missing-envelope' }; }
         if (current.groupId || !config.enabled) { deps.promptInjector.clear(); return { ignored: true, reason: current.groupId ? 'group-chat' : 'disabled' }; }
         if (!deps.hasProfile(config.recorderProfileId)) { diagnostic({ reason: 'missing-recorder-profile', profileId: config.recorderProfileId }); return { ignored: true, reason: 'missing-recorder-profile' }; }
         const preset = deps.getPreset(config.rulePresetId);
         try { await deps.promptInjector.refresh({ state: envelope.activeSnapshot, budgetTokens: config.injectionBudget, injection: preset.injection }); } catch (error) { diagnostic({ reason: 'prompt-refresh-failed', error }); return { ignored: true, reason: 'prompt-refresh-failed' }; }
         activeChatId = current.chatId; generation = capture(type, current, envelope, config, preset); return { ok: true, requestId: generation.requestId };
     }
+    function isFinalAssistant(message) { return !message?.is_user && !message?.is_system && !message?.extra?.tool_invocations && !message?.extra?.tool_call_id && !message?.extra?.tool_calls && !message?.tool_calls; }
     function locate(current, captured) {
         if (current.chatId !== captured.chatId) return { ok: false, reason: 'stale-chat' };
-        const index = ['swipe', 'continue'].includes(captured.type) ? current.chat.findIndex(m => m.extra?.dualModelEngine?.messageId === captured.targetMessageId) : current.chat.findLastIndex(m => !m.is_user && !m.is_system && !m.extra?.tool_invocations && !m.extra?.tool_call_id);
+        const index = ['swipe', 'continue'].includes(captured.type) ? current.chat.findIndex(m => m.extra?.dualModelEngine?.messageId === captured.targetMessageId && isFinalAssistant(m)) : current.chat.findLastIndex(isFinalAssistant);
         return index < 0 ? { ok: false, reason: 'missing-final-message' } : { ok: true, message: current.chat[index], messageIndex: index };
     }
-    async function process(captured, message, signal) {
+    async function process(captured, _message, signal) {
         const now = context(); if (now.chatId !== captured.chatId) return { ok: false, reason: 'stale-chat' };
-        if (!now.chat.includes(message) || message.extra?.dualModelEngine?.messageId !== captured.assistantMessageId) return { ok: false, reason: 'stale-message' };
-        const assistantText = captured.type === 'continue' ? message.mes.slice(captured.assistantTextLength) : message.mes;
-        const checks = deps.getChecks(captured); const response = await deps.modelService.requestPatch({ profileId: captured.effectiveConfig.recorderProfileId, baseVersion: captured.baseVersion, oldState: captured.baseSnapshot, playerText: captured.playerText, assistantText, checks, signal });
+        const message = now.chat.find(item => item?.extra?.dualModelEngine?.messageId === captured.assistantMessageId);
+        if (!message || !isFinalAssistant(message) || (message.swipe_id ?? 0) !== captured.swipeId) return { ok: false, reason: 'stale-message' };
+        const assistantText = captured.type === 'continue' ? message.mes.slice(captured.assistantText.length) : message.mes;
+        if (captured.type === 'continue' && (!message.mes.startsWith(captured.assistantText) || message.mes.length < captured.assistantText.length)) return { ok: false, reason: 'stale-message' };
+        const checks = clone(captured.checks); const response = await deps.modelService.requestPatch({ profileId: captured.effectiveConfig.recorderProfileId, baseVersion: captured.baseVersion, oldState: captured.baseSnapshot, playerText: captured.playerText, assistantText, checks, signal });
         const validation = deps.validator.validatePatch(captured.effectiveConfig.rulePresetId, response.patch, { expectedVersion: captured.baseVersion, allowedPaths: captured.preset.allowedPaths, lockedPaths: [...captured.preset.lockedPaths, ...(captured.preset.ruleLockedPaths ?? [])] });
         if (!validation.ok) throw new Error(JSON.stringify(validation.errors));
         const applied = deps.applyPatch({ state: captured.baseSnapshot, patch: response.patch, policy: captured.preset, validateState: state => deps.validator.validateState(captured.effectiveConfig.rulePresetId, state) });
         if (!applied.ok) throw new Error(JSON.stringify(applied.errors)); applied.value.version = captured.baseVersion + 1;
-        return deps.store.commitSegment({ chatId: captured.chatId, message, messageId: captured.assistantMessageId, branchId: captured.branchId, swipeId: captured.swipeId, expectedHeadRevision: captured.expectedHeadRevision, baseStateVersion: captured.baseVersion, baseSnapshot: captured.baseSnapshot, requestId: captured.requestId, userMessageId: captured.userMessageId, patch: response.patch, checks, assistantText, nextState: applied.value, isContinue: captured.type === 'continue' });
+        return deps.store.commitSegment({ chatId: captured.chatId, message, messageId: captured.assistantMessageId, branchId: captured.branchId, swipeId: captured.swipeId, expectedHeadRevision: captured.expectedHeadRevision, baseStateVersion: captured.baseVersion, baseSnapshot: captured.baseSnapshot, requestId: captured.requestId, userMessageId: captured.userMessageId, patch: response.patch, checks: clone(captured.checks), assistantText, nextState: applied.value, isContinue: captured.type === 'continue' });
     }
     async function afterGeneration() {
         if (!generation) return { ignored: true, reason: 'no-matching-generation' };
         const located = locate(context(), generation); const captured = generation; generation = null;
         if (!located.ok) { diagnostic({ requestId: captured.requestId, ...located }); return located; }
-        captured.assistantMessageId = messageId(located.message); captured.swipeId = located.message.swipe_id ?? 0;
-        let queued; try { queued = deps.queue.enqueue(captured.chatId, captured.requestId, signal => process(captured, located.message, signal)); } catch (error) { diagnostic({ requestId: captured.requestId, reason: 'queue-enqueue-failed', error }); return { ok: false, reason: 'queue-enqueue-failed' }; }
-        void queued.then(async result => { if (result?.ok) { try { const env = envelopeValue(deps.store.loadEnvelope()); await deps.promptInjector.refresh({ state: env.activeSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection }); } catch (error) { diagnostic({ requestId: captured.requestId, reason: 'prompt-refresh-failed', error }); } } else if (conflicts.has(result?.reason)) diagnostic({ requestId: captured.requestId, ...result }); else deps.handleTaskFailure?.({ message: located.message, swipeId: captured.swipeId, requestId: captured.requestId, result }); }).catch(error => { if (error?.name === 'AbortError') return diagnostic({ requestId: captured.requestId, reason: 'cancelled' }); deps.handleTaskFailure?.({ message: located.message, swipeId: captured.swipeId, requestId: captured.requestId, error }); });
+        captured.assistantMessageId = messageId(located.message); captured.swipeId = located.message.swipe_id ?? 0; captured.checks = clone(deps.getChecks(captured));
+        const fail = async detail => { const outcome = await deps.store.markBranchFailed?.({ chatId: captured.chatId, messageId: captured.assistantMessageId, swipeId: captured.swipeId, branchId: captured.branchId, requestId: captured.requestId }); if (!outcome?.ok) diagnostic({ requestId: captured.requestId, ...detail, failureResult: outcome }); else diagnostic({ requestId: captured.requestId, ...detail }); };
+        let queued; try { queued = deps.queue.enqueue(captured.chatId, captured.requestId, signal => process(captured, located.message, signal)); } catch (error) { await fail({ reason: 'queue-enqueue-failed', error }); return { ok: false, reason: 'queue-enqueue-failed' }; }
+        void queued.then(async result => { if (result?.ok) { try { const env = envelopeValue(deps.store.loadEnvelope()); await deps.promptInjector.refresh({ state: env.activeSnapshot, budgetTokens: captured.effectiveConfig.injectionBudget, injection: captured.preset.injection }); } catch (error) { diagnostic({ requestId: captured.requestId, reason: 'prompt-refresh-failed', error }); } } else if (conflicts.has(result?.reason)) diagnostic({ requestId: captured.requestId, ...result }); else await fail({ reason: result?.reason ?? 'task-failed', result }); }).catch(async error => { if (error?.name === 'AbortError') return diagnostic({ requestId: captured.requestId, reason: 'cancelled' }); await fail({ reason: 'recorder-failed', error }); }).catch(() => undefined);
         return { ok: true, queued: true };
     }
     function generationStopped(reason = 'host-stopped') { if (!generation) return; diagnostic({ requestId: generation.requestId, reason }); generation = null; }

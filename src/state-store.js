@@ -201,6 +201,28 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         }
     }
 
+    async function markBranchFailed({ chatId, messageId, swipeId, branchId, requestId }) {
+        const context = adapter.getContext?.();
+        const envelope = context?.chatMetadata?.[NAMESPACE];
+        if (!context || context.chatId !== chatId) return result('stale-chat');
+        if (!validEnvelope(envelope)) return result('invalid-envelope');
+        const message = context.chat?.find(item => item?.extra?.[NAMESPACE]?.messageId === messageId);
+        const branch = message && getBranch(message, swipeId);
+        if (!message || (message.swipe_id ?? 0) !== swipeId || branch?.branchId !== branchId) return result('branch-conflict');
+        const metadataBefore = clone(envelope); const extraBefore = clone(message.extra); const swipesBefore = clone(message.swipe_info);
+        try {
+            branch.status = 'stale';
+            message.extra[NAMESPACE] = clone(message.swipe_info[swipeId].extra[NAMESPACE]);
+            envelope.taskStatus = { state: 'failed', requestId };
+            envelope.headRevision += 1;
+            await adapter.saveChat();
+            return { ok: true };
+        } catch (error) {
+            context.chatMetadata[NAMESPACE] = metadataBefore; message.extra = extraBefore; message.swipe_info = swipesBefore;
+            return result('save-failed', error);
+        }
+    }
+
     function listRuleRecords() {
         const records = new Map();
         for (const message of adapter.getContext?.()?.chat ?? []) {
@@ -215,5 +237,5 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         return [...records.values()].map(clone);
     }
 
-    return { loadEnvelope, getBranch, ensureBranch, commitSegment, restoreBranch, markStaleAfter, listRuleRecords };
+    return { loadEnvelope, getBranch, ensureBranch, commitSegment, restoreBranch, markStaleAfter, markBranchFailed, listRuleRecords };
 }

@@ -22,7 +22,7 @@ describe('bootstrap', () => {
         vi.clearAllMocks();
     });
 
-    it('returns the injected adapter and capabilities without registering or persisting', async () => {
+    it('constructs and starts the injected adapter orchestration without persisting', async () => {
         const adapter = {
             getContext: vi.fn(() => ({ groupId: null })),
             listProfiles: vi.fn(() => [{ id: 'recorder', name: 'Recorder' }]),
@@ -55,6 +55,7 @@ describe('bootstrap', () => {
         expect(adapter.off).not.toHaveBeenCalled();
         expect(adapter.saveChat).not.toHaveBeenCalled();
         expect(adapter.saveSettings).not.toHaveBeenCalled();
+        expect(result.orchestrator).toBeDefined();
     });
 
     it('loads the runtime adapter only when one is not injected', async () => {

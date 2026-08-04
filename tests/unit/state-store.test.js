@@ -69,6 +69,16 @@ it('persists a new branch from its base snapshot, clones caller data, and increm
     expect(saveChat).toHaveBeenCalledTimes(1);
 });
 
+it('marks only the still-matching branch failed transactionally', async () => {
+    const { store, current, context, saveChat } = setup();
+    await store.commitSegment(commitInput(current));
+    await expect(store.markBranchFailed({ chatId: 'chat-a', messageId: 'm1', swipeId: 0, branchId: 'b1', requestId: 'r2' })).resolves.toEqual({ ok: true });
+    expect(current.swipe_info[0].extra.dualModelEngine.branch.status).toBe('stale');
+    expect(context.chatMetadata.dualModelEngine.taskStatus).toEqual({ state: 'failed', requestId: 'r2' });
+    expect(saveChat).toHaveBeenCalledTimes(2);
+    await expect(store.markBranchFailed({ chatId: 'chat-a', messageId: 'm1', swipeId: 0, branchId: 'other', requestId: 'r3' })).resolves.toEqual({ ok: false, reason: 'branch-conflict' });
+});
+
 it('rejects duplicate requests before hashing or save', async () => {
     const { store, current, saveChat } = setup({ metadata: envelope({ lastCommittedRequestId: 'r1' }) });
     expect(await store.commitSegment(commitInput(current))).toEqual({ ok: false, reason: 'duplicate-request' });

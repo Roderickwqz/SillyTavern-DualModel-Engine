@@ -34,3 +34,13 @@
 ## Self-check / concern
 
 `handleTaskFailure` remains an injected integration boundary: this layer sends genuine Recorder/validation/apply/save errors to it and sends identity/CAS conflicts only to diagnostics. The application wiring that persists branch failure status can therefore apply its matching-branch guard at that boundary; no speculative state-store API was introduced.
+
+## Round 1 review fixes
+
+- Bootstrap is now the composition root: it builds the validator/store/model/prompt/queue defaults, constructs, starts, and initializes the orchestrator while preserving injected dependencies.
+- Queue processing re-finds its assistant by stable ID in the latest context, validates selected swipe, freezes checks at final-message capture, and safely handles continue text replacement/shortening.
+- `markBranchFailed` is a minimal rollback-safe state-store transaction: it requires current chat/message/swipe/branch identity, marks that branch stale, stores a failed task status, increments revision once, and saves once.
+- Recorder, validation, Patch, persistence, and synchronous enqueue errors use the failure transaction; identity/CAS conflicts remain diagnostic-only. Observer/refresh rejections are contained.
+- Swipe/regenerate invoke the optional preparation seam and retain source branch identity; compiled presets are not cloned. Tool-call message metadata is filtered consistently.
+
+Round-1 focused verification: `tests/integration/narrative-turn.test.js`, state-store, queue, adapter, and bootstrap tests passed. `npm run check` passed (125 tests, lint, build). The clean build output is staged in the round-1 commit.
