@@ -8,20 +8,17 @@ function throwIfAborted(signal) {
     if (signal?.aborted) throw abortError();
 }
 
-function readableText(value) {
-    try {
-        return typeof value === 'string' && value.trim() ? value.trim() : String(value);
-    } catch {
-        return 'Unknown validation error';
-    }
-}
-
 function normalizeErrors(errors, fallback = 'Validation failed') {
-    const source = Array.isArray(errors) ? errors : errors === undefined ? [] : [errors];
-    const normalized = source.map((error) => ({
-        message: readableText(error?.message ?? error) || fallback,
-    }));
-    return normalized.length ? normalized : [{ message: fallback }];
+    return errors.map((error) => {
+        let message = '';
+        try {
+            if (typeof error === 'string') message = error;
+            else if (error && typeof error === 'object' && typeof error.message === 'string') message = error.message;
+        } catch {
+            message = '';
+        }
+        return { message: message.trim() || fallback };
+    });
 }
 
 function formatErrors(errors) {
@@ -40,12 +37,16 @@ export function extractJsonObject(text) {
 
 function validate(value, validateValue, input) {
     const result = validateValue(value, input);
-    if (!result || typeof result !== 'object' || Array.isArray(result) || typeof result.ok !== 'boolean') {
-        return { ok: false, errors: [{ message: 'Invalid validator result' }] };
+    if (!result || typeof result !== 'object' || Array.isArray(result) || typeof result.ok !== 'boolean' || !Array.isArray(result.errors)) {
+        throw new TypeError('Invalid validator result');
     }
-    return result.ok
-        ? { ok: true, errors: [] }
-        : { ok: false, errors: normalizeErrors(result.errors) };
+    for (let index = 0; index < result.errors.length; index += 1) {
+        if (!Object.hasOwn(result.errors, index)) throw new TypeError('Invalid validator result');
+    }
+    if ((result.ok && result.errors.length !== 0) || (!result.ok && result.errors.length === 0)) {
+        throw new TypeError('Invalid validator result');
+    }
+    return result.ok ? { ok: true, errors: [] } : { ok: false, errors: normalizeErrors(result.errors) };
 }
 
 export function createModelService({ adapter, validatePatch, validateState }) {
@@ -69,11 +70,18 @@ export function createModelService({ adapter, validatePatch, validateState }) {
             }
             throwIfAborted(input.signal);
 
+            let content;
+            try {
+                content = response.content;
+            } catch (error) {
+                if (input.signal?.aborted) throw abortError();
+                throw error;
+            }
             let value;
             try {
-                value = extractJsonObject(response?.content);
-            } catch (error) {
-                errors = normalizeErrors(error, 'Invalid JSON response');
+                value = extractJsonObject(content);
+            } catch {
+                errors = [{ message: 'Response was not a valid JSON object' }];
                 continue;
             }
 

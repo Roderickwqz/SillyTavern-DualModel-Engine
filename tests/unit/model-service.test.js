@@ -89,11 +89,15 @@ describe('createModelService', () => {
     });
 
     it('stops after one repair when both outputs cannot be parsed', async () => {
-        const adapter = { requestProfile: vi.fn().mockResolvedValue({ content: 'not json' }) };
+        const invalidOutput = 'not json: include this secret only if leaked';
+        const adapter = { requestProfile: vi.fn().mockResolvedValue({ content: invalidOutput }) };
         const service = createModelService({ adapter, validatePatch: vi.fn() });
 
-        await expect(service.requestPatch(recorderInput())).rejects.toThrow('Invalid Recorder response');
+        await expect(service.requestPatch(recorderInput())).rejects.toThrow('Response was not a valid JSON object');
         expect(adapter.requestProfile).toHaveBeenCalledTimes(2);
+        const repairPayload = adapter.requestProfile.mock.calls[1][1][1].content;
+        expect(repairPayload).toContain('Response was not a valid JSON object');
+        expect(repairPayload).not.toContain(invalidOutput);
     });
 
     it('does not repair transport failures', async () => {
@@ -141,12 +145,52 @@ describe('createModelService', () => {
         expect(validatePatch).not.toHaveBeenCalled();
     });
 
-    it('treats malformed and throwing validator results as non-successful errors', async () => {
+    it('propagates inaccessible response content without a repair request', async () => {
+        const contentError = new Error('content is inaccessible');
+        const response = {};
+        Object.defineProperty(response, 'content', { get: () => { throw contentError; } });
+        const adapter = { requestProfile: vi.fn().mockResolvedValue(response) };
+        const service = createModelService({ adapter, validatePatch: vi.fn() });
+
+        await expect(service.requestPatch(recorderInput())).rejects.toThrow('content is inaccessible');
+        expect(adapter.requestProfile).toHaveBeenCalledTimes(1);
+    });
+
+    it('propagates malformed validator results without a repair request', async () => {
         const adapter = { requestProfile: vi.fn().mockResolvedValue({ content: JSON.stringify(validPatch()) }) };
         const malformed = createModelService({ adapter, validatePatch: () => ({ ok: 'true', errors: [] }) });
         await expect(malformed.requestPatch(recorderInput())).rejects.toThrow('Invalid validator result');
-        expect(adapter.requestProfile).toHaveBeenCalledTimes(2);
+        expect(adapter.requestProfile).toHaveBeenCalledTimes(1);
+    });
 
+    it.each([
+        { ok: true, errors: [{ message: 'unexpected' }] },
+        { ok: false, errors: [] },
+        { ok: false, errors: new Array(1) },
+    ])('rejects malformed strict validator Result without retry: %o', async (result) => {
+        const adapter = { requestProfile: vi.fn().mockResolvedValue({ content: JSON.stringify(validPatch()) }) };
+        const service = createModelService({ adapter, validatePatch: () => result });
+
+        await expect(service.requestPatch(recorderInput())).rejects.toThrow('Invalid validator result');
+        expect(adapter.requestProfile).toHaveBeenCalledTimes(1);
+    });
+
+    it('normalizes unusual but dense validation errors before repairing', async () => {
+        const throwingText = { toString: () => { throw new Error('unsafe stringification'); } };
+        const adapter = { requestProfile: vi.fn().mockResolvedValueOnce({ content: JSON.stringify(validPatch()) }).mockResolvedValueOnce({ content: JSON.stringify(validPatch()) }) };
+        const service = createModelService({
+            adapter,
+            validatePatch: vi.fn()
+                .mockReturnValueOnce({ ok: false, errors: [null, Symbol('unsafe'), Object.create(null), throwingText] })
+                .mockReturnValueOnce({ ok: true, errors: [] }),
+        });
+
+        await expect(service.requestPatch(recorderInput())).resolves.toMatchObject({ repaired: true });
+        const repairErrors = JSON.parse(adapter.requestProfile.mock.calls[1][1][1].content).validationErrors;
+        expect(repairErrors).toEqual(Array(4).fill({ message: 'Validation failed' }));
+    });
+
+    it('propagates validator throws without a repair request', async () => {
         const throwingAdapter = { requestProfile: vi.fn().mockResolvedValue({ content: JSON.stringify(validPatch()) }) };
         const throwing = createModelService({ adapter: throwingAdapter, validatePatch: () => { throw new Error('validator exploded'); } });
         await expect(throwing.requestPatch(recorderInput())).rejects.toThrow('validator exploded');
