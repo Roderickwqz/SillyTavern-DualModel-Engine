@@ -13,4 +13,10 @@ describe('extension package', () => {
         expect(existsSync('dist/index.js')).toBe(true);
         expect(existsSync('dist/style.css')).toBe(true);
     });
+
+    it('bundles Ajv into the committed extension entry point', () => {
+        const entryPoint = readFileSync('dist/index.js', 'utf8');
+
+        expect(entryPoint).toContain('node_modules/ajv/dist/ajv.js');
+    });
 });
