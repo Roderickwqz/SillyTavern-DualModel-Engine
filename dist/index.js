@@ -7130,6 +7130,7 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     if ((message.swipe_id ?? 0) !== swipeId || !message.swipe_info?.[swipeId]) return result("stale-swipe");
     const namespace2 = getNamespace(message, swipeId);
     const branch = namespace2?.branch;
+    if (branch?.status === "stale") return result("stale-branch");
     const snapshot = branch?.segments?.at(-1)?.postSnapshot;
     if (!snapshot) return result("missing-snapshot");
     if (typeof namespace2.messageId !== "string" || !namespace2.messageId || typeof branch.branchId !== "string" || !branch.branchId) return result("invalid-identity");
@@ -7929,7 +7930,14 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
     let lastValidVersion = baseSnapshot.version;
     for (const item of buildRecalculationPlan(startIndex)) {
       signal.throwIfAborted();
-      const value = await replayTurn({ ...item, baseSnapshot, signal });
+      let value;
+      try {
+        value = await replayTurn({ ...item, baseSnapshot, signal });
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        return { ok: false, reason: "replay-failed", failedAt: item.messageIndex, lastValidVersion, error };
+      }
+      signal.throwIfAborted();
       if (!value?.ok) return { ok: false, failedAt: item.messageIndex, lastValidVersion };
       baseSnapshot = value.snapshot;
       lastValidVersion = value.stateVersion;
@@ -7942,7 +7950,13 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
   async function invalidateAndRecalculate(startIndex, options, signal) {
     const invalidated = await store.invalidateFrom(startIndex, options);
     if (!invalidated?.ok) return invalidated;
-    if (!await confirm({ action: "recalculate", startIndex, count: buildRecalculationPlan(startIndex).length, restoredVersion: invalidated.snapshot.version })) return { ok: false, reason: "recalculation-required" };
+    let accepted;
+    try {
+      accepted = await confirm({ action: "recalculate", startIndex, count: buildRecalculationPlan(startIndex).length, restoredVersion: invalidated.snapshot.version });
+    } catch (error) {
+      return { ok: false, reason: "confirmation-failed", error };
+    }
+    if (!accepted) return { ok: false, reason: "recalculation-required" };
     return recalculateNow(startIndex, signal);
   }
   function invalidateForEdit(messageIndex) {
@@ -7977,57 +7991,63 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
         handlers.push([name, fn]);
       }
     };
-    refresh();
-    on(events.MESSAGE_SWIPED, (index) => {
-      if (!isWritable()) return { ok: false, reason: "read-only" };
-      const { message } = stableAt(index);
-      const previousSwipeId = selectedSwipes.get(index) ?? 0;
-      const swipe = message?.swipe_id ?? 0;
-      const previous = store.getBranch?.(message, previousSwipeId);
-      const current = store.getBranch?.(message, swipe);
-      selectedSwipes.set(index, swipe);
-      if (pendingSwipeSources.get(index) === swipe) {
+    try {
+      refresh();
+      on(events.MESSAGE_SWIPED, (index) => {
+        if (!isWritable()) return { ok: false, reason: "read-only" };
+        const { message } = stableAt(index);
+        const previousSwipeId = selectedSwipes.get(index) ?? 0;
+        const swipe = message?.swipe_id ?? 0;
+        const previous = store.getBranch?.(message, previousSwipeId);
+        const current = store.getBranch?.(message, swipe);
+        selectedSwipes.set(index, swipe);
+        if (pendingSwipeSources.get(index) === swipe) {
+          pendingSwipeSources.delete(index);
+          return restoreSwipe(index, swipe);
+        }
+        if (!current || swipe !== previousSwipeId && current.branchId === previous?.branchId) {
+          pendingSwipeSources.set(index, previousSwipeId);
+          return { ok: true, pendingGeneration: true, sourceSwipeId: previousSwipeId };
+        }
         pendingSwipeSources.delete(index);
         return restoreSwipe(index, swipe);
-      }
-      if (!current || swipe !== previousSwipeId && current.branchId === previous?.branchId) {
-        pendingSwipeSources.set(index, previousSwipeId);
-        return { ok: true, pendingGeneration: true, sourceSwipeId: previousSwipeId };
-      }
-      pendingSwipeSources.delete(index);
-      return restoreSwipe(index, swipe);
-    });
-    on(events.MESSAGE_EDITED, invalidateForEdit);
-    on(events.MESSAGE_DELETED, async () => {
-      if (!isWritable()) return { ok: false, reason: "read-only" };
-      const boundary = changedBoundary();
-      if (replacementDeletion(boundary)) {
-        replacement.deleted = true;
-        refresh();
-        return { ok: true, ignored: "regenerate-replacement" };
-      }
-      await store.auditActiveRef();
-      const value = await invalidateForDelete(boundary);
-      refresh();
-      return value;
-    });
-    on(events.MESSAGE_SWIPE_DELETED, (event) => {
-      if (!isWritable()) return { ok: false, reason: "read-only" };
-      if (!event || !Number.isInteger(event.messageId) || !Number.isInteger(event.swipeId)) return { ok: false, reason: "invalid-swipe-delete" };
-      const index = event.messageId;
-      const { message } = stableAt(index);
-      const selected = message?.swipe_id ?? event.newSwipeId;
-      const activeRef = context().chatMetadata?.dualModelEngine?.activeRef;
-      if (activeRef?.messageId !== message?.extra?.dualModelEngine?.messageId) {
-        return Promise.resolve(store.auditActiveRef()).then((audit) => {
+      });
+      on(events.MESSAGE_EDITED, invalidateForEdit);
+      on(events.MESSAGE_DELETED, async () => {
+        if (!isWritable()) return { ok: false, reason: "read-only" };
+        const boundary = changedBoundary();
+        if (replacementDeletion(boundary)) {
+          replacement.deleted = true;
           refresh();
-          return audit?.ok ? { ok: true, ignored: "historical-swipe-delete" } : recoverAfterDelete();
-        });
-      }
-      selectedSwipes.set(index, selected);
-      messageSnapshot = snapshotChat();
-      return restoreSwipe(index, selected);
-    });
+          return { ok: true, ignored: "regenerate-replacement" };
+        }
+        await store.auditActiveRef();
+        const value = await invalidateForDelete(boundary);
+        refresh();
+        return value;
+      });
+      on(events.MESSAGE_SWIPE_DELETED, (event) => {
+        if (!isWritable()) return { ok: false, reason: "read-only" };
+        if (!event || !Number.isInteger(event.messageId) || !Number.isInteger(event.swipeId)) return { ok: false, reason: "invalid-swipe-delete" };
+        const index = event.messageId;
+        const { message } = stableAt(index);
+        const selected = message?.swipe_id ?? event.newSwipeId;
+        const activeRef = context().chatMetadata?.dualModelEngine?.activeRef;
+        if (activeRef?.messageId !== message?.extra?.dualModelEngine?.messageId) {
+          return Promise.resolve(store.auditActiveRef()).then((audit) => {
+            refresh();
+            return audit?.ok ? { ok: true, ignored: "historical-swipe-delete" } : recoverAfterDelete();
+          });
+        }
+        selectedSwipes.set(index, selected);
+        messageSnapshot = snapshotChat();
+        return restoreSwipe(index, selected);
+      });
+      on(events.CHAT_CHANGED, refresh);
+    } catch (error) {
+      destroy();
+      throw error;
+    }
   }
   function refresh() {
     selectedSwipes.clear();

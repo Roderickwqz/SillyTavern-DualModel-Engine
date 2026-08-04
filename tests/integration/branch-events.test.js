@@ -15,7 +15,7 @@ function assistant(id, swipes, selected = 0) {
     };
 }
 
-function eventHost({ chat = [], chatId = 'chat-a', writable = true } = {}) {
+function eventHost({ chat = [], chatId = 'chat-a', writable = true, confirm, replayTurn, on, off, autoBind = true } = {}) {
     const listeners = new Map();
     const context = {
         chatId, chat, chatMetadata: { dualModelEngine: {
@@ -25,14 +25,14 @@ function eventHost({ chat = [], chatId = 'chat-a', writable = true } = {}) {
     };
     const saveChat = vi.fn(async () => {});
     const adapter = {
-        events: { MESSAGE_SWIPED: 'swiped', MESSAGE_SWIPE_DELETED: 'swipe-deleted', MESSAGE_EDITED: 'edited', MESSAGE_DELETED: 'deleted' },
+        events: { MESSAGE_SWIPED: 'swiped', MESSAGE_SWIPE_DELETED: 'swipe-deleted', MESSAGE_EDITED: 'edited', MESSAGE_DELETED: 'deleted', CHAT_CHANGED: 'chat-changed' },
         getContext: () => context, saveChat,
-        on: (name, fn) => listeners.set(name, fn), off: (name, fn) => { if (listeners.get(name) === fn) listeners.delete(name); },
+        on: on ?? ((name, fn) => listeners.set(name, fn)), off: off ?? ((name, fn) => { if (listeners.get(name) === fn) listeners.delete(name); }),
     };
     const store = createStateStore({ adapter, hashText: async text => `hash:${text}` });
     const queue = createChatTaskQueue();
-    const manager = createRollbackManager({ adapter, store, queue, isWritable: () => writable });
-    manager.bind();
+    const manager = createRollbackManager({ adapter, store, queue, confirm, replayTurn, isWritable: () => writable });
+    if (autoBind) manager.bind();
     return { context, saveChat, adapter, store, queue, manager, emit: (name, payload) => listeners.get(name)?.(payload) };
 }
 
@@ -208,4 +208,111 @@ it('C12 bound event handlers are idempotent and do not mutate read-only chats', 
     expect(host.saveChat).not.toHaveBeenCalled();
     host.manager.destroy(); host.manager.destroy();
     expect(host.emit('swiped', 0)).toBeUndefined();
+});
+
+it('C6 MESSAGE_EDITED invalidates from the next message for a user edit, then keeps the last valid boundary when confirmation is declined', async () => {
+    const prior = assistant('prior', [branch('prior', 1)]);
+    const affected = assistant('affected', [branch('affected', 2)]);
+    const host = eventHost({ chat: [prior, { is_user: true, mes: 'edited user' }, affected], confirm: async () => false });
+    Object.assign(host.context.chatMetadata.dualModelEngine, { stateVersion: 2, activeSnapshot: { version: 2 }, activeRef: { messageId: 'affected', swipeId: 0, branchId: 'affected' } });
+
+    await host.emit('edited', 1);
+    await host.queue.waitForIdle('chat-a');
+
+    expect(affected.swipe_info[0].extra.dualModelEngine.branch.status).toBe('stale');
+    expect(host.context.chatMetadata.dualModelEngine.activeSnapshot).toEqual({ version: 1 });
+    expect(host.context.chatMetadata.dualModelEngine.activeRef).toEqual({ messageId: 'prior', swipeId: 0, branchId: 'prior' });
+    expect(host.saveChat).toHaveBeenCalledOnce();
+});
+
+it('C6 selected assistant edit stales its selected branch and descendants, then replays visible selected assistants in order', async () => {
+    const selected = assistant('selected', [branch('old', 2), branch('selected', 2)], 1);
+    const descendant = assistant('descendant', [branch('descendant', 3)]);
+    const calls = [];
+    const host = eventHost({ chat: [{ is_user: true }, selected, descendant], confirm: async () => true, replayTurn: async input => {
+        calls.push(input); return { ok: true, snapshot: { version: input.baseSnapshot.version + 1 }, stateVersion: input.baseSnapshot.version + 1 };
+    } });
+
+    await host.emit('edited', 1);
+    await host.queue.waitForIdle('chat-a');
+
+    expect(selected.swipe_info[0].extra.dualModelEngine.branch.status).toBe('committed');
+    expect(selected.swipe_info[1].extra.dualModelEngine.branch.status).toBe('stale');
+    expect(descendant.swipe_info[0].extra.dualModelEngine.branch.status).toBe('stale');
+    expect(calls.map(call => call.messageIndex)).toEqual([1, 2]);
+    expect(calls.map(call => call.baseSnapshot.version)).toEqual([0, 1]);
+    expect(host.saveChat).toHaveBeenCalledOnce();
+});
+
+it('C10 turns confirmation and replay exceptions into contained failed recalculation results', async () => {
+    const message = assistant('target', [branch('target', 1)]);
+    const confirmation = eventHost({ chat: [message], confirm: async () => { throw new Error('dialog failed'); } });
+    await expect(confirmation.manager.invalidateForEdit(0)).resolves.toMatchObject({ ok: false, reason: 'confirmation-failed' });
+    await confirmation.queue.waitForIdle('chat-a');
+    expect(confirmation.saveChat).toHaveBeenCalledOnce();
+
+    const replay = eventHost({ chat: [assistant('target', [branch('target', 1)])], confirm: async () => true, replayTurn: async () => { throw new Error('model failed'); } });
+    await expect(replay.manager.invalidateForEdit(0)).resolves.toMatchObject({ ok: false, reason: 'replay-failed', failedAt: 0, lastValidVersion: 0 });
+    await replay.queue.waitForIdle('chat-a');
+    expect(replay.saveChat).toHaveBeenCalledOnce();
+});
+
+it('C11 rejects an edited event whose captured message was replaced before its queued task begins', async () => {
+    const first = assistant('first', [branch('first', 1)]); const target = assistant('target', [branch('target', 2)]);
+    const host = eventHost({ chat: [first, target], confirm: async () => false });
+    const blocker = host.queue.enqueue('chat-a', 'blocker', async () => {});
+    const queued = host.emit('edited', 1);
+    host.context.chat[1] = assistant('replacement', [branch('replacement', 9)]);
+    await blocker;
+    await expect(queued).resolves.toEqual({ ok: false, reason: 'stale-message' });
+    expect(host.saveChat).not.toHaveBeenCalled();
+});
+
+it('C10 stops a cancelled recalculation after an abort-ignoring replay resolves and does not start its successor', async () => {
+    let resolveReplay; const calls = [];
+    const queue = createChatTaskQueue(); const chat = [assistant('first', [branch('first', 1)])];
+    const manager = createRollbackManager({
+        adapter: { getContext: () => ({ chatId: 'chat-a', chat }) }, queue,
+        store: { findLastValidSnapshot: () => ({ snapshot: { version: 0 } }) },
+        replayTurn: input => { calls.push(input); return new Promise(resolve => { resolveReplay = resolve; }); },
+    });
+    const result = manager.recalculate(0);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    queue.cancelChat('chat-a', 'cancelled');
+    resolveReplay({ ok: true, snapshot: { version: 1 }, stateVersion: 1 });
+    await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls).toHaveLength(1);
+});
+
+it('C11 queued swipe restoration cannot revive a branch made stale by an earlier edit', async () => {
+    const message = assistant('target', [branch('zero', 1), branch('one', 2)], 0);
+    const host = eventHost({ chat: [message], confirm: async () => false });
+    const blocker = host.queue.enqueue('chat-a', 'blocker', async () => {});
+    const edit = host.emit('edited', 0);
+    message.swipe_id = 1;
+    const restore = host.emit('swiped', 0);
+    await blocker;
+    await edit;
+    await expect(restore).resolves.toEqual({ ok: false, reason: 'stale-branch' });
+    expect(message.swipe_info[1].extra.dualModelEngine.branch.status).toBe('stale');
+    expect(host.context.chatMetadata.dualModelEngine.activeRef).toBeNull();
+});
+
+it('C12 refreshes selected swipes on CHAT_CHANGED and rolls back partial bind registrations when adapter.on throws', () => {
+    const listeners = new Map(); let count = 0;
+    const host = eventHost({ autoBind: false, chat: [assistant('one', [branch('one', 1), branch('one-alt', 2)])], on: (name, fn) => { count += 1; if (count === 2) throw new Error('registration failed'); listeners.set(name, fn); }, off: (name, fn) => { if (listeners.get(name) === fn) listeners.delete(name); } });
+    expect(() => host.manager.bind()).toThrow('registration failed');
+    expect(listeners.size).toBe(0);
+    host.adapter.on = (name, fn) => listeners.set(name, fn);
+    host.manager.bind();
+    expect(listeners.size).toBe(5);
+    host.context.chat[0].swipe_id = 1;
+    host.emit('chat-changed');
+    expect(host.manager.prepareSwipeGeneration(0, 'swipe')).toMatchObject({ baseSwipeId: 1, baseBranchId: 'one-alt' });
+    host.manager.destroy();
+    expect(host.emit('edited', 0)).toBeUndefined();
+    expect(host.emit('deleted', 0)).toBeUndefined();
+    expect(host.emit('swiped', 0)).toBeUndefined();
+    expect(host.emit('swipe-deleted', { messageId: 0, swipeId: 0 })).toBeUndefined();
+    expect(host.emit('chat-changed')).toBeUndefined();
 });

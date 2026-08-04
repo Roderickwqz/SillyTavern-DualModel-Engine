@@ -64,13 +64,27 @@ export function createRollbackManager({ adapter, store, queue, confirm = async (
     function buildRecalculationPlan(startIndex) { return context().chat.slice(startIndex).map((message, offset) => ({ message, messageIndex: startIndex + offset })).filter(({ message }) => !message?.is_user && !message?.is_system).map(({ messageIndex, message }) => ({ messageIndex, swipeId: message.swipe_id ?? 0 })); }
     async function recalculateNow(startIndex, signal) {
         let baseSnapshot = store.findLastValidSnapshot(startIndex - 1).snapshot; let lastValidVersion = baseSnapshot.version;
-        for (const item of buildRecalculationPlan(startIndex)) { signal.throwIfAborted(); const value = await replayTurn({ ...item, baseSnapshot, signal }); if (!value?.ok) return { ok: false, failedAt: item.messageIndex, lastValidVersion }; baseSnapshot = value.snapshot; lastValidVersion = value.stateVersion; }
+        for (const item of buildRecalculationPlan(startIndex)) {
+            signal.throwIfAborted();
+            let value;
+            try { value = await replayTurn({ ...item, baseSnapshot, signal }); }
+            catch (error) {
+                if (error?.name === 'AbortError') throw error;
+                return { ok: false, reason: 'replay-failed', failedAt: item.messageIndex, lastValidVersion, error };
+            }
+            signal.throwIfAborted();
+            if (!value?.ok) return { ok: false, failedAt: item.messageIndex, lastValidVersion };
+            baseSnapshot = value.snapshot; lastValidVersion = value.stateVersion;
+        }
         return { ok: true, lastValidVersion };
     }
     function recalculate(startIndex) { return serialize(`recalculate-${startIndex}`, signal => recalculateNow(startIndex, signal)); }
     async function invalidateAndRecalculate(startIndex, options, signal) {
         const invalidated = await store.invalidateFrom(startIndex, options); if (!invalidated?.ok) return invalidated;
-        if (!await confirm({ action: 'recalculate', startIndex, count: buildRecalculationPlan(startIndex).length, restoredVersion: invalidated.snapshot.version })) return { ok: false, reason: 'recalculation-required' };
+        let accepted;
+        try { accepted = await confirm({ action: 'recalculate', startIndex, count: buildRecalculationPlan(startIndex).length, restoredVersion: invalidated.snapshot.version }); }
+        catch (error) { return { ok: false, reason: 'confirmation-failed', error }; }
+        if (!accepted) return { ok: false, reason: 'recalculation-required' };
         return recalculateNow(startIndex, signal);
     }
     function invalidateForEdit(messageIndex) { const { message, messageId } = stableAt(messageIndex); const start = message?.is_user ? messageIndex + 1 : messageIndex; return serialize('invalidate-edit', signal => { const current = context().chat[messageIndex]; if (!message || current !== message || current.extra?.dualModelEngine?.messageId !== messageId) return { ok: false, reason: 'stale-message' }; return invalidateAndRecalculate(start, { includeStartSelectedOnly: !message.is_user }, signal); }); }
@@ -79,8 +93,9 @@ export function createRollbackManager({ adapter, store, queue, confirm = async (
     function bind() {
         if (handlers.length) return;
         const events = adapter.events ?? {}; const on = (name, fn) => { if (name) { adapter.on(name, fn); handlers.push([name, fn]); } };
-        refresh();
-        on(events.MESSAGE_SWIPED, index => {
+        try {
+            refresh();
+            on(events.MESSAGE_SWIPED, index => {
             if (!isWritable()) return { ok: false, reason: 'read-only' };
             const { message } = stableAt(index); const previousSwipeId = selectedSwipes.get(index) ?? 0; const swipe = message?.swipe_id ?? 0;
             const previous = store.getBranch?.(message, previousSwipeId); const current = store.getBranch?.(message, swipe); selectedSwipes.set(index, swipe);
@@ -88,14 +103,14 @@ export function createRollbackManager({ adapter, store, queue, confirm = async (
             if (!current || (swipe !== previousSwipeId && current.branchId === previous?.branchId)) { pendingSwipeSources.set(index, previousSwipeId); return { ok: true, pendingGeneration: true, sourceSwipeId: previousSwipeId }; }
             pendingSwipeSources.delete(index); return restoreSwipe(index, swipe);
         });
-        on(events.MESSAGE_EDITED, invalidateForEdit);
-        on(events.MESSAGE_DELETED, async () => {
+            on(events.MESSAGE_EDITED, invalidateForEdit);
+            on(events.MESSAGE_DELETED, async () => {
             if (!isWritable()) return { ok: false, reason: 'read-only' };
             const boundary = changedBoundary();
             if (replacementDeletion(boundary)) { replacement.deleted = true; refresh(); return { ok: true, ignored: 'regenerate-replacement' }; }
             await store.auditActiveRef(); const value = await invalidateForDelete(boundary); refresh(); return value;
         });
-        on(events.MESSAGE_SWIPE_DELETED, event => {
+            on(events.MESSAGE_SWIPE_DELETED, event => {
             if (!isWritable()) return { ok: false, reason: 'read-only' };
             if (!event || !Number.isInteger(event.messageId) || !Number.isInteger(event.swipeId)) return { ok: false, reason: 'invalid-swipe-delete' };
             const index = event.messageId; const { message } = stableAt(index); const selected = message?.swipe_id ?? event.newSwipeId;
@@ -107,7 +122,9 @@ export function createRollbackManager({ adapter, store, queue, confirm = async (
             }
             selectedSwipes.set(index, selected); messageSnapshot = snapshotChat();
             return restoreSwipe(index, selected);
-        });
+            });
+            on(events.CHAT_CHANGED, refresh);
+        } catch (error) { destroy(); throw error; }
     }
     function refresh() { selectedSwipes.clear(); pendingSwipeSources.clear(); (context().chat ?? []).forEach((message, index) => { if (!message?.is_user && !message?.is_system) selectedSwipes.set(index, message.swipe_id ?? 0); }); messageSnapshot = snapshotChat(); }
     function destroy() { while (handlers.length) { const [name, fn] = handlers.pop(); try { adapter.off(name, fn); } catch { /* best effort */ } } }

@@ -168,6 +168,7 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         if ((message.swipe_id ?? 0) !== swipeId || !message.swipe_info?.[swipeId]) return result('stale-swipe');
         const namespace = getNamespace(message, swipeId);
         const branch = namespace?.branch;
+        if (branch?.status === 'stale') return result('stale-branch');
         const snapshot = branch?.segments?.at(-1)?.postSnapshot;
         if (!snapshot) return result('missing-snapshot');
         if (typeof namespace.messageId !== 'string' || !namespace.messageId

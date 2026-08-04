@@ -25,7 +25,7 @@ it('T8 bootstrap retains init error while attempting all cleanup', async () => {
     value.adapter.on.mockImplementation((_name, handler) => handlers.push(handler)); value.adapter.off.mockImplementation(() => { throw new Error('off'); });
     value.queue.cancelChat.mockImplementation(() => { throw new Error('cancel'); }); value.promptInjector.clear.mockImplementation(() => { throw new Error('clear'); });
     await expect(bootstrap({ adapter: value.adapter, dependencies: { queue: value.queue, promptInjector: value.promptInjector, getConfig: () => { throw initError; }, store: { loadEnvelope: () => ({ ok: false }) }, recordDiagnostic: value.recordDiagnostic } })).rejects.toBe(initError);
-    expect(value.adapter.off).toHaveBeenCalledTimes(4); expect(value.queue.cancelChat).toHaveBeenCalledWith('x', 'orchestrator-stopped'); expect(value.promptInjector.clear).toHaveBeenCalledOnce(); expect(handlers).toHaveLength(4);
+    expect(value.adapter.off).toHaveBeenCalledTimes(5); expect(value.queue.cancelChat).toHaveBeenCalledWith('x', 'orchestrator-stopped'); expect(value.promptInjector.clear).toHaveBeenCalledOnce(); expect(handlers).toHaveLength(5);
 });
 
 it('T8 refuses restart after an unbind failure to avoid duplicate handlers', () => {
