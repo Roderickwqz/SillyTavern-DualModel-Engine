@@ -11,7 +11,8 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:e2e": "playwright test",
-    "check": "npm run lint && npm run test:run && npm run build"
+    "check:dist": "git diff --exit-code -- dist",
+    "check": "npm run lint && npm run test:run && npm run build && npm run check:dist"
   },
   "dependencies": { "ajv": "8.20.0" },
   "devDependencies": {

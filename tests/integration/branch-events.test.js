@@ -147,6 +147,35 @@ it('C5 MESSAGE_DELETED invalidates surviving descendants even when its active re
     expect(host.context.chatMetadata.dualModelEngine.activeSnapshot).toEqual({ version: 0 });
 });
 
+it('C5 MESSAGE_DELETED restores the preceding selected branch after tail truncation', async () => {
+    const first = assistant('first', [branch('first', 1)]);
+    const tail = assistant('tail', [branch('tail', 2)]);
+    const host = eventHost({ chat: [{ is_user: true }, first, tail] });
+    Object.assign(host.context.chatMetadata.dualModelEngine, { stateVersion: 2, activeSnapshot: { version: 2 }, activeRef: { messageId: 'tail', swipeId: 0, branchId: 'tail' } });
+
+    host.context.chat.splice(2, 1);
+    await host.emit('deleted', host.context.chat.length);
+    await host.queue.waitForIdle('chat-a');
+
+    expect(host.context.chatMetadata.dualModelEngine.activeSnapshot).toEqual({ version: 1 });
+    expect(host.context.chatMetadata.dualModelEngine.activeRef).toEqual({ messageId: 'first', swipeId: 0, branchId: 'first' });
+});
+
+it('C5 MESSAGE_DELETED uses the earliest boundary after a combined host deletion', async () => {
+    const first = assistant('first', [branch('first', 1)]);
+    const middle = assistant('middle', [branch('middle', 2)]);
+    const survivor = assistant('survivor', [branch('survivor', 3)]);
+    const host = eventHost({ chat: [{ is_user: true }, first, middle, survivor] });
+    Object.assign(host.context.chatMetadata.dualModelEngine, { stateVersion: 3, activeSnapshot: { version: 3 }, activeRef: { messageId: 'survivor', swipeId: 0, branchId: 'survivor' } });
+
+    host.context.chat.splice(1, 2);
+    await host.emit('deleted', host.context.chat.length);
+    await host.queue.waitForIdle('chat-a');
+
+    expect(survivor.swipe_info[0].extra.dualModelEngine.branch.status).toBe('stale');
+    expect(host.context.chatMetadata.dualModelEngine.activeSnapshot).toEqual({ version: 0 });
+});
+
 it('C5 regenerate suppression does not swallow a same-chat deletion of a different message', async () => {
     const other = assistant('other', [branch('other', 1)]);
     const target = assistant('target', [branch('target', 2)]);

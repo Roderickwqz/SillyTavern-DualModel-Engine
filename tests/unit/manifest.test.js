@@ -16,6 +16,12 @@ describe('extension package', () => {
         expect(existsSync('dist/style.css')).toBe(true);
     });
 
+    it('checks committed distribution assets after building them', () => {
+        const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
+        expect(packageJson.scripts['check:dist']).toBe('git diff --exit-code -- dist');
+        expect(packageJson.scripts.check).toBe('npm run lint && npm run test:run && npm run build && npm run check:dist');
+    });
+
     it('loads its bundled Ajv export without dynamic evaluation', async () => {
         const originalFunction = globalThis.Function;
         globalThis.Function = function blockedDynamicEvaluation() {

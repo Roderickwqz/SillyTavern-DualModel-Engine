@@ -7833,6 +7833,7 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
   let replacement = null;
   let taskSequence = 0;
   const handlers = [];
+  let messageSnapshot = [];
   const context = () => adapter.getContext();
   function serialize(name, task) {
     if (!isWritable()) return Promise.resolve({ ok: false, reason: "read-only" });
@@ -7847,6 +7848,22 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
     const message = context().chat[index];
     return { message, messageId: message?.extra?.dualModelEngine?.messageId };
   }
+  function messageIdentity(message) {
+    return message?.extra?.dualModelEngine?.messageId ?? message;
+  }
+  function snapshotChat() {
+    return (context().chat ?? []).map(messageIdentity);
+  }
+  function changedBoundary() {
+    const current = snapshotChat();
+    const common = Math.min(messageSnapshot.length, current.length);
+    for (let index = 0; index < common; index += 1) if (messageSnapshot[index] !== current[index]) return index;
+    return common;
+  }
+  function replacementDeletion(boundary) {
+    if (!replacement || replacement.chatId !== context().chatId || context().chat.length !== replacement.expectedLength || boundary !== replacement.messageIndex) return false;
+    return !context().chat.includes(replacement.message) && !context().chat.some((message) => messageIdentity(message) === replacement.messageIdentity);
+  }
   function prepareSwipeGeneration(messageIndex, type) {
     if (!isWritable()) return { ok: false, reason: "read-only" };
     const { message } = stableAt(messageIndex);
@@ -7854,7 +7871,7 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
     pendingSwipeSources.delete(messageIndex);
     const source = store.getBranch?.(message, sourceSwipeId);
     if (!source) return { ok: false, reason: "missing-source-branch" };
-    if (type === "regenerate") replacement = { chatId: context().chatId, deleted: false };
+    if (type === "regenerate") replacement = { chatId: context().chatId, message, messageIdentity: messageIdentity(message), messageIndex, expectedLength: context().chat.length - 1, deleted: false };
     const checks = source.segments?.flatMap((segment) => segment.checks ?? []).filter((record) => record?.kind === "check") ?? [];
     const reusableChecks = [...new Map(checks.map((record) => [record.checkId, record])).values()];
     return { ok: true, baseBranchId: source.branchId, baseSnapshot: clone3(source.baseSnapshot), baseStateVersion: source.baseStateVersion, expectedHeadRevision: context().chatMetadata?.dualModelEngine?.headRevision, reusableChecks: clone3(reusableChecks) };
@@ -7967,15 +7984,16 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
       return restoreSwipe(index, swipe);
     });
     on(events.MESSAGE_EDITED, invalidateForEdit);
-    on(events.MESSAGE_DELETED, async (index) => {
+    on(events.MESSAGE_DELETED, async () => {
       if (!isWritable()) return { ok: false, reason: "read-only" };
-      if (replacement?.chatId === context().chatId) {
+      const boundary = changedBoundary();
+      if (replacementDeletion(boundary)) {
         replacement.deleted = true;
         refresh();
         return { ok: true, ignored: "regenerate-replacement" };
       }
-      const audit = await store.auditActiveRef();
-      const value = audit?.ok ? await invalidateForDelete(index) : await recoverAfterDelete();
+      await store.auditActiveRef();
+      const value = await invalidateForDelete(boundary);
       refresh();
       return value;
     });
@@ -7983,10 +8001,18 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
       if (!isWritable()) return { ok: false, reason: "read-only" };
       if (!event || !Number.isInteger(event.messageId) || !Number.isInteger(event.swipeId)) return { ok: false, reason: "invalid-swipe-delete" };
       const index = event.messageId;
-      const { message, messageId } = stableAt(index);
-      if (selectedSwipes.get(index) !== event.swipeId) return serialize("remove-swipe", () => !message || !context().chat.includes(message) || message.extra?.dualModelEngine?.messageId !== messageId ? { ok: false, reason: "stale-message" } : store.removeBranch(message, event.swipeId));
-      selectedSwipes.set(index, event.newSwipeId);
-      return restoreSwipe(index, event.newSwipeId);
+      const { message } = stableAt(index);
+      const selected = message?.swipe_id ?? event.newSwipeId;
+      const activeRef = context().chatMetadata?.dualModelEngine?.activeRef;
+      if (activeRef?.messageId !== message?.extra?.dualModelEngine?.messageId) {
+        return Promise.resolve(store.auditActiveRef()).then((audit) => {
+          refresh();
+          return audit?.ok ? { ok: true, ignored: "historical-swipe-delete" } : recoverAfterDelete();
+        });
+      }
+      selectedSwipes.set(index, selected);
+      messageSnapshot = snapshotChat();
+      return restoreSwipe(index, selected);
     });
   }
   function refresh() {
@@ -7995,6 +8021,7 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
     (context().chat ?? []).forEach((message, index) => {
       if (!message?.is_user && !message?.is_system) selectedSwipes.set(index, message.swipe_id ?? 0);
     });
+    messageSnapshot = snapshotChat();
   }
   function destroy() {
     while (handlers.length) {
