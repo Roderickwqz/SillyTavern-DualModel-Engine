@@ -36,7 +36,7 @@ export function createRollbackManager({ adapter, store, queue, confirm = async (
         if (type === 'regenerate') replacement = { chatId: context().chatId, message, messageIdentity: messageIdentity(message), messageIndex, expectedLength: context().chat.length - 1, deleted: false };
         const checks = source.segments?.flatMap(segment => segment.checks ?? []).filter(record => record?.kind === 'check') ?? [];
         const reusableChecks = [...new Map(checks.map(record => [record.checkId, record])).values()];
-        return { ok: true, baseBranchId: source.branchId, baseSnapshot: clone(source.baseSnapshot), baseStateVersion: source.baseStateVersion, expectedHeadRevision: context().chatMetadata?.dualModelEngine?.headRevision, reusableChecks: clone(reusableChecks) };
+        return { ok: true, baseBranchId: source.branchId, baseSwipeId: sourceSwipeId, baseSnapshot: clone(source.baseSnapshot), baseStateVersion: source.baseStateVersion, expectedHeadRevision: context().chatMetadata?.dualModelEngine?.headRevision, reusableChecks: clone(reusableChecks) };
     }
     function completeReplacement() { replacement = null; }
     async function recoverAfterDeleteNow(signal) {

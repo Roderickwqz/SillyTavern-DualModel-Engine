@@ -99,7 +99,8 @@ export function createStateStore({ adapter, makeId = () => crypto.randomUUID(), 
         if (envelope.stateVersion !== input.baseStateVersion) {
             if (!input.allowBaseVersionMismatch || !input.baseBranchId
                 || envelope.activeRef?.branchId !== input.baseBranchId
-                || envelope.activeRef?.messageId !== input.baseMessageId) return 'state-conflict';
+                || envelope.activeRef?.messageId !== input.baseMessageId
+                || envelope.activeRef?.swipeId !== input.baseSwipeId) return 'state-conflict';
         }
         if (input.nextState?.version !== input.baseStateVersion + 1) return 'invalid-next-version';
         if (envelope.lastCommittedRequestId === input.requestId) return 'duplicate-request';

@@ -6674,7 +6674,7 @@ function createOrchestrator(deps) {
     const prepared = ["swipe", "regenerate"].includes(type) ? deps.rollbackManager?.prepareSwipeGeneration?.(current.chat.length - 1, type) ?? deps.prepareSwipeGeneration?.({ type, target, envelope }) : null;
     if (prepared?.ok === false) return null;
     const branch = type === "continue" ? existing?.branchId : null;
-    return { type, chatId: current.chatId, expectedHeadRevision: prepared?.expectedHeadRevision ?? envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (["swipe", "regenerate"].includes(type) ? existing?.branchId ?? null : null), reusableChecks: clone(prepared?.reusableChecks ?? []), effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === "continue" ? target?.mes ?? "" : null, playerText: previousUser?.mes ?? "", userMessageId: previousUser ? messageId(previousUser) : null };
+    return { type, chatId: current.chatId, expectedHeadRevision: prepared?.expectedHeadRevision ?? envelope.headRevision, baseVersion: prepared?.baseStateVersion ?? envelope.stateVersion, baseSnapshot: clone(prepared?.baseSnapshot ?? envelope.activeSnapshot), baseBranchId: prepared?.baseBranchId ?? (["swipe", "regenerate"].includes(type) ? existing?.branchId ?? null : null), baseSwipeId: prepared?.baseSwipeId ?? (["swipe", "regenerate"].includes(type) ? target?.swipe_id ?? 0 : null), reusableChecks: clone(prepared?.reusableChecks ?? []), effectiveConfig: clone(config), preset, requestId: deps.makeId?.() ?? crypto.randomUUID(), branchId: branch ?? (deps.makeId?.() ?? crypto.randomUUID()), targetMessageId: targetId, assistantText: type === "continue" ? target?.mes ?? "" : null, playerText: previousUser?.mes ?? "", userMessageId: previousUser ? messageId(previousUser) : null };
   }
   async function beforeGeneration(type) {
     if (!supported.has(type)) return { ignored: true, reason: "unsupported-generation-type" };
@@ -6736,7 +6736,7 @@ function createOrchestrator(deps) {
     const applied = deps.applyPatch({ state: captured.baseSnapshot, patch: response.patch, policy: captured.preset, validateState: (state) => deps.validator.validateState(captured.effectiveConfig.rulePresetId, state) });
     if (!applied.ok) throw new Error(JSON.stringify(applied.errors));
     applied.value.version = captured.baseVersion + 1;
-    return deps.store.commitSegment({ chatId: captured.chatId, message, messageId: captured.assistantMessageId, branchId: captured.branchId, swipeId: captured.swipeId, expectedHeadRevision: captured.expectedHeadRevision, baseStateVersion: captured.baseVersion, baseSnapshot: captured.baseSnapshot, requestId: captured.requestId, userMessageId: captured.userMessageId, patch: response.patch, checks: clone(captured.checks), assistantText, nextState: applied.value, isContinue: captured.type === "continue", allowBaseVersionMismatch: ["swipe", "regenerate"].includes(captured.type), baseBranchId: captured.baseBranchId, baseMessageId: captured.targetMessageId, signal });
+    return deps.store.commitSegment({ chatId: captured.chatId, message, messageId: captured.assistantMessageId, branchId: captured.branchId, swipeId: captured.swipeId, expectedHeadRevision: captured.expectedHeadRevision, baseStateVersion: captured.baseVersion, baseSnapshot: captured.baseSnapshot, requestId: captured.requestId, userMessageId: captured.userMessageId, patch: response.patch, checks: clone(captured.checks), assistantText, nextState: applied.value, isContinue: captured.type === "continue", allowBaseVersionMismatch: ["swipe", "regenerate"].includes(captured.type), baseBranchId: captured.baseBranchId, baseMessageId: captured.targetMessageId, baseSwipeId: captured.baseSwipeId, signal });
   }
   async function replayTurn({ messageIndex, swipeId, baseSnapshot, signal }) {
     const current = context();
@@ -7067,7 +7067,7 @@ function createStateStore({ adapter, makeId = () => crypto.randomUUID(), hashTex
     if (input.isContinue && existingBranch?.branchId !== input.branchId) return "branch-conflict";
     if (envelope.headRevision !== input.expectedHeadRevision) return "head-conflict";
     if (envelope.stateVersion !== input.baseStateVersion) {
-      if (!input.allowBaseVersionMismatch || !input.baseBranchId || envelope.activeRef?.branchId !== input.baseBranchId || envelope.activeRef?.messageId !== input.baseMessageId) return "state-conflict";
+      if (!input.allowBaseVersionMismatch || !input.baseBranchId || envelope.activeRef?.branchId !== input.baseBranchId || envelope.activeRef?.messageId !== input.baseMessageId || envelope.activeRef?.swipeId !== input.baseSwipeId) return "state-conflict";
     }
     if (input.nextState?.version !== input.baseStateVersion + 1) return "invalid-next-version";
     if (envelope.lastCommittedRequestId === input.requestId) return "duplicate-request";
@@ -7888,7 +7888,7 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
     if (type === "regenerate") replacement = { chatId: context().chatId, message, messageIdentity: messageIdentity(message), messageIndex, expectedLength: context().chat.length - 1, deleted: false };
     const checks = source.segments?.flatMap((segment) => segment.checks ?? []).filter((record) => record?.kind === "check") ?? [];
     const reusableChecks = [...new Map(checks.map((record) => [record.checkId, record])).values()];
-    return { ok: true, baseBranchId: source.branchId, baseSnapshot: clone3(source.baseSnapshot), baseStateVersion: source.baseStateVersion, expectedHeadRevision: context().chatMetadata?.dualModelEngine?.headRevision, reusableChecks: clone3(reusableChecks) };
+    return { ok: true, baseBranchId: source.branchId, baseSwipeId: sourceSwipeId, baseSnapshot: clone3(source.baseSnapshot), baseStateVersion: source.baseStateVersion, expectedHeadRevision: context().chatMetadata?.dualModelEngine?.headRevision, reusableChecks: clone3(reusableChecks) };
   }
   function completeReplacement() {
     replacement = null;

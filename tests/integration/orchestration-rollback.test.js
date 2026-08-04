@@ -101,6 +101,15 @@ it('rejects a replacement rebase when the captured source activeRef changes desp
     expect(replacement.swipe_info[0].extra.dualModelEngine.branch).toBeUndefined(); expect(subject.context.chatMetadata.dualModelEngine.activeRef).toEqual({ messageId: 'prior', swipeId: 0, branchId: 'prior-branch' }); expect(commit).not.toHaveBeenCalled();
 });
 
+it('rejects a replacement rebase when its captured source message and branch are reused at another swipe', async () => {
+    const subject = host(); const complete = vi.spyOn(subject.manager, 'completeReplacement'); const sourceRef = structuredClone(subject.context.chatMetadata.dualModelEngine.activeRef);
+    await subject.orchestrator.beforeGeneration('regenerate'); subject.context.chat.pop(); await subject.emit('deleted', subject.context.chat.length);
+    const replacement = { is_user: false, mes: 'replacement', swipe_id: 0, extra: { dualModelEngine: { messageId: 'replacement' } }, swipe_info: [{ extra: { dualModelEngine: { messageId: 'replacement' } } }] };
+    subject.context.chat.push(replacement); await subject.orchestrator.afterGeneration(); await vi.waitFor(() => expect(subject.recorder).toHaveBeenCalledOnce());
+    subject.context.chatMetadata.dualModelEngine.activeRef = { ...sourceRef, swipeId: 1 }; subject.resolve({ patch: recorderPatch(1) }); await subject.queue.waitForIdle('chat-a');
+    expect(replacement.swipe_info[0].extra.dualModelEngine.branch).toBeUndefined(); expect(subject.context.chatMetadata.dualModelEngine.activeRef).toEqual({ ...sourceRef, swipeId: 1 }); expect(complete).not.toHaveBeenCalled();
+});
+
 it('stopping after Recorder resolves but before its deferred hash completes cannot commit and settles replacement once', async () => {
     let releaseHash; let hashStarted = false; const subject = host({ ignoreAbort: true, hashText: () => new Promise(resolve => { hashStarted = true; releaseHash = resolve; }) }); const abort = vi.spyOn(subject.manager, 'abortReplacement'); const unhandled = []; const listener = reason => unhandled.push(reason); process.on('unhandledRejection', listener);
     await subject.orchestrator.beforeGeneration('regenerate'); subject.context.chat.pop(); await subject.emit('deleted', subject.context.chat.length);
