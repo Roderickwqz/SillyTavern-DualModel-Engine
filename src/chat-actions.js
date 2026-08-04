@@ -22,7 +22,7 @@ export function createChatActions(deps) {
     return {
         recalculate: async () => { const captured = current(deps); if (!captured) return { ok: false, reason: 'not-writable' }; const plan = deps.rollbackManager.buildRecalculationPlan?.(deps.currentInvalidIndex?.()); if (plan && !await deps.confirm({ action: 'recalculate', plan })) return { ok: false, reason: 'cancelled' }; return deps.rollbackManager.recalculate(deps.currentInvalidIndex?.()); },
         reroll: () => transaction('reroll', async captured => {
-            const records = deps.ledger.list(); const old = deps.selectedCheck?.() ?? records.findLast(record => record.branchId === captured.ref.branchId); if (!old?.request) return { ok: false, reason: 'missing-check' };
+            const records = deps.ledger.list(); const old = deps.selectedCheck?.() ?? records.findLast(record => record.kind === 'check' && record.branchId === captured.ref.branchId); if (!old?.request) return { ok: false, reason: 'missing-check' };
             const preset = deps.preset(captured.envelope.preset.id); if (!preset?.readActor) return { ok: false, reason: 'rules-unavailable' };
             const result = createRuleEngine({ preset, nextUint32: deps.nextUint32 }).resolveCheck(old.request, captured.envelope.activeSnapshot);
             const record = deps.ledger.reroll(old, { kind: 'check', branchId: captured.ref.branchId, signature: old.signature, request: structuredClone(old.request), result });

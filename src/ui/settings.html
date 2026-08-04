@@ -30,10 +30,10 @@
   </div>
   <aside data-dme-role="status-bar" aria-live="polite"></aside>
   <section id="dme-state" role="tabpanel" aria-labelledby="dme-tab-state"><textarea data-dme-role="state-json"></textarea><pre data-dme-role="patch-preview"></pre><button type="button" data-dme-action="edit-state">Edit state</button><button type="button" data-dme-action="save-state">Save state</button></section>
-  <section id="dme-checks" role="tabpanel" hidden><div data-dme-role="checks-list"></div><label>Target <input data-dme-role="damage-target"></label><label>Damage <input data-dme-role="damage-expression"></label><label>Type <input data-dme-role="damage-type"></label><label>Reason <input data-dme-role="damage-reason"></label><button type="button" data-dme-action="reroll">Reroll</button><button type="button" data-dme-action="apply-damage">Apply damage</button></section>
-  <section id="dme-history" role="tabpanel" hidden><div data-dme-role="history-list"></div><button type="button" data-dme-action="recalculate">Recalculate</button><button type="button" data-dme-action="resummarize">Resummarize</button></section>
-  <section id="dme-rules" role="tabpanel" hidden><div data-dme-role="rules-list"></div><button type="button" data-dme-action="import-preset">Import</button><button type="button" data-dme-action="export-preset">Export</button></section>
-  <section id="dme-diagnostics" role="tabpanel" hidden><pre data-dme-role="diagnostics-json"></pre><button type="button" data-dme-action="export-raw">Export raw data</button></section>
+  <section id="dme-checks" role="tabpanel" aria-labelledby="dme-tab-checks" hidden><div data-dme-role="checks-list"></div><label>Target <input data-dme-role="damage-target"></label><label>Damage <input data-dme-role="damage-expression"></label><label>Type <input data-dme-role="damage-type"></label><label>Reason <input data-dme-role="damage-reason"></label><button type="button" data-dme-action="reroll">Reroll</button><button type="button" data-dme-action="apply-damage">Apply damage</button></section>
+  <section id="dme-history" role="tabpanel" aria-labelledby="dme-tab-history" hidden><div data-dme-role="history-list"></div><button type="button" data-dme-action="recalculate">Recalculate</button><button type="button" data-dme-action="resummarize">Resummarize</button></section>
+  <section id="dme-rules" role="tabpanel" aria-labelledby="dme-tab-rules" hidden><div data-dme-role="rules-list"></div><button type="button" data-dme-action="import-preset">Import</button><button type="button" data-dme-action="export-preset">Export</button></section>
+  <section id="dme-diagnostics" role="tabpanel" aria-labelledby="dme-tab-diagnostics" hidden><pre data-dme-role="diagnostics-json"></pre><button type="button" data-dme-action="export-raw">Export raw data</button></section>
   <button type="button" data-dme-action="probe-tools">Probe tool calling</button>
   <pre data-dme-role="diagnostic-reasons"></pre>
 </section>

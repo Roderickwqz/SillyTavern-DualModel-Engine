@@ -101,9 +101,9 @@ export function createUIController(deps) {
     async function onClick(event) {
         const target = event.target.closest?.('[data-dme-action], [data-dme-tab]');
         if (!target || !root?.contains(target)) return;
-        if (target.dataset.dmeTab) { for (const button of root.querySelectorAll('[role="tab"]')) { const selected = button === target; button.setAttribute('aria-selected', String(selected)); const panel = root.querySelector(`#${button.getAttribute('aria-controls')}`); if (panel) panel.hidden = !selected; } return; }
+        if (target.dataset.dmeTab) { for (const button of root.querySelectorAll('[role="tab"]')) { const selected = button === target; button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1; const panel = root.querySelector(`#${button.getAttribute('aria-controls')}`); if (panel) panel.hidden = !selected; } return; }
         const action = target.dataset.dmeAction;
-        const safe = async fn => { try { await fn?.(); } catch (error) { status = error?.message ?? String(error); } await render(); };
+        const safe = async fn => { try { if (!fn) { status = 'Action unavailable'; return; } const result = await fn(); if (result?.ok === false) status = `${result.reason ?? 'Action failed'}${result.errors?.length ? `: ${JSON.stringify(result.errors)}` : ''}`; } catch (error) { status = error?.message ?? String(error); } await render(); };
         if (action === 'edit-state') { root.querySelector('[data-dme-role="state-json"]')?.focus(); return; }
         if (action === 'save-state') return safe(async () => {
             const envelope = deps.getEnvelope?.() ?? getContext().chatMetadata?.dualModelEngine; const before = envelope?.activeSnapshot;
@@ -114,7 +114,7 @@ export function createUIController(deps) {
             root.querySelector('[data-dme-role="patch-preview"]').textContent = JSON.stringify(result.operations ?? tab.preview(before, parsed.value), null, 2); status = result.reason ?? (result.ok ? 'State saved' : 'State not saved');
         });
         const damageInput = () => ({ target: root.querySelector('[data-dme-role="damage-target"]')?.value ?? '', expression: root.querySelector('[data-dme-role="damage-expression"]')?.value ?? '', type: root.querySelector('[data-dme-role="damage-type"]')?.value ?? '', reason: root.querySelector('[data-dme-role="damage-reason"]')?.value ?? '' });
-        const actions = { recalculate: () => deps.rollbackManager?.recalculate?.(deps.currentInvalidIndex?.()), reroll: deps.rerollSelectedCheck, 'apply-damage': () => deps.applyManualDamage?.(damageInput()), resummarize: deps.resummarizeCurrentBranch, 'import-preset': deps.importPresetFromPicker, 'export-preset': deps.downloadPreset ?? exportRawData, 'export-raw': deps.downloadRawData };
+        const actions = { recalculate: deps.recalculateCurrentBranch ?? (() => deps.rollbackManager?.recalculate?.(deps.currentInvalidIndex?.()) ?? { ok: false, reason: 'unavailable' }), reroll: deps.rerollSelectedCheck, 'apply-damage': () => deps.applyManualDamage?.(damageInput()), resummarize: deps.resummarizeCurrentBranch, 'import-preset': deps.importPresetFromPicker, 'export-preset': deps.downloadPreset ?? exportRawData, 'export-raw': deps.downloadRawData };
         if (actions[action]) return safe(actions[action]);
         if (action === 'export-preset' && exportRawData) { status = String(await exportRawData()); await render(); return; }
         if (action !== 'probe-tools' || probePending) return;

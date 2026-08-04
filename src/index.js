@@ -140,6 +140,9 @@ export async function bootstrap({ adapter, dependencies } = {}) {
             diffState,
             getPresetPolicy: () => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; const preset = presetManager.getPreset(envelope?.preset?.id); return { allowedPaths: preset?.allowedPaths ?? [], lockedPaths: preset?.lockedPaths?.filter(path => path !== '/version') ?? [], ruleLockedPaths: preset?.ruleLockedPaths ?? [] }; },
             getPresetUiFields: () => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; return presetManager.getPreset(envelope?.preset?.id)?.ui ?? []; },
+            listChecks: () => ledger.list(),
+            listHistory: () => (runtimeAdapter.getContext?.()?.chat ?? []).flatMap(message => (message.swipe_info ?? []).flatMap(swipe => swipe?.extra?.[NAMESPACE]?.branch?.segments ?? [])).map(segment => ({ ...segment, status: segment.status ?? 'committed' })),
+            listDiagnostics: () => runtimeAdapter.getSettings?.()?.[NAMESPACE]?.diagnostics ?? [],
             commitManualPatch: async input => {
                 const context = runtimeAdapter.getContext?.(); const envelope = store.loadEnvelope?.().value;
                 if (!context?.chatId || context.groupId || orchestrator.getActiveGeneration?.()) return { ok: false, reason: 'not-writable' };
@@ -153,6 +156,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
                 });
             },
             rollbackManager,
+            recalculateCurrentBranch: chatActions.recalculate,
             currentInvalidIndex: resolved.currentInvalidIndex,
             rerollSelectedCheck: chatActions.reroll,
             applyManualDamage: input => chatActions.applyDamage(input),

@@ -17,3 +17,21 @@
 .dualmodel-error {
   color: var(--warning-color, #d97706);
 }
+.dualmodel-audit--committed {
+  border-left: 3px solid #16803c;
+}
+.dualmodel-audit--failed {
+  border-left: 3px solid #b91c1c;
+}
+.dualmodel-audit--stale {
+  border-left: 3px solid #d97706;
+}
+.dualmodel-audit--invalidated {
+  border-left: 3px solid #7c3aed;
+}
+.dualmodel-audit--reused {
+  border-left: 3px solid #0369a1;
+}
+.dualmodel-audit--superseded {
+  border-left: 3px solid #6b7280;
+}
