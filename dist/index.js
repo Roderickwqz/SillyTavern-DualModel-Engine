@@ -7980,7 +7980,8 @@ function createRollbackManager({ adapter, store, queue, confirm = async () => fa
       return value;
     });
     on(events.MESSAGE_SWIPE_DELETED, (event) => {
-      if (!isWritable() || !event || !Number.isInteger(event.messageId) || !Number.isInteger(event.swipeId)) return { ok: false, reason: "invalid-swipe-delete" };
+      if (!isWritable()) return { ok: false, reason: "read-only" };
+      if (!event || !Number.isInteger(event.messageId) || !Number.isInteger(event.swipeId)) return { ok: false, reason: "invalid-swipe-delete" };
       const index = event.messageId;
       const { message, messageId } = stableAt(index);
       if (selectedSwipes.get(index) !== event.swipeId) return serialize("remove-swipe", () => !message || !context().chat.includes(message) || message.extra?.dualModelEngine?.messageId !== messageId ? { ok: false, reason: "stale-message" } : store.removeBranch(message, event.swipeId));
