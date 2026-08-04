@@ -6597,6 +6597,45 @@ function probeHostCapabilities(adapter) {
     reasons
   };
 }
+async function runDynamicToolProbe(adapter) {
+  const name = "DualModelCapabilityProbe";
+  let invoked = false;
+  const definition = { name, displayName: "DualModel Capability Probe", description: "Call this probe exactly once.", parameters: { type: "object", properties: {}, additionalProperties: false }, action: async () => {
+    invoked = true;
+    return { ok: true };
+  }, shouldRegister: () => true, stealth: true };
+  const label = adapter?.getMainApiModelLabel?.() ?? null;
+  const persist = async (report) => {
+    const safe = { supported: Boolean(report.supported), reason: report.reason ?? null, checkedAt: (/* @__PURE__ */ new Date()).toISOString(), apiModelLabel: label };
+    const settings = adapter?.getSettings?.();
+    if (!settings || typeof settings !== "object") return { ...report, ...safe };
+    settings.toolProbe = safe;
+    try {
+      await adapter.saveSettings?.();
+    } catch (error) {
+      const failure = { supported: false, reason: `Probe persistence failed: ${error.message}`, checkedAt: safe.checkedAt, apiModelLabel: label };
+      settings.toolProbe = failure;
+      return { ...report, ...failure };
+    }
+    return { ...report, ...safe };
+  };
+  if (typeof adapter?.registerTool !== "function" || typeof adapter?.unregisterTool !== "function" || typeof adapter?.probeMainTool !== "function") return persist({ supported: false, reason: "Tool probe API is unavailable" });
+  let attempted = false;
+  try {
+    attempted = true;
+    adapter.registerTool(definition);
+    const result2 = await adapter.probeMainTool({ prompt: `Call ${name} exactly once.`, definition, responseLength: 32 });
+    const errors = result2?.invocation?.errors ?? [];
+    return await persist({ supported: Boolean(result2?.supported && invoked && !errors.length), reason: result2?.reason ?? (invoked && !errors.length ? null : "Model response did not successfully invoke the probe tool"), invocation: result2?.invocation });
+  } catch (error) {
+    return persist({ supported: false, reason: error?.message ?? String(error) });
+  } finally {
+    if (attempted) try {
+      adapter.unregisterTool(name);
+    } catch {
+    }
+  }
+}
 
 // src/orchestrator.js
 function envelopeValue(value) {
@@ -9019,6 +9058,187 @@ function createPresetManager({ settings, builtInPresets = [], registerPreset, un
   };
 }
 
+// src/ui/settings.html?raw
+var settings_default = '<section id="dualmodel-settings" class="dualmodel-panel" aria-label="DualModel Engine">\n  <h3>DualModel Engine</h3>\n  <fieldset data-scope="global"><legend>Global defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <label>Update policy <select data-dme-field="updatePolicy"><option value="after-each-reply">After each reply</option><option value="manual">Manual</option></select></label>\n    <label><input data-dme-field="showStatusBar" type="checkbox"> Show status bar</label>\n  </fieldset>\n  <fieldset data-scope="character" data-dme-role="character-settings"><legend>Current character defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n  </fieldset>\n  <fieldset data-scope="chat" data-dme-role="chat-settings"><legend>Current chat</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <output data-dme-role="chat-disabled-reason" aria-live="polite"></output>\n  </fieldset>\n  <output data-dme-role="task-status" aria-live="polite"></output>\n  <button type="button" data-dme-action="probe-tools">Probe tool calling</button>\n  <pre data-dme-role="diagnostic-reasons"></pre>\n</section>\n';
+
+// src/ui/controller.js
+var MIN_BUDGET = 256;
+var MAX_BUDGET = 8192;
+var PROFILE_EVENTS = ["CONNECTION_PROFILE_LOADED", "CONNECTION_PROFILE_CREATED", "CONNECTION_PROFILE_UPDATED", "CONNECTION_PROFILE_DELETED"];
+function budget(value) {
+  return Math.max(MIN_BUDGET, Math.min(MAX_BUDGET, Number(value) || MIN_BUDGET));
+}
+function copy(value) {
+  return structuredClone(value ?? {});
+}
+function createUIController(deps) {
+  let root = null;
+  let status = "";
+  let profileDiagnostic = "";
+  let probePending = null;
+  const listeners = [];
+  const getContext = () => deps.adapter?.getContext?.() ?? {};
+  const diagnostic = () => {
+    const reasons = [...deps.capabilities?.reasons ?? []];
+    const profiles = deps.listProfiles?.() ?? [];
+    for (const scope of ["global", "character", "chat"]) {
+      const profileId = { global: deps.getGlobalConfig, character: deps.getCharacterConfig, chat: deps.getChatConfig }[scope]?.()?.recorderProfileId;
+      if (profileId && !profiles.some((profile) => profile.id === profileId)) reasons.push(`Recorder profile is missing: ${profileId}`);
+    }
+    return profileDiagnostic ? [...reasons, profileDiagnostic] : reasons;
+  };
+  const setText = (selector, value) => {
+    const node = root?.querySelector(selector);
+    if (node) node.textContent = value ?? "";
+  };
+  function populate(select, values, selected) {
+    select.replaceChildren();
+    for (const value of values) {
+      const option = document.createElement("option");
+      option.value = value.id;
+      option.textContent = value.name ?? value.id;
+      select.append(option);
+    }
+    select.value = selected ?? "";
+  }
+  async function render() {
+    if (!root) return;
+    const profiles = deps.listProfiles?.() ?? [];
+    const presets = deps.listPresets?.() ?? [];
+    for (const fieldset of root.querySelectorAll("[data-scope]")) {
+      const scope = fieldset.dataset.scope;
+      const config = copy({ global: deps.getGlobalConfig, character: deps.getCharacterConfig, chat: deps.getChatConfig }[scope]?.());
+      for (const select of fieldset.querySelectorAll('[data-dme-field="recorderProfileId"]')) populate(select, profiles, config.recorderProfileId);
+      for (const select of fieldset.querySelectorAll('[data-dme-field="rulePresetId"]')) populate(select, presets, config.rulePresetId);
+      for (const field of fieldset.querySelectorAll('[data-dme-field="adjudication"]')) field.value = config.adjudication ?? "automatic-tool";
+      for (const field of fieldset.querySelectorAll('[data-dme-field="injectionBudget"]')) field.value = String(budget(config.injectionBudget ?? 1200));
+      for (const field of fieldset.querySelectorAll('[data-dme-field="enabled"], [data-dme-field="showStatusBar"]')) field.checked = Boolean(config[field.dataset.dmeField]);
+      for (const field of fieldset.querySelectorAll('[data-dme-field="updatePolicy"]')) field.value = config.updatePolicy ?? "after-each-reply";
+    }
+    const isGroup = Boolean(deps.capabilities?.isGroupChat ?? getContext().groupId);
+    const chat = root.querySelector('[data-dme-role="chat-settings"]');
+    chat.disabled = isGroup;
+    setText('[data-dme-role="chat-disabled-reason"]', isGroup ? "Chat settings are unavailable in group chats." : "");
+    setText('[data-dme-role="task-status"]', status);
+    setText('[data-dme-role="diagnostic-reasons"]', diagnostic().join("\n"));
+  }
+  async function save(scope, patch) {
+    if (scope === "global") return deps.saveGlobalConfig(copy({ ...deps.getGlobalConfig?.(), ...patch }));
+    if (scope === "character") return deps.saveCharacterConfig(copy({ ...deps.getCharacterConfig?.(), ...patch }));
+    const chatId = getContext().chatId;
+    if (!chatId || deps.capabilities?.isGroupChat || getContext().groupId) return;
+    return deps.queue.enqueue(chatId, `settings-${Date.now()}`, async (signal) => {
+      signal.throwIfAborted();
+      if (getContext().chatId !== chatId || getContext().groupId) return;
+      await deps.saveChatConfig(copy({ ...deps.getChatConfig?.(), ...patch }));
+      if (getContext().chatId !== chatId) return;
+      await deps.onConfigChanged?.();
+    });
+  }
+  async function bindPreset(scope, id) {
+    if (scope === "character") {
+      await deps.bindCharacterPreset?.(id);
+      await deps.onConfigChanged?.();
+      return;
+    }
+    if (scope !== "chat") return save(scope, { rulePresetId: id });
+    const chatId = getContext().chatId;
+    if (!chatId || getContext().groupId) return;
+    const initial = await deps.bindChatPreset?.(id, { confirmedReset: false });
+    if (initial?.reason === "preset-reset-required") {
+      if (initial.exportRawData) status = `Reset required: ${JSON.stringify(initial.summary)}
+Raw preset export is available.`;
+      else status = `Reset required: ${JSON.stringify(initial.summary)}`;
+      await render();
+      if (!await confirmAction({ message: status, summary: initial.summary, exportRawData: initial.exportRawData })) return;
+    }
+    return deps.queue.enqueue(chatId, `preset-${Date.now()}`, async (signal) => {
+      signal.throwIfAborted();
+      if (getContext().chatId !== chatId || getContext().groupId) return;
+      const result2 = await deps.bindChatPreset?.(id, { confirmedReset: true });
+      if (getContext().chatId === chatId && result2?.ok) await deps.onConfigChanged?.();
+    });
+  }
+  async function onChange(event) {
+    const field = event.target.dataset.dmeField;
+    if (!field) return;
+    const scope = event.target.closest("[data-scope]")?.dataset.scope ?? "global";
+    const value = field === "injectionBudget" ? budget(event.target.value) : event.target.type === "checkbox" ? event.target.checked : event.target.value;
+    try {
+      if (field === "rulePresetId") await bindPreset(scope, value);
+      else {
+        await save(scope, { [field]: value });
+        if (scope !== "chat") await deps.onConfigChanged?.();
+      }
+    } catch (error) {
+      status = error.message ?? String(error);
+    }
+    await render();
+  }
+  async function onClick(event) {
+    if (event.target.dataset.dmeAction !== "probe-tools" || probePending) return;
+    probePending = Promise.resolve(deps.runToolProbe?.()).then((result2) => deps.saveProbeResult?.(result2)).catch((error) => {
+      status = error.message ?? String(error);
+    }).finally(() => {
+      probePending = null;
+    });
+    await probePending;
+    await render();
+  }
+  async function reloadProfiles() {
+    const profiles = deps.listProfiles?.() ?? [];
+    for (const scope of ["global", "character", "chat"]) {
+      const getter = { global: deps.getGlobalConfig, character: deps.getCharacterConfig, chat: deps.getChatConfig }[scope];
+      const id = getter?.()?.recorderProfileId;
+      if (id && !profiles.some((profile) => profile.id === id)) {
+        profileDiagnostic = `Recorder profile is missing: ${id}`;
+        await save(scope, { recorderProfileId: "" });
+      }
+    }
+    await render();
+  }
+  async function confirmAction(details) {
+    return deps.showConfirm ? deps.showConfirm(details) : window.confirm(details.message);
+  }
+  async function mount() {
+    if (root) return render();
+    const host = document.querySelector("#extensions_settings") ?? document.querySelector("#extensions_settings2");
+    if (!host) return;
+    host.querySelector("#dualmodel-settings")?.remove();
+    host.insertAdjacentHTML("beforeend", settings_default);
+    root = host.querySelector("#dualmodel-settings:last-child");
+    root.addEventListener("change", onChange);
+    root.addEventListener("click", onClick);
+    for (const eventName of PROFILE_EVENTS) {
+      const event = deps.adapter?.events?.[eventName];
+      if (!event) continue;
+      const listener = reloadProfiles;
+      deps.adapter.on?.(event, listener);
+      listeners.push([event, listener]);
+    }
+    const chatChanged = deps.adapter?.events?.CHAT_CHANGED;
+    if (chatChanged) {
+      deps.adapter.on?.(chatChanged, render);
+      listeners.push([chatChanged, render]);
+    }
+    await render();
+  }
+  function setStatus(value) {
+    status = typeof value === "string" ? value : JSON.stringify(value);
+    return render();
+  }
+  function destroy() {
+    if (!root) return;
+    root.removeEventListener("change", onChange);
+    root.removeEventListener("click", onClick);
+    for (const [event, listener] of listeners) deps.adapter.off?.(event, listener);
+    listeners.length = 0;
+    root.remove();
+    root = null;
+  }
+  return { mount, render, setStatus, confirmAction, destroy };
+}
+
 // schemas/adjudicator.schema.json
 var adjudicator_schema_default = {
   $defs: {
@@ -9033,7 +9253,7 @@ var adjudicator_schema_default = {
 
 // src/index.js
 async function bootstrap({ adapter, dependencies } = {}) {
-  const runtimeAdapter = adapter ?? (await import("./st-runtime-GSBIPEGC.js")).createRuntimeAdapter();
+  const runtimeAdapter = adapter ?? (await import("./st-runtime-GC4ZGOKE.js")).createRuntimeAdapter();
   const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });
   const resolved = dependencies ?? {};
@@ -9063,7 +9283,9 @@ async function bootstrap({ adapter, dependencies } = {}) {
   const queue = resolved.queue ?? createChatTaskQueue();
   const getEffectiveConfig = resolved.getConfig ?? (() => {
     const envelope = store.loadEnvelope?.();
-    return resolveConfig({ globalConfig: runtimeAdapter.getSettings?.(), chatConfig: envelope?.ok ? envelope.value.configOverrides : envelope?.configOverrides });
+    const context = runtimeAdapter.getContext?.();
+    const character = runtimeAdapter.getCurrentCharacter?.() ?? context?.characters?.[context?.characterId] ?? context?.character;
+    return resolveConfig({ globalConfig: runtimeAdapter.getSettings?.(), characterConfig: character?.data?.extensions?.[NAMESPACE], chatConfig: envelope?.ok ? envelope.value.configOverrides : envelope?.configOverrides });
   });
   const makeId = resolved.makeId ?? (() => {
     if (typeof globalThis.crypto?.randomUUID !== "function") throw new Error("Web Crypto randomUUID is unavailable");
@@ -9163,11 +9385,51 @@ async function bootstrap({ adapter, dependencies } = {}) {
     }
   });
   const canRegisterTools = typeof runtimeAdapter.registerTool === "function";
+  let ui;
   try {
     orchestrator.start();
     if (canRegisterTools) toolRegistry.register();
     rollbackManager.bind();
     await orchestrator.initializeChat();
+    ui = createUIController({
+      adapter: runtimeAdapter,
+      queue,
+      capabilities: probeHostCapabilities(runtimeAdapter),
+      presetManager,
+      getGlobalConfig: () => runtimeAdapter.getGlobalSettings?.() ?? runtimeAdapter.getSettings?.() ?? {},
+      getCharacterConfig: () => {
+        const character = runtimeAdapter.getCurrentCharacter?.();
+        return character?.data?.extensions?.[NAMESPACE] ?? {};
+      },
+      getChatConfig: () => runtimeAdapter.getChatMetadata?.()?.[NAMESPACE]?.configOverrides ?? {},
+      saveGlobalConfig: (value) => runtimeAdapter.saveGlobalSettings?.(value) ?? runtimeAdapter.saveSettings?.(),
+      saveCharacterConfig: (value) => runtimeAdapter.saveCurrentCharacter?.(value),
+      saveChatConfig: (value) => runtimeAdapter.saveChatSettings?.(value),
+      listProfiles: () => runtimeAdapter.listProfiles?.() ?? [],
+      listPresets: () => presetManager.listPresets(),
+      bindCharacterPreset: async (id) => {
+        const character = runtimeAdapter.getCurrentCharacter?.();
+        if (!character) throw new Error("Current character is unavailable");
+        presetManager.bindCharacter(character, id);
+        await runtimeAdapter.saveCurrentCharacter?.(character.data.extensions[NAMESPACE]);
+      },
+      bindChatPreset: (id, options) => presetManager.bindChat(runtimeAdapter.getChatMetadata?.(), id, options),
+      exportPreset: (id) => presetManager.exportPreset(id),
+      onConfigChanged: () => orchestrator.initializeChat(),
+      runToolProbe: resolved.runToolProbe ?? (() => runDynamicToolProbe(runtimeAdapter)),
+      saveProbeResult: resolved.runToolProbe ? async (result2) => {
+        const value = structuredClone(runtimeAdapter.getGlobalSettings?.() ?? runtimeAdapter.getSettings?.() ?? {});
+        value.toolProbe = structuredClone(result2);
+        await (runtimeAdapter.saveGlobalSettings?.(value) ?? runtimeAdapter.saveSettings?.());
+      } : async () => {
+      },
+      showConfirm: resolved.showConfirm ?? (async (details) => {
+        const context = runtimeAdapter.getContext?.();
+        if (!context?.Popup?.show?.confirm) return window.confirm(details.message);
+        return await context.Popup.show.confirm("DualModel Engine", details.message, {}) === context.POPUP_RESULT?.AFFIRMATIVE;
+      })
+    });
+    await ui.mount();
   } catch (error) {
     try {
       if (canRegisterTools) toolRegistry.unregister();
@@ -9177,16 +9439,25 @@ async function bootstrap({ adapter, dependencies } = {}) {
       orchestrator.stop();
     } catch {
     }
+    try {
+      ui?.destroy();
+    } catch {
+    }
     throw error;
   }
   const stopOrchestrator = orchestrator.stop.bind(orchestrator);
   let orchestratorStopped = false;
   orchestrator.stop = () => {
     let first;
+    try {
+      ui?.destroy();
+    } catch (error) {
+      first = error;
+    }
     if (canRegisterTools) try {
       toolRegistry.unregister();
     } catch (error) {
-      first = error;
+      first ??= error;
     }
     if (!orchestratorStopped) try {
       stopOrchestrator();
@@ -9204,7 +9475,8 @@ async function bootstrap({ adapter, dependencies } = {}) {
     ledger,
     toolRegistry,
     adjudicator,
-    presetManager
+    presetManager,
+    ui
   };
 }
 if (typeof document !== "undefined" && import.meta.url.includes("/scripts/extensions/")) {

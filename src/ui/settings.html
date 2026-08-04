@@ -1,1 +1,30 @@
-<section id="dualmodel-settings" class="dualmodel-panel" aria-label="DualModel Engine"></section>
+<section id="dualmodel-settings" class="dualmodel-panel" aria-label="DualModel Engine">
+  <h3>DualModel Engine</h3>
+  <fieldset data-scope="global"><legend>Global defaults</legend>
+    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>
+    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>
+    <label>Default rules <select data-dme-field="rulePresetId"></select></label>
+    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>
+    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>
+    <label>Update policy <select data-dme-field="updatePolicy"><option value="after-each-reply">After each reply</option><option value="manual">Manual</option></select></label>
+    <label><input data-dme-field="showStatusBar" type="checkbox"> Show status bar</label>
+  </fieldset>
+  <fieldset data-scope="character" data-dme-role="character-settings"><legend>Current character defaults</legend>
+    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>
+    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>
+    <label>Default rules <select data-dme-field="rulePresetId"></select></label>
+    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>
+    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>
+  </fieldset>
+  <fieldset data-scope="chat" data-dme-role="chat-settings"><legend>Current chat</legend>
+    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>
+    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>
+    <label>Rules <select data-dme-field="rulePresetId"></select></label>
+    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>
+    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>
+    <output data-dme-role="chat-disabled-reason" aria-live="polite"></output>
+  </fieldset>
+  <output data-dme-role="task-status" aria-live="polite"></output>
+  <button type="button" data-dme-action="probe-tools">Probe tool calling</button>
+  <pre data-dme-role="diagnostic-reasons"></pre>
+</section>

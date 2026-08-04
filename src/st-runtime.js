@@ -1,4 +1,4 @@
-import { eventSource, event_types, setExtensionPrompt, saveSettingsDebounced, extension_settings, generateRawData, isGenerating, main_api, getGeneratingModel } from '/script.js';
+import { eventSource, event_types, setExtensionPrompt, generateRawData, isGenerating, main_api, getGeneratingModel } from '/script.js';
 import { getContext } from '/scripts/extensions.js';
 import { ConnectionManagerRequestService } from '/scripts/extensions/shared.js';
 import { ToolManager } from '/scripts/tool-calling.js';
@@ -17,8 +17,8 @@ export function createRuntimeAdapter() {
         eventTypes: event_types,
         getContext,
         setExtensionPrompt,
-        saveSettingsDebounced,
-        getSettings: () => extension_settings.dualModelEngine ??= {},
+        saveSettingsDebounced: () => getContext().saveSettingsDebounced?.(),
+        getSettings: () => getContext().extensionSettings.dualModelEngine ??= {},
         getProfiles: () => ConnectionManagerRequestService.getSupportedProfiles(),
         sendRequest: (...args) => ConnectionManagerRequestService.sendRequest(...args),
         registerTool: definition => ToolManager.registerFunctionTool(definition),

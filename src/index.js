@@ -1,6 +1,6 @@
 import Ajv from 'ajv';
 export { Ajv };
-import { probeHostCapabilities } from './capability-probe.js';
+import { probeHostCapabilities, runDynamicToolProbe } from './capability-probe.js';
 import { createOrchestrator } from './orchestrator.js';
 import { createStateStore } from './state-store.js';
 import { createPromptInjector } from './prompt-injector.js';
@@ -19,6 +19,7 @@ import { createAdjudicatorService } from './adjudicator-service.js';
 import { createRuleEngine } from './rule-engine.js';
 import { createWebCryptoUint32 } from './dice-engine.js';
 import { createPresetManager } from './preset-manager.js';
+import { createUIController } from './ui/controller.js';
 import d20Schema from '../schemas/d20.schema.json';
 import adjudicatorSchema from '../schemas/adjudicator.schema.json';
 import { NAMESPACE } from './constants.js';
@@ -52,7 +53,8 @@ export async function bootstrap({ adapter, dependencies } = {}) {
     const queue = resolved.queue ?? createChatTaskQueue();
     const getEffectiveConfig = resolved.getConfig ?? (() => {
         const envelope = store.loadEnvelope?.();
-        return resolveConfig({ globalConfig: runtimeAdapter.getSettings?.(), chatConfig: envelope?.ok ? envelope.value.configOverrides : envelope?.configOverrides });
+        const context = runtimeAdapter.getContext?.(); const character = runtimeAdapter.getCurrentCharacter?.() ?? context?.characters?.[context?.characterId] ?? context?.character;
+        return resolveConfig({ globalConfig: runtimeAdapter.getSettings?.(), characterConfig: character?.data?.extensions?.[NAMESPACE], chatConfig: envelope?.ok ? envelope.value.configOverrides : envelope?.configOverrides });
     });
     const makeId = resolved.makeId ?? (() => { if (typeof globalThis.crypto?.randomUUID !== 'function') throw new Error('Web Crypto randomUUID is unavailable'); return globalThis.crypto.randomUUID(); });
     const ledger = resolved.ledger ?? createCheckLedger({ makeId, now: resolved.now ?? (() => new Date().toISOString()), initialRecords: store.listRuleRecords?.() ?? [] });
@@ -106,11 +108,34 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         resolveDamage: async (input, state) => { const preset = orchestrator.getActiveGeneration()?.preset ?? d20LitePreset; const engine = createRuleEngine({ nextUint32, preset }); const hpBefore = preset.readActor(state, input.target)?.hp?.current; const result = engine.applyDamage(input, state); return { state: result.state, audit: { rolls: result.damage.rolls, raw: result.damage.rawTotal, total: result.damage.total, absorbed: result.damage.absorbed, hpBefore, hpAfter: preset.readActor(result.state, input.target)?.hp?.current } }; },
     });
     const canRegisterTools = typeof runtimeAdapter.registerTool === 'function';
+    let ui;
     try {
         orchestrator.start();
         if (canRegisterTools) toolRegistry.register();
         rollbackManager.bind();
         await orchestrator.initializeChat();
+        ui = createUIController({
+            adapter: runtimeAdapter, queue, capabilities: probeHostCapabilities(runtimeAdapter), presetManager,
+            getGlobalConfig: () => runtimeAdapter.getGlobalSettings?.() ?? runtimeAdapter.getSettings?.() ?? {},
+            getCharacterConfig: () => { const character = runtimeAdapter.getCurrentCharacter?.(); return character?.data?.extensions?.[NAMESPACE] ?? {}; },
+            getChatConfig: () => runtimeAdapter.getChatMetadata?.()?.[NAMESPACE]?.configOverrides ?? {},
+            saveGlobalConfig: value => runtimeAdapter.saveGlobalSettings?.(value) ?? runtimeAdapter.saveSettings?.(),
+            saveCharacterConfig: value => runtimeAdapter.saveCurrentCharacter?.(value),
+            saveChatConfig: value => runtimeAdapter.saveChatSettings?.(value),
+            listProfiles: () => runtimeAdapter.listProfiles?.() ?? [], listPresets: () => presetManager.listPresets(),
+            bindCharacterPreset: async id => { const character = runtimeAdapter.getCurrentCharacter?.(); if (!character) throw new Error('Current character is unavailable'); presetManager.bindCharacter(character, id); await runtimeAdapter.saveCurrentCharacter?.(character.data.extensions[NAMESPACE]); },
+            bindChatPreset: (id, options) => presetManager.bindChat(runtimeAdapter.getChatMetadata?.(), id, options),
+            exportPreset: id => presetManager.exportPreset(id),
+            onConfigChanged: () => orchestrator.initializeChat(),
+            runToolProbe: resolved.runToolProbe ?? (() => runDynamicToolProbe(runtimeAdapter)),
+            saveProbeResult: resolved.runToolProbe ? async result => { const value = structuredClone(runtimeAdapter.getGlobalSettings?.() ?? runtimeAdapter.getSettings?.() ?? {}); value.toolProbe = structuredClone(result); await (runtimeAdapter.saveGlobalSettings?.(value) ?? runtimeAdapter.saveSettings?.()); } : async () => {},
+            showConfirm: resolved.showConfirm ?? (async details => {
+                const context = runtimeAdapter.getContext?.();
+                if (!context?.Popup?.show?.confirm) return window.confirm(details.message);
+                return (await context.Popup.show.confirm('DualModel Engine', details.message, {})) === context.POPUP_RESULT?.AFFIRMATIVE;
+            }),
+        });
+        await ui.mount();
     } catch (error) {
         try { if (canRegisterTools) toolRegistry.unregister(); } catch {
             // Initialization failure remains the observable root cause.
@@ -118,10 +143,13 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         try { orchestrator.stop(); } catch {
             // Initialization failure remains the observable root cause.
         }
+        try { ui?.destroy(); } catch {
+            // UI cleanup cannot replace the initialization failure.
+        }
         throw error;
     }
     const stopOrchestrator = orchestrator.stop.bind(orchestrator); let orchestratorStopped = false;
-    orchestrator.stop = () => { let first; if (canRegisterTools) try { toolRegistry.unregister(); } catch (error) { first = error; } if (!orchestratorStopped) try { stopOrchestrator(); orchestratorStopped = true; } catch (error) { first ??= error; } if (first) throw first; };
+    orchestrator.stop = () => { let first; try { ui?.destroy(); } catch (error) { first = error; } if (canRegisterTools) try { toolRegistry.unregister(); } catch (error) { first ??= error; } if (!orchestratorStopped) try { stopOrchestrator(); orchestratorStopped = true; } catch (error) { first ??= error; } if (first) throw first; };
 
     return {
         name: 'dualModelEngine',
@@ -132,6 +160,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
         toolRegistry,
         adjudicator,
         presetManager,
+        ui,
     };
 }
 
