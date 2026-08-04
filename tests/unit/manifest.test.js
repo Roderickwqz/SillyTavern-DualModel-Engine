@@ -18,7 +18,7 @@ describe('extension package', () => {
 
     it('checks committed distribution assets after building them', () => {
         const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
-        expect(packageJson.scripts['check:dist']).toBe('git diff --exit-code -- dist');
+        expect(packageJson.scripts['check:dist']).toBe('git diff --exit-code HEAD -- dist');
         expect(packageJson.scripts.check).toBe('npm run lint && npm run test:run && npm run build && npm run check:dist');
     });
 
