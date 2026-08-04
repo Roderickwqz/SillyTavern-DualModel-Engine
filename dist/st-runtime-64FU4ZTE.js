@@ -65,19 +65,26 @@ function createSTAdapter(host) {
       }
     },
     getChatMetadata: () => host.getContext?.()?.chatMetadata ?? null,
-    async saveChatSettings(value) {
+    async saveChatSettings(value, identity = null) {
       const context = host.getContext?.();
       const metadata = context?.chatMetadata;
       if (!metadata) throw new Error("Chat metadata is unavailable");
+      if (identity && (context.chatId !== identity.chatId || context.chat !== identity.chat || metadata !== identity.metadata || metadata[namespace] !== identity.namespace)) return { ok: false, reason: "stale-chat" };
       const had = Object.hasOwn(metadata, namespace);
       const before = structuredClone(metadata[namespace]);
       metadata[namespace] ??= {};
       metadata[namespace].configOverrides = structuredClone(value);
+      const transaction = metadata[namespace];
+      if (identity) identity.namespace = transaction;
       try {
         await context.saveMetadata?.();
+        if (identity && (host.getContext?.()?.chatId !== identity.chatId || host.getContext?.()?.chat !== identity.chat || host.getContext?.()?.chatMetadata !== metadata || metadata[namespace] !== transaction)) return { ok: false, reason: "stale-chat" };
+        return { ok: true };
       } catch (error) {
-        if (had) metadata[namespace] = before;
-        else delete metadata[namespace];
+        if (host.getContext?.()?.chatMetadata === metadata && metadata[namespace] === transaction) {
+          if (had) metadata[namespace] = before;
+          else delete metadata[namespace];
+        }
         throw error;
       }
     },

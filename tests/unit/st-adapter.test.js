@@ -34,4 +34,22 @@ describe('createSTAdapter', () => {
         expect(adapter.listPresetReferences('custom-a')).toEqual([{ type: 'archived-chat', id: 'old' }]);
         expect(listPresetReferences).toHaveBeenCalledWith('custom-a');
     });
+
+    it('persists only the character namespace through writeExtensionField and restores it on failure', async () => {
+        const character = { data: { extensions: { dualModelEngine: { enabled: false }, other: { keep: true } } } }; const context = { characterId: 'c1', characters: { c1: character }, writeExtensionField: vi.fn().mockRejectedValue(new Error('disk')) };
+        const adapter = createSTAdapter({ getContext: () => context });
+        await expect(adapter.saveCurrentCharacter({ enabled: true })).rejects.toThrow('disk');
+        expect(context.writeExtensionField).toHaveBeenCalledWith('c1', 'dualModelEngine', { enabled: true }); expect(character.data.extensions).toEqual({ dualModelEngine: { enabled: false }, other: { keep: true } });
+    });
+
+    it('rejects character persistence when the official extension-field API is absent', async () => {
+        const adapter = createSTAdapter({ getContext: () => ({ characterId: 'c1', characters: { c1: { data: {} } } }) });
+        await expect(adapter.saveCurrentCharacter({ enabled: true })).rejects.toThrow('Character extension persistence is unavailable');
+    });
+
+    it('does not restore stale chat metadata after saveMetadata fails', async () => {
+        const original = { dualModelEngine: { configOverrides: { enabled: false } } }; let context = { chatId: 'a', chat: [], chatMetadata: original, saveMetadata: async () => { context = { chatId: 'a', chat: [], chatMetadata: { dualModelEngine: { concurrent: true } } }; throw new Error('disk'); } };
+        const adapter = createSTAdapter({ getContext: () => context });
+        await expect(adapter.saveChatSettings({ enabled: true })).rejects.toThrow('disk'); expect(context.chatMetadata.dualModelEngine).toEqual({ concurrent: true });
+    });
 });

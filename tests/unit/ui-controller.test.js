@@ -5,7 +5,7 @@ import { createUIController } from '../../src/ui/controller.js';
 function dependencies(options = {}) {
     const context = { chatId: 'chat-a', groupId: options.isGroupChat ? 'group-a' : null, chatMetadata: { dualModelEngine: { configOverrides: {} } }, character: { data: { extensions: { dualModelEngine: {} } } } };
     return {
-        adapter: { getContext: () => context, on: vi.fn(), off: vi.fn(), events: { CONNECTION_PROFILE_LOADED: 'loaded', CONNECTION_PROFILE_CREATED: 'created', CONNECTION_PROFILE_UPDATED: 'updated', CONNECTION_PROFILE_DELETED: 'deleted' } },
+        context, adapter: { getContext: () => context, on: vi.fn(), off: vi.fn(), events: { CONNECTION_PROFILE_LOADED: 'loaded', CONNECTION_PROFILE_CREATED: 'created', CONNECTION_PROFILE_UPDATED: 'updated', CONNECTION_PROFILE_DELETED: 'deleted', CHAT_CHANGED: 'chat-changed' } },
         queue: options.queue ?? createChatTaskQueue(),
         getGlobalConfig: () => ({ recorderProfileId: options.profileId ?? 'profile-a', rulePresetId: 'narrative', adjudication: 'automatic-tool', injectionBudget: 1200 }),
         getCharacterConfig: () => context.character.data.extensions.dualModelEngine,
@@ -37,7 +37,7 @@ describe('UI controller', () => {
         expect(document.querySelector('[data-dme-role="chat-settings"]').disabled).toBe(true);
         expect(document.querySelector('[data-dme-role="chat-disabled-reason"]').textContent).toBe('Chat settings are unavailable in group chats.');
         expect(document.querySelectorAll('#dualmodel-settings')).toHaveLength(1); ui.destroy();
-        expect(document.querySelector('#dualmodel-settings')).toBeNull(); expect(deps.adapter.off).toHaveBeenCalledTimes(4);
+        expect(document.querySelector('#dualmodel-settings')).toBeNull(); expect(deps.adapter.off).toHaveBeenCalledTimes(5);
     });
 
     it('stores a tool probe only once while it is running', async () => {
@@ -50,12 +50,23 @@ describe('UI controller', () => {
         let release; const blocker = new Promise(resolve => { release = resolve; }); const deps = dependencies(); deps.queue.enqueue('chat-a', 'recorder', () => blocker);
         const ui = createUIController(deps); await ui.mount(); const field = document.querySelector('[data-scope="chat"] [data-dme-field="adjudication"]'); field.value = 'manual'; field.dispatchEvent(new globalThis.Event('change', { bubbles: true }));
         await Promise.resolve(); expect(deps.saveChatConfig).not.toHaveBeenCalled(); release(); await deps.queue.waitForIdle('chat-a');
-        expect(deps.saveChatConfig).toHaveBeenCalledWith(expect.objectContaining({ adjudication: 'manual' }));
+        expect(deps.saveChatConfig).toHaveBeenCalledWith(expect.objectContaining({ adjudication: 'manual' }), expect.objectContaining({ chatId: 'chat-a' }));
     });
 
     it('persists enabled as a boolean at each scope', async () => {
         const deps = dependencies(); const ui = createUIController(deps); await ui.mount();
         const field = document.querySelector('[data-scope="chat"] [data-dme-field="enabled"]'); field.checked = true; field.dispatchEvent(new globalThis.Event('change', { bubbles: true }));
-        await deps.queue.waitForIdle('chat-a'); expect(deps.saveChatConfig).toHaveBeenCalledWith(expect.objectContaining({ enabled: true }));
+        await deps.queue.waitForIdle('chat-a'); expect(deps.saveChatConfig).toHaveBeenCalledWith(expect.objectContaining({ enabled: true }), expect.objectContaining({ chatId: 'chat-a' }));
+    });
+
+    it('passes untrusted reset details to confirmation only in a text node', async () => {
+        const deps = dependencies(); deps.bindChatPreset.mockResolvedValueOnce({ ok: false, reason: 'preset-reset-required', summary: { reason: '</p><img src=x onerror=alert(1)>' } });
+        const ui = createUIController(deps); await ui.mount(); const field = document.querySelector('[data-scope="chat"] [data-dme-field="rulePresetId"]'); field.value = 'custom-a'; field.dispatchEvent(new globalThis.Event('change', { bubbles: true })); await Promise.resolve(); await Promise.resolve();
+        const details = deps.showConfirm.mock.calls[0][0]; expect(details.message).not.toContain('<img'); expect(details.content.textContent).toContain('<img'); expect(details.content.querySelector('img')).toBeNull();
+    });
+
+    it('uses current group state instead of a stale capability snapshot', async () => {
+        const deps = dependencies(); const ui = createUIController(deps); await ui.mount(); deps.context.groupId = 'new-group'; await ui.render();
+        expect(document.querySelector('[data-dme-role="chat-settings"]').disabled).toBe(true);
     });
 });

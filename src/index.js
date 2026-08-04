@@ -121,9 +121,14 @@ export async function bootstrap({ adapter, dependencies } = {}) {
             getChatConfig: () => runtimeAdapter.getChatMetadata?.()?.[NAMESPACE]?.configOverrides ?? {},
             saveGlobalConfig: value => runtimeAdapter.saveGlobalSettings?.(value) ?? runtimeAdapter.saveSettings?.(),
             saveCharacterConfig: value => runtimeAdapter.saveCurrentCharacter?.(value),
-            saveChatConfig: value => runtimeAdapter.saveChatSettings?.(value),
+            saveChatConfig: (value, identity) => runtimeAdapter.saveChatSettings?.(value, identity),
             listProfiles: () => runtimeAdapter.listProfiles?.() ?? [], listPresets: () => presetManager.listPresets(),
-            bindCharacterPreset: async id => { const character = runtimeAdapter.getCurrentCharacter?.(); if (!character) throw new Error('Current character is unavailable'); presetManager.bindCharacter(character, id); await runtimeAdapter.saveCurrentCharacter?.(character.data.extensions[NAMESPACE]); },
+            bindCharacterPreset: async id => {
+                const character = runtimeAdapter.getCurrentCharacter?.(); if (!character) throw new Error('Current character is unavailable');
+                character.data ??= {}; character.data.extensions ??= {}; const had = Object.hasOwn(character.data.extensions, NAMESPACE); const before = structuredClone(character.data.extensions[NAMESPACE]);
+                try { presetManager.bindCharacter(character, id); await runtimeAdapter.saveCurrentCharacter?.(character.data.extensions[NAMESPACE]); }
+                catch (error) { if (had) character.data.extensions[NAMESPACE] = before; else delete character.data.extensions[NAMESPACE]; throw error; }
+            },
             bindChatPreset: (id, options) => presetManager.bindChat(runtimeAdapter.getChatMetadata?.(), id, options),
             exportPreset: id => presetManager.exportPreset(id),
             onConfigChanged: () => orchestrator.initializeChat(),
@@ -131,8 +136,8 @@ export async function bootstrap({ adapter, dependencies } = {}) {
             saveProbeResult: resolved.runToolProbe ? async result => { const value = structuredClone(runtimeAdapter.getGlobalSettings?.() ?? runtimeAdapter.getSettings?.() ?? {}); value.toolProbe = structuredClone(result); await (runtimeAdapter.saveGlobalSettings?.(value) ?? runtimeAdapter.saveSettings?.()); } : async () => {},
             showConfirm: resolved.showConfirm ?? (async details => {
                 const context = runtimeAdapter.getContext?.();
-                if (!context?.Popup?.show?.confirm) return window.confirm(details.message);
-                return (await context.Popup.show.confirm('DualModel Engine', details.message, {})) === context.POPUP_RESULT?.AFFIRMATIVE;
+                if (typeof context?.Popup !== 'function') return window.confirm(details.content?.textContent ?? details.message);
+                return (await new context.Popup(details.content ?? details.message, context.POPUP_TYPE?.CONFIRM, '', {}).show()) === context.POPUP_RESULT?.AFFIRMATIVE;
             }),
         });
         await ui.mount();

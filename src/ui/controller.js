@@ -8,11 +8,13 @@ function budget(value) { return Math.max(MIN_BUDGET, Math.min(MAX_BUDGET, Number
 function copy(value) { return structuredClone(value ?? {}); }
 
 export function createUIController(deps) {
-    let root = null; let status = ''; let profileDiagnostic = ''; let probePending = null; const listeners = [];
+    let root = null; let status = ''; let profileDiagnostic = ''; let probePending = null; let exportRawData = null; const listeners = [];
     const getContext = () => deps.adapter?.getContext?.() ?? {};
     const diagnostic = () => {
-        const reasons = [...(deps.capabilities?.reasons ?? [])];
+        const reasons = (deps.capabilities?.reasons ?? []).filter(reason => reason !== 'Group chats are not supported' && reason !== 'No supported Recorder connection profile is configured');
         const profiles = deps.listProfiles?.() ?? [];
+        if (getContext().groupId) reasons.push('Group chats are not supported');
+        if (!profiles.length) reasons.push('No supported Recorder connection profile is configured');
         for (const scope of ['global', 'character', 'chat']) {
             const profileId = ({ global: deps.getGlobalConfig, character: deps.getCharacterConfig, chat: deps.getChatConfig }[scope])?.()?.recorderProfileId;
             if (profileId && !profiles.some(profile => profile.id === profileId)) reasons.push(`Recorder profile is missing: ${profileId}`);
@@ -38,38 +40,41 @@ export function createUIController(deps) {
             for (const field of fieldset.querySelectorAll('[data-dme-field="enabled"], [data-dme-field="showStatusBar"]')) field.checked = Boolean(config[field.dataset.dmeField]);
             for (const field of fieldset.querySelectorAll('[data-dme-field="updatePolicy"]')) field.value = config.updatePolicy ?? 'after-each-reply';
         }
-        const isGroup = Boolean(deps.capabilities?.isGroupChat ?? getContext().groupId);
+        const isGroup = Boolean(getContext().groupId);
         const chat = root.querySelector('[data-dme-role="chat-settings"]'); chat.disabled = isGroup;
         setText('[data-dme-role="chat-disabled-reason"]', isGroup ? 'Chat settings are unavailable in group chats.' : '');
         setText('[data-dme-role="task-status"]', status);
         setText('[data-dme-role="diagnostic-reasons"]', diagnostic().join('\n'));
+        const exportButton = root.querySelector('[data-dme-action="export-preset"]'); if (exportButton) exportButton.disabled = !exportRawData;
     }
     async function save(scope, patch) {
         if (scope === 'global') return deps.saveGlobalConfig(copy({ ...deps.getGlobalConfig?.(), ...patch }));
         if (scope === 'character') return deps.saveCharacterConfig(copy({ ...deps.getCharacterConfig?.(), ...patch }));
-        const chatId = getContext().chatId;
+        const captured = captureChat(); const chatId = captured?.chatId;
         if (!chatId || deps.capabilities?.isGroupChat || getContext().groupId) return;
         return deps.queue.enqueue(chatId, `settings-${Date.now()}`, async signal => {
-            signal.throwIfAborted(); if (getContext().chatId !== chatId || getContext().groupId) return;
-            await deps.saveChatConfig(copy({ ...deps.getChatConfig?.(), ...patch }));
-            if (getContext().chatId !== chatId) return;
+            signal.throwIfAborted(); if (!isCapturedChat(captured)) return;
+            await deps.saveChatConfig(copy({ ...deps.getChatConfig?.(), ...patch }), captured);
+            if (!isCapturedChat(captured)) return;
             await deps.onConfigChanged?.();
         });
     }
+    function captureChat() { const context = getContext(); return context?.chatId ? { chatId: context.chatId, chat: context.chat, metadata: context.chatMetadata, namespace: context.chatMetadata?.dualModelEngine } : null; }
+    function isCapturedChat(captured) { const context = getContext(); return Boolean(captured && context?.chatId === captured.chatId && context.chat === captured.chat && context.chatMetadata === captured.metadata && context.chatMetadata?.dualModelEngine === captured.namespace && !context.groupId); }
     async function bindPreset(scope, id) {
         if (scope === 'character') { await deps.bindCharacterPreset?.(id); await deps.onConfigChanged?.(); return; }
         if (scope !== 'chat') return save(scope, { rulePresetId: id });
-        const chatId = getContext().chatId; if (!chatId || getContext().groupId) return;
+        const captured = captureChat(); const chatId = captured?.chatId; if (!chatId || getContext().groupId) return;
         const initial = await deps.bindChatPreset?.(id, { confirmedReset: false });
         if (initial?.reason === 'preset-reset-required') {
-            if (initial.exportRawData) status = `Reset required: ${JSON.stringify(initial.summary)}\nRaw preset export is available.`;
-            else status = `Reset required: ${JSON.stringify(initial.summary)}`;
-            await render(); if (!await confirmAction({ message: status, summary: initial.summary, exportRawData: initial.exportRawData })) return;
+            exportRawData = initial.exportRawData ?? null;
+            const content = document.createElement('div'); content.textContent = `Reset required: ${JSON.stringify(initial.summary)}`;
+            status = content.textContent; await render(); if (!await confirmAction({ message: 'Changing this chat preset resets its state. Continue?', content, summary: initial.summary, exportRawData })) return;
         }
         return deps.queue.enqueue(chatId, `preset-${Date.now()}`, async signal => {
-            signal.throwIfAborted(); if (getContext().chatId !== chatId || getContext().groupId) return;
+            signal.throwIfAborted(); if (!isCapturedChat(captured)) return;
             const result = await deps.bindChatPreset?.(id, { confirmedReset: true });
-            if (getContext().chatId === chatId && result?.ok) await deps.onConfigChanged?.();
+            if (isCapturedChat(captured) && result?.ok) await deps.onConfigChanged?.();
         });
     }
     async function onChange(event) {
@@ -81,6 +86,7 @@ export function createUIController(deps) {
         await render();
     }
     async function onClick(event) {
+        if (event.target.dataset.dmeAction === 'export-preset' && exportRawData) { status = String(await exportRawData()); await render(); return; }
         if (event.target.dataset.dmeAction !== 'probe-tools' || probePending) return;
         probePending = Promise.resolve(deps.runToolProbe?.()).then(result => deps.saveProbeResult?.(result)).catch(error => { status = error.message ?? String(error); }).finally(() => { probePending = null; });
         await probePending; await render();
@@ -101,7 +107,7 @@ export function createUIController(deps) {
         host.querySelector('#dualmodel-settings')?.remove();
         host.insertAdjacentHTML('beforeend', template); root = host.querySelector('#dualmodel-settings:last-child');
         root.addEventListener('change', onChange); root.addEventListener('click', onClick);
-        for (const eventName of PROFILE_EVENTS) { const event = deps.adapter?.events?.[eventName]; if (!event) continue; const listener = reloadProfiles; deps.adapter.on?.(event, listener); listeners.push([event, listener]); }
+        for (const eventName of PROFILE_EVENTS) { const event = deps.adapter?.events?.[eventName]; if (!event) continue; const listener = () => reloadProfiles().catch(error => { status = error.message ?? String(error); return render(); }); deps.adapter.on?.(event, listener); listeners.push([event, listener]); }
         const chatChanged = deps.adapter?.events?.CHAT_CHANGED;
         if (chatChanged) { deps.adapter.on?.(chatChanged, render); listeners.push([chatChanged, render]); }
         await render();

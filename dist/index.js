@@ -9059,7 +9059,7 @@ function createPresetManager({ settings, builtInPresets = [], registerPreset, un
 }
 
 // src/ui/settings.html?raw
-var settings_default = '<section id="dualmodel-settings" class="dualmodel-panel" aria-label="DualModel Engine">\n  <h3>DualModel Engine</h3>\n  <fieldset data-scope="global"><legend>Global defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <label>Update policy <select data-dme-field="updatePolicy"><option value="after-each-reply">After each reply</option><option value="manual">Manual</option></select></label>\n    <label><input data-dme-field="showStatusBar" type="checkbox"> Show status bar</label>\n  </fieldset>\n  <fieldset data-scope="character" data-dme-role="character-settings"><legend>Current character defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n  </fieldset>\n  <fieldset data-scope="chat" data-dme-role="chat-settings"><legend>Current chat</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <output data-dme-role="chat-disabled-reason" aria-live="polite"></output>\n  </fieldset>\n  <output data-dme-role="task-status" aria-live="polite"></output>\n  <button type="button" data-dme-action="probe-tools">Probe tool calling</button>\n  <pre data-dme-role="diagnostic-reasons"></pre>\n</section>\n';
+var settings_default = '<section id="dualmodel-settings" class="dualmodel-panel" aria-label="DualModel Engine">\n  <h3>DualModel Engine</h3>\n  <fieldset data-scope="global"><legend>Global defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <label>Update policy <select data-dme-field="updatePolicy"><option value="after-each-reply">After each reply</option><option value="manual">Manual</option></select></label>\n    <label><input data-dme-field="showStatusBar" type="checkbox"> Show status bar</label>\n  </fieldset>\n  <fieldset data-scope="character" data-dme-role="character-settings"><legend>Current character defaults</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Default rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n  </fieldset>\n  <fieldset data-scope="chat" data-dme-role="chat-settings"><legend>Current chat</legend>\n    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>\n    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>\n    <label>Rules <select data-dme-field="rulePresetId"></select></label>\n    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>\n    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>\n    <output data-dme-role="chat-disabled-reason" aria-live="polite"></output>\n  </fieldset>\n  <output data-dme-role="task-status" aria-live="polite"></output>\n  <button type="button" data-dme-action="probe-tools">Probe tool calling</button>\n  <button type="button" data-dme-action="export-preset" disabled>Export preset data</button>\n  <pre data-dme-role="diagnostic-reasons"></pre>\n</section>\n';
 
 // src/ui/controller.js
 var MIN_BUDGET = 256;
@@ -9076,11 +9076,14 @@ function createUIController(deps) {
   let status = "";
   let profileDiagnostic = "";
   let probePending = null;
+  let exportRawData = null;
   const listeners = [];
   const getContext = () => deps.adapter?.getContext?.() ?? {};
   const diagnostic = () => {
-    const reasons = [...deps.capabilities?.reasons ?? []];
+    const reasons = (deps.capabilities?.reasons ?? []).filter((reason) => reason !== "Group chats are not supported" && reason !== "No supported Recorder connection profile is configured");
     const profiles = deps.listProfiles?.() ?? [];
+    if (getContext().groupId) reasons.push("Group chats are not supported");
+    if (!profiles.length) reasons.push("No supported Recorder connection profile is configured");
     for (const scope of ["global", "character", "chat"]) {
       const profileId = { global: deps.getGlobalConfig, character: deps.getCharacterConfig, chat: deps.getChatConfig }[scope]?.()?.recorderProfileId;
       if (profileId && !profiles.some((profile) => profile.id === profileId)) reasons.push(`Recorder profile is missing: ${profileId}`);
@@ -9115,25 +9118,36 @@ function createUIController(deps) {
       for (const field of fieldset.querySelectorAll('[data-dme-field="enabled"], [data-dme-field="showStatusBar"]')) field.checked = Boolean(config[field.dataset.dmeField]);
       for (const field of fieldset.querySelectorAll('[data-dme-field="updatePolicy"]')) field.value = config.updatePolicy ?? "after-each-reply";
     }
-    const isGroup = Boolean(deps.capabilities?.isGroupChat ?? getContext().groupId);
+    const isGroup = Boolean(getContext().groupId);
     const chat = root.querySelector('[data-dme-role="chat-settings"]');
     chat.disabled = isGroup;
     setText('[data-dme-role="chat-disabled-reason"]', isGroup ? "Chat settings are unavailable in group chats." : "");
     setText('[data-dme-role="task-status"]', status);
     setText('[data-dme-role="diagnostic-reasons"]', diagnostic().join("\n"));
+    const exportButton = root.querySelector('[data-dme-action="export-preset"]');
+    if (exportButton) exportButton.disabled = !exportRawData;
   }
   async function save(scope, patch) {
     if (scope === "global") return deps.saveGlobalConfig(copy({ ...deps.getGlobalConfig?.(), ...patch }));
     if (scope === "character") return deps.saveCharacterConfig(copy({ ...deps.getCharacterConfig?.(), ...patch }));
-    const chatId = getContext().chatId;
+    const captured = captureChat();
+    const chatId = captured?.chatId;
     if (!chatId || deps.capabilities?.isGroupChat || getContext().groupId) return;
     return deps.queue.enqueue(chatId, `settings-${Date.now()}`, async (signal) => {
       signal.throwIfAborted();
-      if (getContext().chatId !== chatId || getContext().groupId) return;
-      await deps.saveChatConfig(copy({ ...deps.getChatConfig?.(), ...patch }));
-      if (getContext().chatId !== chatId) return;
+      if (!isCapturedChat(captured)) return;
+      await deps.saveChatConfig(copy({ ...deps.getChatConfig?.(), ...patch }), captured);
+      if (!isCapturedChat(captured)) return;
       await deps.onConfigChanged?.();
     });
+  }
+  function captureChat() {
+    const context = getContext();
+    return context?.chatId ? { chatId: context.chatId, chat: context.chat, metadata: context.chatMetadata, namespace: context.chatMetadata?.dualModelEngine } : null;
+  }
+  function isCapturedChat(captured) {
+    const context = getContext();
+    return Boolean(captured && context?.chatId === captured.chatId && context.chat === captured.chat && context.chatMetadata === captured.metadata && context.chatMetadata?.dualModelEngine === captured.namespace && !context.groupId);
   }
   async function bindPreset(scope, id) {
     if (scope === "character") {
@@ -9142,21 +9156,23 @@ function createUIController(deps) {
       return;
     }
     if (scope !== "chat") return save(scope, { rulePresetId: id });
-    const chatId = getContext().chatId;
+    const captured = captureChat();
+    const chatId = captured?.chatId;
     if (!chatId || getContext().groupId) return;
     const initial = await deps.bindChatPreset?.(id, { confirmedReset: false });
     if (initial?.reason === "preset-reset-required") {
-      if (initial.exportRawData) status = `Reset required: ${JSON.stringify(initial.summary)}
-Raw preset export is available.`;
-      else status = `Reset required: ${JSON.stringify(initial.summary)}`;
+      exportRawData = initial.exportRawData ?? null;
+      const content = document.createElement("div");
+      content.textContent = `Reset required: ${JSON.stringify(initial.summary)}`;
+      status = content.textContent;
       await render();
-      if (!await confirmAction({ message: status, summary: initial.summary, exportRawData: initial.exportRawData })) return;
+      if (!await confirmAction({ message: "Changing this chat preset resets its state. Continue?", content, summary: initial.summary, exportRawData })) return;
     }
     return deps.queue.enqueue(chatId, `preset-${Date.now()}`, async (signal) => {
       signal.throwIfAborted();
-      if (getContext().chatId !== chatId || getContext().groupId) return;
+      if (!isCapturedChat(captured)) return;
       const result2 = await deps.bindChatPreset?.(id, { confirmedReset: true });
-      if (getContext().chatId === chatId && result2?.ok) await deps.onConfigChanged?.();
+      if (isCapturedChat(captured) && result2?.ok) await deps.onConfigChanged?.();
     });
   }
   async function onChange(event) {
@@ -9176,6 +9192,11 @@ Raw preset export is available.`;
     await render();
   }
   async function onClick(event) {
+    if (event.target.dataset.dmeAction === "export-preset" && exportRawData) {
+      status = String(await exportRawData());
+      await render();
+      return;
+    }
     if (event.target.dataset.dmeAction !== "probe-tools" || probePending) return;
     probePending = Promise.resolve(deps.runToolProbe?.()).then((result2) => deps.saveProbeResult?.(result2)).catch((error) => {
       status = error.message ?? String(error);
@@ -9212,7 +9233,10 @@ Raw preset export is available.`;
     for (const eventName of PROFILE_EVENTS) {
       const event = deps.adapter?.events?.[eventName];
       if (!event) continue;
-      const listener = reloadProfiles;
+      const listener = () => reloadProfiles().catch((error) => {
+        status = error.message ?? String(error);
+        return render();
+      });
       deps.adapter.on?.(event, listener);
       listeners.push([event, listener]);
     }
@@ -9253,7 +9277,7 @@ var adjudicator_schema_default = {
 
 // src/index.js
 async function bootstrap({ adapter, dependencies } = {}) {
-  const runtimeAdapter = adapter ?? (await import("./st-runtime-GC4ZGOKE.js")).createRuntimeAdapter();
+  const runtimeAdapter = adapter ?? (await import("./st-runtime-64FU4ZTE.js")).createRuntimeAdapter();
   const presets = [narrativePreset, d20LitePreset];
   const validator = createStateValidator({ presets });
   const resolved = dependencies ?? {};
@@ -9404,14 +9428,24 @@ async function bootstrap({ adapter, dependencies } = {}) {
       getChatConfig: () => runtimeAdapter.getChatMetadata?.()?.[NAMESPACE]?.configOverrides ?? {},
       saveGlobalConfig: (value) => runtimeAdapter.saveGlobalSettings?.(value) ?? runtimeAdapter.saveSettings?.(),
       saveCharacterConfig: (value) => runtimeAdapter.saveCurrentCharacter?.(value),
-      saveChatConfig: (value) => runtimeAdapter.saveChatSettings?.(value),
+      saveChatConfig: (value, identity) => runtimeAdapter.saveChatSettings?.(value, identity),
       listProfiles: () => runtimeAdapter.listProfiles?.() ?? [],
       listPresets: () => presetManager.listPresets(),
       bindCharacterPreset: async (id) => {
         const character = runtimeAdapter.getCurrentCharacter?.();
         if (!character) throw new Error("Current character is unavailable");
-        presetManager.bindCharacter(character, id);
-        await runtimeAdapter.saveCurrentCharacter?.(character.data.extensions[NAMESPACE]);
+        character.data ??= {};
+        character.data.extensions ??= {};
+        const had = Object.hasOwn(character.data.extensions, NAMESPACE);
+        const before = structuredClone(character.data.extensions[NAMESPACE]);
+        try {
+          presetManager.bindCharacter(character, id);
+          await runtimeAdapter.saveCurrentCharacter?.(character.data.extensions[NAMESPACE]);
+        } catch (error) {
+          if (had) character.data.extensions[NAMESPACE] = before;
+          else delete character.data.extensions[NAMESPACE];
+          throw error;
+        }
       },
       bindChatPreset: (id, options) => presetManager.bindChat(runtimeAdapter.getChatMetadata?.(), id, options),
       exportPreset: (id) => presetManager.exportPreset(id),
@@ -9425,8 +9459,8 @@ async function bootstrap({ adapter, dependencies } = {}) {
       },
       showConfirm: resolved.showConfirm ?? (async (details) => {
         const context = runtimeAdapter.getContext?.();
-        if (!context?.Popup?.show?.confirm) return window.confirm(details.message);
-        return await context.Popup.show.confirm("DualModel Engine", details.message, {}) === context.POPUP_RESULT?.AFFIRMATIVE;
+        if (typeof context?.Popup !== "function") return window.confirm(details.content?.textContent ?? details.message);
+        return await new context.Popup(details.content ?? details.message, context.POPUP_TYPE?.CONFIRM, "", {}).show() === context.POPUP_RESULT?.AFFIRMATIVE;
       })
     });
     await ui.mount();
