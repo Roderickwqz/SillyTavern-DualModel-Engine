@@ -3,7 +3,7 @@ import { createUIController } from '../../src/ui/controller.js';
 import { renderAudit } from '../../src/ui/audit-tab.js';
 
 function dependencies() {
-    const context = { chatId: 'chat-a', chat: [], chatMetadata: { dualModelEngine: { activeSnapshot: { version: 0 }, configOverrides: {} } } };
+    const context = { chatId: 'chat-a', chat: [], chatMetadata: { dualModelEngine: { activeSnapshot: { version: 0 }, preset: { id: 'narrative' }, configOverrides: {} } } };
     const noop = vi.fn(async () => {});
     return { adapter: { getContext: () => context, on: vi.fn(), off: vi.fn(), events: {} }, context, queue: { enqueue: (_id, _request, work) => work(new AbortController().signal), getStatus: () => ({ state: 'idle' }) }, capabilities: {}, getGlobalConfig: () => ({}), getCharacterConfig: () => ({}), getChatConfig: () => ({}), saveGlobalConfig: noop, saveCharacterConfig: noop, saveChatConfig: noop, listProfiles: () => [], listPresets: () => [], rollbackManager: { recalculate: vi.fn() }, rerollSelectedCheck: vi.fn(), applyManualDamage: vi.fn(), resummarizeCurrentBranch: vi.fn(), importPresetFromPicker: vi.fn(), downloadPreset: vi.fn(), downloadRawData: vi.fn() };
 }

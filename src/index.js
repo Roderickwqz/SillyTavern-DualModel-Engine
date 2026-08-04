@@ -198,9 +198,9 @@ export async function bootstrap({ adapter, dependencies } = {}) {
             saveChatConfig: (value, identity) => runtimeAdapter.saveChatSettings?.(value, identity),
             listProfiles: () => runtimeAdapter.listProfiles?.() ?? [], listPresets: () => presetManager.listPresets(),
             getEnvelope: () => store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE],
-            validateState: state => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; return validator.validateState(envelope?.preset?.id, state); },
+            validateState: state => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; const presetId = envelope?.preset?.id; return presetId ? validator.validateState(presetId, state) : { ok: false, errors: [{ message: 'State is not initialized' }] }; },
             diffState,
-            getPresetPolicy: () => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; const preset = presetManager.getPreset(envelope?.preset?.id); return { allowedPaths: preset?.allowedPaths ?? [], lockedPaths: preset?.lockedPaths?.filter(path => path !== '/version') ?? [], ruleLockedPaths: preset?.ruleLockedPaths ?? [] }; },
+            getPresetPolicy: () => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; const presetId = envelope?.preset?.id; if (!presetId) return { allowedPaths: [], lockedPaths: [], ruleLockedPaths: [] }; const preset = presetManager.getPreset(presetId); return { allowedPaths: preset?.allowedPaths ?? [], lockedPaths: preset?.lockedPaths?.filter(path => path !== '/version') ?? [], ruleLockedPaths: preset?.ruleLockedPaths ?? [] }; },
             getPresetUiFields: () => { const envelope = store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE]; const presetId = envelope?.preset?.id; return presetId ? presetManager.getPreset(presetId)?.ui ?? [] : []; },
             listChecks: () => { const ref = (store.loadEnvelope?.().value ?? runtimeAdapter.getContext?.()?.chatMetadata?.[NAMESPACE])?.activeRef; return ref ? (runtimeAdapter.getContext?.()?.chat ?? []).flatMap(message => message?.swipe_info?.flatMap(swipe => swipe?.extra?.[NAMESPACE]?.branch?.branchId === ref.branchId ? swipe.extra[NAMESPACE].branch.segments?.flatMap(segment => segment.checks ?? []) ?? [] : []) ?? []) : []; },
             onSelectCheck: id => { selectedCheckId = id; },
@@ -214,7 +214,7 @@ export async function bootstrap({ adapter, dependencies } = {}) {
             applyManualDamage: input => chatActions.applyDamage(input),
             resummarizeCurrentBranch: chatActions.resummarize,
             importPresetFromPicker: chatActions.importPreset,
-            downloadPreset: () => chatActions.exportPreset((store.loadEnvelope?.().value ?? {}).preset?.id),
+            downloadPreset: () => { const presetId = (store.loadEnvelope?.().value ?? {}).preset?.id; return presetId ? chatActions.exportPreset(presetId) : { ok: false, reason: 'state-not-initialized' }; },
             downloadRawData: chatActions.exportRaw,
             bindCharacterPreset: async id => {
                 const character = runtimeAdapter.getCurrentCharacter?.(); if (!character) throw new Error('Current character is unavailable');

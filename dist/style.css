@@ -1,17 +1,50 @@
 /* src/ui/style.css */
 .dualmodel-panel {
-  display: grid;
+  width: 100%;
+}
+.dualmodel-content {
   gap: .75rem;
 }
 .dualmodel-panel fieldset {
   display: grid;
   gap: .5rem;
 }
-.dualmodel-panel label {
+.dualmodel-panel label:not(.checkbox_label) {
   display: grid;
   gap: .25rem;
 }
 .dualmodel-panel output {
+  white-space: pre-wrap;
+}
+.dualmodel-panel textarea {
+  box-sizing: border-box;
+  min-height: 8rem;
+  resize: vertical;
+  width: 100%;
+}
+.dualmodel-tabs,
+.dualmodel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+}
+.dualmodel-panel .menu_button {
+  background-color: var(--SmartThemeBlurTintColor, #242424);
+  color: var(--SmartThemeBodyColor, #f1f1f1);
+}
+.dualmodel-panel .menu_button[aria-selected=true] {
+  background-color: var(--white30a, #555);
+  filter: none;
+  font-weight: 700;
+}
+.dualmodel-panel .dualmodel-wide-action {
+  width: 100%;
+}
+.dualmodel-panel [data-dme-role=state-empty] {
+  margin: 0;
+}
+.dualmodel-diagnostics {
+  margin: 0;
   white-space: pre-wrap;
 }
 .dualmodel-error {

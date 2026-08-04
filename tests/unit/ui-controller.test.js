@@ -3,7 +3,7 @@ import { createChatTaskQueue } from '../../src/task-queue.js';
 import { createUIController } from '../../src/ui/controller.js';
 
 function dependencies(options = {}) {
-    const context = { chatId: 'chat-a', groupId: options.isGroupChat ? 'group-a' : null, chatMetadata: { dualModelEngine: { configOverrides: {} } }, character: { data: { extensions: { dualModelEngine: {} } } } };
+    const context = { chatId: 'chat-a', groupId: options.isGroupChat ? 'group-a' : null, chatMetadata: { dualModelEngine: { activeSnapshot: { version: 0 }, preset: { id: 'narrative' }, configOverrides: {} } }, character: { data: { extensions: { dualModelEngine: {} } } } };
     return {
         context, adapter: { getContext: () => context, on: vi.fn(), off: vi.fn(), events: { CONNECTION_PROFILE_LOADED: 'loaded', CONNECTION_PROFILE_CREATED: 'created', CONNECTION_PROFILE_UPDATED: 'updated', CONNECTION_PROFILE_DELETED: 'deleted', CHAT_CHANGED: 'chat-changed' } },
         queue: options.queue ?? createChatTaskQueue(),
@@ -44,6 +44,22 @@ describe('UI controller', () => {
         expect(document.querySelector('[data-dme-role="chat-disabled-reason"]').textContent).toBe('Chat settings are unavailable in group chats.');
         expect(document.querySelectorAll('#dualmodel-settings')).toHaveLength(1); ui.destroy();
         expect(document.querySelector('#dualmodel-settings')).toBeNull(); expect(deps.adapter.off).toHaveBeenCalledTimes(5);
+    });
+
+    it('uses the native SillyTavern drawer and themed button classes', async () => {
+        const ui = createUIController(dependencies()); await ui.mount();
+        expect(document.querySelector('#dualmodel-settings .inline-drawer-toggle.inline-drawer-header')).not.toBeNull();
+        expect(document.querySelector('#dualmodel-settings .inline-drawer-content')).not.toBeNull();
+        expect(document.querySelectorAll('#dualmodel-settings button:not(.menu_button)')).toHaveLength(0);
+    });
+
+    it('shows guidance and disables state actions before chat state is initialized', async () => {
+        const deps = dependencies(); deps.context.chatMetadata.dualModelEngine = { configOverrides: {} }; deps.getPresetPolicy = vi.fn(() => { throw new Error('Preset not found: undefined'); });
+        const ui = createUIController(deps); await ui.mount();
+        const editor = document.querySelector('[data-dme-role="state-json"]'); const save = document.querySelector('[data-dme-action="save-state"]');
+        expect(document.querySelector('[data-dme-role="state-empty"]').hidden).toBe(false);
+        expect(editor.value).toBe(''); expect(editor.disabled).toBe(true); expect(save.disabled).toBe(true);
+        save.click(); await Promise.resolve(); expect(deps.getPresetPolicy).not.toHaveBeenCalled(); expect(document.querySelector('[data-dme-role="task-status"]').textContent).toBe('');
     });
 
     it('stores a tool probe only once while it is running', async () => {

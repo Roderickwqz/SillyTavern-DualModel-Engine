@@ -1,39 +1,46 @@
 <section id="dualmodel-settings" class="dualmodel-panel" aria-label="DualModel Engine">
-  <h3>DualModel Engine</h3>
-  <fieldset data-scope="global"><legend>Global defaults</legend>
-    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>
-    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>
-    <label>Default rules <select data-dme-field="rulePresetId"></select></label>
-    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>
-    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>
-    <label>Update policy <select data-dme-field="updatePolicy"><option value="after-each-reply">After each reply</option><option value="manual">Manual</option></select></label>
-    <label><input data-dme-field="showStatusBar" type="checkbox"> Show status bar</label>
-  </fieldset>
-  <fieldset data-scope="character" data-dme-role="character-settings"><legend>Current character defaults</legend>
-    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>
-    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>
-    <label>Default rules <select data-dme-field="rulePresetId"></select></label>
-    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>
-    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>
-  </fieldset>
-  <fieldset data-scope="chat" data-dme-role="chat-settings"><legend>Current chat</legend>
-    <label><input data-dme-field="enabled" type="checkbox"> Enable DualModel Engine</label>
-    <label>Recorder profile <select data-dme-field="recorderProfileId"></select></label>
-    <label>Rules <select data-dme-field="rulePresetId"></select></label>
-    <label>Adjudication <select data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>
-    <label>Injection budget <input data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>
-    <output data-dme-role="chat-disabled-reason" aria-live="polite"></output>
-  </fieldset>
-  <output data-dme-role="task-status" aria-live="polite"></output>
-  <div role="tablist" aria-label="DualModel chat tools">
-    <button id="dme-tab-state" type="button" role="tab" tabindex="0" aria-controls="dme-state" aria-selected="true" data-dme-tab="state">State</button><button id="dme-tab-checks" type="button" role="tab" tabindex="-1" aria-controls="dme-checks" aria-selected="false" data-dme-tab="checks">Checks</button><button id="dme-tab-history" type="button" role="tab" tabindex="-1" aria-controls="dme-history" aria-selected="false" data-dme-tab="history">History</button><button id="dme-tab-rules" type="button" role="tab" tabindex="-1" aria-controls="dme-rules" aria-selected="false" data-dme-tab="rules">Rules</button><button id="dme-tab-diagnostics" type="button" role="tab" tabindex="-1" aria-controls="dme-diagnostics" aria-selected="false" data-dme-tab="diagnostics">Diagnostics</button>
+  <div class="inline-drawer">
+    <div class="inline-drawer-toggle inline-drawer-header">
+      <b>DualModel Engine</b>
+      <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+    </div>
+    <div class="inline-drawer-content dualmodel-content">
+      <fieldset data-scope="global"><legend>Global defaults</legend>
+        <label class="checkbox_label"><input data-dme-field="enabled" type="checkbox"><span>Enable DualModel Engine</span></label>
+        <label>Recorder profile <select class="text_pole" data-dme-field="recorderProfileId"></select></label>
+        <label>Default rules <select class="text_pole" data-dme-field="rulePresetId"></select></label>
+        <label>Adjudication <select class="text_pole" data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>
+        <label>Injection budget <input class="text_pole" data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>
+        <label>Update policy <select class="text_pole" data-dme-field="updatePolicy"><option value="after-each-reply">After each reply</option><option value="manual">Manual</option></select></label>
+        <label class="checkbox_label"><input data-dme-field="showStatusBar" type="checkbox"><span>Show status bar</span></label>
+      </fieldset>
+      <fieldset data-scope="character" data-dme-role="character-settings"><legend>Current character defaults</legend>
+        <label class="checkbox_label"><input data-dme-field="enabled" type="checkbox"><span>Enable DualModel Engine</span></label>
+        <label>Recorder profile <select class="text_pole" data-dme-field="recorderProfileId"></select></label>
+        <label>Default rules <select class="text_pole" data-dme-field="rulePresetId"></select></label>
+        <label>Adjudication <select class="text_pole" data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>
+        <label>Injection budget <input class="text_pole" data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>
+      </fieldset>
+      <fieldset data-scope="chat" data-dme-role="chat-settings"><legend>Current chat</legend>
+        <label class="checkbox_label"><input data-dme-field="enabled" type="checkbox"><span>Enable DualModel Engine</span></label>
+        <label>Recorder profile <select class="text_pole" data-dme-field="recorderProfileId"></select></label>
+        <label>Rules <select class="text_pole" data-dme-field="rulePresetId"></select></label>
+        <label>Adjudication <select class="text_pole" data-dme-field="adjudication"><option value="automatic-tool">Automatic tool</option><option value="enforced-preflight">Enforced preflight</option><option value="confirm">Confirm</option><option value="manual">Manual</option></select></label>
+        <label>Injection budget <input class="text_pole" data-dme-field="injectionBudget" type="number" min="256" max="8192" step="64"></label>
+        <output data-dme-role="chat-disabled-reason" aria-live="polite"></output>
+      </fieldset>
+      <output data-dme-role="task-status" aria-live="polite"></output>
+      <div class="dualmodel-tabs" role="tablist" aria-label="DualModel chat tools">
+        <button class="menu_button" id="dme-tab-state" type="button" role="tab" tabindex="0" aria-controls="dme-state" aria-selected="true" data-dme-tab="state">State</button><button class="menu_button" id="dme-tab-checks" type="button" role="tab" tabindex="-1" aria-controls="dme-checks" aria-selected="false" data-dme-tab="checks">Checks</button><button class="menu_button" id="dme-tab-history" type="button" role="tab" tabindex="-1" aria-controls="dme-history" aria-selected="false" data-dme-tab="history">History</button><button class="menu_button" id="dme-tab-rules" type="button" role="tab" tabindex="-1" aria-controls="dme-rules" aria-selected="false" data-dme-tab="rules">Rules</button><button class="menu_button" id="dme-tab-diagnostics" type="button" role="tab" tabindex="-1" aria-controls="dme-diagnostics" aria-selected="false" data-dme-tab="diagnostics">Diagnostics</button>
+      </div>
+      <aside data-dme-role="status-bar" aria-live="polite"></aside>
+      <section id="dme-state" role="tabpanel" aria-labelledby="dme-tab-state"><p class="notes" data-dme-role="state-empty" hidden>State is not initialized. Create a Recorder connection profile, then enable DualModel Engine for a one-to-one chat.</p><textarea class="text_pole" data-dme-role="state-json" data-dme-requires-state></textarea><pre data-dme-role="patch-preview"></pre><div class="dualmodel-actions"><button class="menu_button" type="button" data-dme-action="edit-state" data-dme-requires-state>Edit state</button><button class="menu_button" type="button" data-dme-action="save-state" data-dme-requires-state>Save state</button></div></section>
+      <section id="dme-checks" role="tabpanel" aria-labelledby="dme-tab-checks" hidden><div data-dme-role="checks-list"></div><label>Target <input class="text_pole" data-dme-role="damage-target" data-dme-requires-state></label><label>Damage <input class="text_pole" data-dme-role="damage-expression" data-dme-requires-state></label><label>Type <input class="text_pole" data-dme-role="damage-type" data-dme-requires-state></label><label>Reason <input class="text_pole" data-dme-role="damage-reason" data-dme-requires-state></label><div class="dualmodel-actions"><button class="menu_button" type="button" data-dme-action="reroll" data-dme-requires-state>Reroll</button><button class="menu_button" type="button" data-dme-action="apply-damage" data-dme-requires-state>Apply damage</button></div></section>
+      <section id="dme-history" role="tabpanel" aria-labelledby="dme-tab-history" hidden><div data-dme-role="history-list"></div><div class="dualmodel-actions"><button class="menu_button" type="button" data-dme-action="recalculate" data-dme-requires-state>Recalculate</button><button class="menu_button" type="button" data-dme-action="resummarize" data-dme-requires-state>Resummarize</button></div></section>
+      <section id="dme-rules" role="tabpanel" aria-labelledby="dme-tab-rules" hidden><div data-dme-role="rules-list"></div><div class="dualmodel-actions"><button class="menu_button" type="button" data-dme-action="import-preset">Import</button><button class="menu_button" type="button" data-dme-action="export-preset" data-dme-requires-state>Export</button></div></section>
+      <section id="dme-diagnostics" role="tabpanel" aria-labelledby="dme-tab-diagnostics" hidden><pre data-dme-role="diagnostics-json"></pre><button class="menu_button" type="button" data-dme-action="export-raw">Export raw data</button></section>
+      <button class="menu_button dualmodel-wide-action" type="button" data-dme-action="probe-tools">Probe tool calling</button>
+      <pre class="dualmodel-diagnostics" data-dme-role="diagnostic-reasons"></pre>
+    </div>
   </div>
-  <aside data-dme-role="status-bar" aria-live="polite"></aside>
-  <section id="dme-state" role="tabpanel" aria-labelledby="dme-tab-state"><textarea data-dme-role="state-json"></textarea><pre data-dme-role="patch-preview"></pre><button type="button" data-dme-action="edit-state">Edit state</button><button type="button" data-dme-action="save-state">Save state</button></section>
-  <section id="dme-checks" role="tabpanel" aria-labelledby="dme-tab-checks" hidden><div data-dme-role="checks-list"></div><label>Target <input data-dme-role="damage-target"></label><label>Damage <input data-dme-role="damage-expression"></label><label>Type <input data-dme-role="damage-type"></label><label>Reason <input data-dme-role="damage-reason"></label><button type="button" data-dme-action="reroll">Reroll</button><button type="button" data-dme-action="apply-damage">Apply damage</button></section>
-  <section id="dme-history" role="tabpanel" aria-labelledby="dme-tab-history" hidden><div data-dme-role="history-list"></div><button type="button" data-dme-action="recalculate">Recalculate</button><button type="button" data-dme-action="resummarize">Resummarize</button></section>
-  <section id="dme-rules" role="tabpanel" aria-labelledby="dme-tab-rules" hidden><div data-dme-role="rules-list"></div><button type="button" data-dme-action="import-preset">Import</button><button type="button" data-dme-action="export-preset">Export</button></section>
-  <section id="dme-diagnostics" role="tabpanel" aria-labelledby="dme-tab-diagnostics" hidden><pre data-dme-role="diagnostics-json"></pre><button type="button" data-dme-action="export-raw">Export raw data</button></section>
-  <button type="button" data-dme-action="probe-tools">Probe tool calling</button>
-  <pre data-dme-role="diagnostic-reasons"></pre>
 </section>

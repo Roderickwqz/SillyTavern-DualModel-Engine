@@ -51,10 +51,12 @@ export function createUIController(deps) {
         setText('[data-dme-role="chat-disabled-reason"]', isGroup ? 'Chat settings are unavailable in group chats.' : '');
         setText('[data-dme-role="task-status"]', status);
         setText('[data-dme-role="diagnostic-reasons"]', diagnostic().join('\n'));
-        const exportButton = root.querySelector('[data-dme-action="export-preset"]'); if (exportButton) exportButton.disabled = !exportRawData && !deps.downloadPreset;
         const envelope = deps.getEnvelope?.() ?? getContext().chatMetadata?.dualModelEngine;
-        const state = envelope?.activeSnapshot;
-        const editor = root.querySelector('[data-dme-role="state-json"]'); if (editor && document.activeElement !== editor) editor.value = JSON.stringify(state ?? {}, null, 2);
+        const state = envelope?.activeSnapshot; const hasInitializedState = Boolean(envelope?.preset?.id && state);
+        const exportButton = root.querySelector('[data-dme-action="export-preset"]'); if (exportButton) exportButton.disabled = !exportRawData && (!deps.downloadPreset || !hasInitializedState);
+        const emptyState = root.querySelector('[data-dme-role="state-empty"]'); if (emptyState) emptyState.hidden = hasInitializedState;
+        for (const control of root.querySelectorAll('[data-dme-requires-state]')) control.disabled = !hasInitializedState;
+        const editor = root.querySelector('[data-dme-role="state-json"]'); if (editor && document.activeElement !== editor) editor.value = hasInitializedState ? JSON.stringify(state, null, 2) : '';
         const checks = deps.listChecks?.() ?? []; if (selectedCheckId && !checks.some(check => check.checkId === selectedCheckId)) { selectedCheckId = null; deps.onSelectCheck?.(null); }
         renderAudit(root.querySelector('[data-dme-role="checks-list"]'), checks, { selectedCheckId });
         renderAudit(root.querySelector('[data-dme-role="history-list"]'), deps.listHistory?.() ?? []);
