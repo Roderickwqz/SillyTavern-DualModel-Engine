@@ -4,7 +4,7 @@ import { createStateStore } from '../../src/state-store.js';
 import { createChatTaskQueue } from '../../src/task-queue.js';
 
 function branch(id, version, status = 'committed') {
-    return { branchId: id, baseStateVersion: version - 1, baseSnapshot: { version: version - 1 }, status, segments: [{ postSnapshot: { version } }] };
+    return { branchId: id, baseStateVersion: version - 1, baseSnapshot: { version: version - 1 }, status, segments: [{ postSnapshot: { version }, assistantTextHash: `hash:answer-${id}` }] };
 }
 
 function assistant(id, swipes, selected = 0) {
@@ -74,19 +74,92 @@ it('C2 rapid host-cloned 0 to 1 to 0 records the original source without an empt
     expect(host.manager.prepareSwipeGeneration(0, 'swipe')).toMatchObject({ ok: true, baseBranchId: 'source', baseSnapshot: { version: 1 }, reusableChecks: [] });
 });
 
-it('C4 MESSAGE_SWIPE_DELETED removes a non-selected branch and restores the new selected branch', async () => {
+it('C4 MESSAGE_SWIPE_DELETED uses post-splice current selection for a non-current swipe', async () => {
     const old = branch('old', 1); const selected = branch('selected', 3);
     const message = assistant('m1', [old, selected], 1); const host = eventHost({ chat: [message] });
+    Object.assign(host.context.chatMetadata.dualModelEngine, { stateVersion: 3, activeSnapshot: { version: 3 }, activeRef: { messageId: 'm1', swipeId: 1, branchId: 'selected' } });
+    message.swipe_info.splice(0, 1); message.swipe_id = 0;
     await host.emit('swipe-deleted', { messageId: 0, swipeId: 0 });
     await host.queue.waitForIdle('chat-a');
-    expect(message.swipe_info[0].extra.dualModelEngine.branch).toBeUndefined();
+    expect(message.swipe_info[0].extra.dualModelEngine.branch.branchId).toBe('selected');
     expect(host.context.chatMetadata.dualModelEngine.headRevision).toBe(1);
+    expect(host.context.chatMetadata.dualModelEngine.activeRef).toEqual({ messageId: 'm1', swipeId: 0, branchId: 'selected' });
+});
+
+it('C4 MESSAGE_SWIPE_DELETED restores the surviving current swipe after its old slot is spliced', async () => {
+    const old = branch('old', 1); const selected = branch('selected', 3);
     const current = assistant('m2', [old, selected], 1); const currentHost = eventHost({ chat: [current] });
-    current.swipe_id = 0;
+    Object.assign(currentHost.context.chatMetadata.dualModelEngine, { stateVersion: 3, activeSnapshot: { version: 3 }, activeRef: { messageId: 'm2', swipeId: 1, branchId: 'selected' } });
+    current.swipe_info.splice(1, 1); current.swipe_id = 0;
     await currentHost.emit('swipe-deleted', { messageId: 0, swipeId: 1, newSwipeId: 0 });
     await currentHost.queue.waitForIdle('chat-a');
     expect(currentHost.context.chatMetadata.dualModelEngine.activeRef).toEqual({ messageId: 'm2', swipeId: 0, branchId: 'old' });
     expect(currentHost.context.chatMetadata.dualModelEngine.activeSnapshot).toEqual({ version: 1 });
+});
+
+it('C4 MESSAGE_SWIPE_DELETED leaves a later active head alone for historical non-current and current swipes', async () => {
+    const historical = assistant('history', [branch('old', 1), branch('history', 2)], 1);
+    const tail = assistant('tail', [branch('tail', 4)]);
+    const host = eventHost({ chat: [historical, tail] });
+    Object.assign(host.context.chatMetadata.dualModelEngine, { stateVersion: 4, activeSnapshot: { version: 4 }, activeRef: { messageId: 'tail', swipeId: 0, branchId: 'tail' } });
+
+    historical.swipe_info.splice(0, 1); historical.swipe_id = 0;
+    await host.emit('swipe-deleted', { messageId: 0, swipeId: 0, newSwipeId: 0 });
+    await host.queue.waitForIdle('chat-a');
+    expect(host.context.chatMetadata.dualModelEngine.activeRef).toEqual({ messageId: 'tail', swipeId: 0, branchId: 'tail' });
+    expect(host.context.chatMetadata.dualModelEngine.activeSnapshot).toEqual({ version: 4 });
+
+    const current = assistant('history-2', [branch('old-2', 1), branch('history-2', 2)], 1);
+    const currentHost = eventHost({ chat: [current, tail] });
+    Object.assign(currentHost.context.chatMetadata.dualModelEngine, { stateVersion: 4, activeSnapshot: { version: 4 }, activeRef: { messageId: 'tail', swipeId: 0, branchId: 'tail' } });
+    current.swipe_info.splice(1, 1); current.swipe_id = 0;
+    await currentHost.emit('swipe-deleted', { messageId: 0, swipeId: 1, newSwipeId: 0 });
+    await currentHost.queue.waitForIdle('chat-a');
+    expect(currentHost.context.chatMetadata.dualModelEngine.activeRef).toEqual({ messageId: 'tail', swipeId: 0, branchId: 'tail' });
+    expect(currentHost.context.chatMetadata.dualModelEngine.activeSnapshot).toEqual({ version: 4 });
+});
+
+it('C5 MESSAGE_DELETED finds the changed boundary from post-mutation chat state', async () => {
+    const first = assistant('first', [branch('first', 1)]);
+    const last = assistant('last', [branch('last', 2)]);
+    const host = eventHost({ chat: [{ is_user: true }, first, { is_user: true }, last] });
+    Object.assign(host.context.chatMetadata.dualModelEngine, { stateVersion: 2, activeSnapshot: { version: 2 }, activeRef: { messageId: 'last', swipeId: 0, branchId: 'last' } });
+
+    host.context.chat.splice(1, 1);
+    await host.emit('deleted', host.context.chat.length);
+    await host.queue.waitForIdle('chat-a');
+
+    expect(last.swipe_info[0].extra.dualModelEngine.branch.status).toBe('stale');
+    expect(host.context.chatMetadata.dualModelEngine.activeSnapshot).toEqual({ version: 0 });
+});
+
+it('C5 MESSAGE_DELETED invalidates surviving descendants even when its active reference was deleted', async () => {
+    const deleted = assistant('deleted', [branch('deleted', 1)]);
+    const descendant = assistant('descendant', [branch('descendant', 2)]);
+    const host = eventHost({ chat: [{ is_user: true }, deleted, descendant] });
+    Object.assign(host.context.chatMetadata.dualModelEngine, { stateVersion: 1, activeSnapshot: { version: 1 }, activeRef: { messageId: 'deleted', swipeId: 0, branchId: 'deleted' } });
+
+    host.context.chat.splice(1, 1);
+    await host.emit('deleted', host.context.chat.length);
+    await host.queue.waitForIdle('chat-a');
+
+    expect(descendant.swipe_info[0].extra.dualModelEngine.branch.status).toBe('stale');
+    expect(host.context.chatMetadata.dualModelEngine.activeSnapshot).toEqual({ version: 0 });
+});
+
+it('C5 regenerate suppression does not swallow a same-chat deletion of a different message', async () => {
+    const other = assistant('other', [branch('other', 1)]);
+    const target = assistant('target', [branch('target', 2)]);
+    const host = eventHost({ chat: [other, target] });
+    Object.assign(host.context.chatMetadata.dualModelEngine, { stateVersion: 2, activeSnapshot: { version: 2 }, activeRef: { messageId: 'target', swipeId: 0, branchId: 'target' } });
+    expect(host.manager.prepareSwipeGeneration(1, 'regenerate')).toMatchObject({ ok: true });
+
+    host.context.chat.splice(0, 1);
+    await host.emit('deleted', host.context.chat.length);
+    await host.queue.waitForIdle('chat-a');
+
+    expect(target.swipe_info[0].extra.dualModelEngine.branch.status).toBe('stale');
+    expect(host.context.chatMetadata.dualModelEngine.activeSnapshot).toEqual({ version: 0 });
 });
 
 it('C4 rejects malformed swipe deletion events without persisting', async () => {
