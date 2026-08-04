@@ -86,6 +86,28 @@ it('runs failure through the real orchestrator lifecycle without committing stag
     expect(await orchestrator.afterGeneration()).toMatchObject({ reason: 'rule-tool-failed' }); expect(deps.store.commitSegment).not.toHaveBeenCalled(); expect(ledger.list()).toEqual([]); expect(deps.rollbackManager.abortReplacement).toHaveBeenCalled();
 });
 
+it('commits a damage action accepted just before generation end', async () => {
+    const user = { is_user: true, mes: 'go', extra: { dualModelEngine: { messageId: 'u1' } } }; const definitions = new Map();
+    const deps = createOrchestratorTestDependencies({ chat: [user] }); deps.getConfig = () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'd20-lite', adjudication: 'automatic-tool', injectionBudget: 1 }); deps.getPreset = () => ({ id: 'd20-lite', allowedPaths: ['/inventory'], lockedPaths: ['/version'], ruleLockedPaths: ['/actors'], injection: [] }); deps.adapter.registerTool = definition => definitions.set(definition.name, definition);
+    const ledger = createCheckLedger({ makeId: () => 'damage-1', now: () => 'now' }); deps.ledger = ledger;
+    const orchestrator = createOrchestrator(deps); const registry = createToolRegistry({ adapter: deps.adapter, getConfig: deps.getConfig, getActiveGeneration: orchestrator.getActiveGeneration, validateCheck: validation('checkInput'), validateDamage: validation('damageInput'), ledger, resolveCheck: async () => ({ total: 1 }), resolveDamage: async (_input, state) => ({ state: { ...state, actors: { player: { hp: { current: 9, temporary: 0 } } } }, audit: { rolls: [4], raw: 4, total: 4, absorbed: 3, hpBefore: 10, hpAfter: 9 } }) }); registry.register();
+    await orchestrator.beforeGeneration('normal'); const accepted = definitions.get('DualModelApplyD20Damage').action(damage); deps.context.chat.push({ is_user: false, mes: 'answer', extra: {}, swipe_id: 0, swipe_info: [{ extra: {} }] });
+    await expect(orchestrator.afterGeneration()).resolves.toMatchObject({ ok: true, queued: true }); await accepted; await deps.queue.waitForIdle('chat-a');
+    expect(deps.store.commitSegment).toHaveBeenCalledWith(expect.objectContaining({ checks: expect.arrayContaining([expect.objectContaining({ kind: 'damage' })]), nextState: expect.objectContaining({ actors: expect.objectContaining({ player: expect.objectContaining({ hp: expect.objectContaining({ current: 9 }) }) }) }) })); expect(ledger.list()).toHaveLength(1);
+});
+
+it.each(['stop', 'chat-change'])('cancels a pending resolver when generation receives %s', async kind => {
+    const user = { is_user: true, mes: 'go', extra: { dualModelEngine: { messageId: 'u1' } } }; const definitions = new Map(); let release;
+    const deps = createOrchestratorTestDependencies({ chat: [user] }); deps.getConfig = () => ({ enabled: true, recorderProfileId: 'recorder', rulePresetId: 'd20-lite', adjudication: 'automatic-tool', injectionBudget: 1 }); deps.getPreset = () => ({ id: 'd20-lite', allowedPaths: ['/inventory'], lockedPaths: ['/version'], ruleLockedPaths: ['/actors'], injection: [] }); deps.adapter.registerTool = definition => definitions.set(definition.name, definition); deps.adapter.events = { GENERATION_STOPPED: 'stopped', CHAT_CHANGED: 'chat' };
+    const ledger = createCheckLedger({ makeId: () => 'damage-1', now: () => 'now' }); deps.ledger = ledger;
+    const orchestrator = createOrchestrator(deps); const registry = createToolRegistry({ adapter: deps.adapter, getConfig: deps.getConfig, getActiveGeneration: orchestrator.getActiveGeneration, validateCheck: validation('checkInput'), validateDamage: validation('damageInput'), ledger, resolveCheck: async () => ({ total: 1 }), resolveDamage: async () => new Promise(resolve => { release = resolve; }) }); registry.register(); orchestrator.start();
+    await orchestrator.beforeGeneration('normal'); const pending = definitions.get('DualModelApplyD20Damage').action(damage); deps.context.chat.push({ is_user: false, mes: 'answer', extra: {}, swipe_id: 0, swipe_info: [{ extra: {} }] }); const ending = orchestrator.afterGeneration(); await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    await expect(definitions.get('DualModelApplyD20Damage').action({ ...damage, reason: 'too late' })).rejects.toThrow('closing');
+    if (kind === 'stop') deps.adapter.on.mock.calls.find(([name]) => name === 'stopped')[1](); else { deps.context.chatId = 'chat-b'; deps.adapter.on.mock.calls.find(([name]) => name === 'chat')[1](); }
+    await expect(ending).resolves.toEqual({ ok: false, reason: 'generation-cancelled' }); expect(deps.store.commitSegment).not.toHaveBeenCalled(); expect(ledger.list()).toEqual([]);
+    release({ state: { actors: { player: { hp: { current: 9, temporary: 0 } } } }, audit: {} }); await expect(pending).rejects.toThrow('closing'); expect(ledger.list()).toEqual([]);
+});
+
 it('does not stage late, failed, or reuse-only unmatched tool calls', async () => {
     let current; let release; const gate = new Promise(resolve => { release = resolve; }); const host = setup({ getActiveGeneration: () => current, resolveCheck: vi.fn(async () => { await gate; return { total: 1 }; }) }); current = host.generation;
     const pending = host.definitions.get('DualModelResolveD20Check').action(check); current = { ...host.generation, requestId: 'g2', pendingRuleRecords: [], pendingRuleEffects: [] }; release(); await expect(pending).rejects.toThrow('generation'); expect(host.generation.pendingRuleRecords).toEqual([]);

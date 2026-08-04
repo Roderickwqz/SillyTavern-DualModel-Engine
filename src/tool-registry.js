@@ -7,6 +7,7 @@ export { checkSchema as d20ToolInputSchema, damageSchema as d20DamageInputSchema
 function signature(input, userMessageId) { return JSON.stringify([userMessageId, input.actor, input.action.trim(), input.ability, input.skill, input.dc, input.advantage]); }
 function activeIdentity(getActiveGeneration, expected) { return getActiveGeneration() === expected; }
 function staleGeneration() { return new Error('active generation changed'); }
+function closedGeneration() { const error = new Error('active generation is closing'); error.code = 'generation-closed'; return error; }
 
 export function createToolRegistry({ adapter, getConfig, getActiveGeneration, validateCheck, validateDamage, resolveCheck, resolveDamage, ledger }) {
     const names = ['DualModelResolveD20Check', 'DualModelApplyD20Damage'];
@@ -14,14 +15,16 @@ export function createToolRegistry({ adapter, getConfig, getActiveGeneration, va
     const authorized = generation => generation?.effectiveConfig?.enabled && generation.effectiveConfig.rulePresetId !== 'narrative' && generation.effectiveConfig.adjudication === 'automatic-tool';
     const discard = generation => { generation.ruleToolFailed = true; generation.pendingRuleRecords.length = 0; generation.pendingRuleEffects.length = 0; };
     const enqueue = (generation, work) => {
+        if (generation.generationEnding || generation.closed) return Promise.reject(closedGeneration());
         generation.ruleToolTail ??= Promise.resolve();
         const run = generation.ruleToolTail.catch(() => undefined).then(async () => {
             if (!activeIdentity(getActiveGeneration, generation)) throw staleGeneration();
+            if (generation.closed) throw closedGeneration();
             if (!authorized(generation)) throw new Error('Rule tool is not authorized for this generation');
             return work();
         });
-        generation.ruleToolTail = run;
-        return run.catch(error => { discard(generation); throw error; });
+        generation.ruleToolTail = run.catch(() => undefined);
+        return run.catch(error => { if (error?.code !== 'generation-closed') discard(generation); throw error; });
     };
     const sameCheck = (generation, key, work) => {
         generation.ruleToolInflight ??= new Map();
@@ -43,7 +46,7 @@ export function createToolRegistry({ adapter, getConfig, getActiveGeneration, va
                 if (reusable) { if (!activeIdentity(getActiveGeneration, generation)) throw staleGeneration(); generation.pendingRuleRecords.push(reusable); return reusable; }
                 if (generation.ruleReplayMode === 'reuse-only') throw new Error('Ordinary regeneration cannot create or reroll a formal check; use explicit reroll');
                 const result = await resolveCheck(input, structuredClone(generation.pendingRuleEffects.at(-1)?.nextState ?? generation.baseSnapshot));
-                if (!activeIdentity(getActiveGeneration, generation)) throw staleGeneration();
+                if (!activeIdentity(getActiveGeneration, generation) || generation.closed) throw generation.closed ? closedGeneration() : staleGeneration();
                 const record = ledger.createRecord({ kind: 'check', branchId: generation.branchId, signature: key.slice(6), request: structuredClone(input), result: structuredClone(result) }); generation.pendingRuleRecords.push(record); return record;
             });
         },
@@ -56,7 +59,7 @@ export function createToolRegistry({ adapter, getConfig, getActiveGeneration, va
             const validation = validateDamage(input); if (!validation.ok) { discard(generation); throw new Error(JSON.stringify(validation.errors)); }
             return enqueue(generation, async () => {
                 const state = structuredClone(generation.pendingRuleEffects.at(-1)?.nextState ?? generation.baseSnapshot);
-                const resolved = await resolveDamage(input, state); if (!activeIdentity(getActiveGeneration, generation)) throw staleGeneration();
+                const resolved = await resolveDamage(input, state); if (!activeIdentity(getActiveGeneration, generation) || generation.closed) throw generation.closed ? closedGeneration() : staleGeneration();
                 const record = ledger.createRecord({ kind: 'damage', branchId: generation.branchId, request: structuredClone(input), result: structuredClone(resolved.audit) });
                 generation.pendingRuleRecords.push(record); generation.pendingRuleEffects.push({ record, nextState: structuredClone(resolved.state) }); return record;
             });
