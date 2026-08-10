@@ -118,9 +118,7 @@ class CampaignService:
             self.snapshot_repository.insert(
                 connection, campaign_id, "main", 0, snapshot, now
             )
-            campaign = self.campaign_repository.get(connection, campaign_id)
-        assert campaign is not None
-        return campaign
+            return self.campaign_repository.require(connection, campaign_id)
 
     def get_campaign(self, campaign_id: str) -> Campaign:
         with self.database.connect() as connection:

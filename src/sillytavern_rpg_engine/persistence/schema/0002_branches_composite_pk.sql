@@ -1,3 +1,9 @@
+-- Destructive for populated databases: with PRAGMA foreign_keys=ON the DROP
+-- TABLE branches step cascade-deletes dependent rows (pending_proposals,
+-- audit_events, state_snapshots) before their copies run, so apply only to
+-- fresh bootstrap instances. Future data-bearing migrations must reorder or
+-- backfill instead.
+
 CREATE TABLE branches_v2 (
     id TEXT NOT NULL,
     campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,

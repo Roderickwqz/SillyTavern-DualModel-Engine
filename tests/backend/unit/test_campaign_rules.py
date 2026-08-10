@@ -1,6 +1,6 @@
 import pytest
 
-from sillytavern_rpg_engine.domain.errors import ConfirmationRequiredError
+from sillytavern_rpg_engine.domain.errors import ConfirmationRequiredError, ValidationError
 from sillytavern_rpg_engine.domain.models import CampaignRules, RulesMode
 from sillytavern_rpg_engine.services.campaigns import CampaignService
 
@@ -32,3 +32,22 @@ def test_disable_preserves_state_and_active_combat_requires_confirmation(databas
         "version": "5.2.1",
         "custom_preset_id": None,
     }
+
+
+def test_duplicate_campaign_rejected_and_bootstrap_artifacts_are_singular(database):
+    service = CampaignService(database, id_factory=iter(["bootstrap", "duplicate"]).__next__, clock=lambda: "2026-08-10T00:00:00Z")
+    service.create_campaign("c1", "Story")
+    with pytest.raises(ValidationError, match="campaign already exists"):
+        service.create_campaign("c1", "Story")
+    with database.connect() as connection:
+        events = connection.execute(
+            "SELECT event_type FROM audit_events WHERE campaign_id = 'c1'"
+        ).fetchall()
+        assert [row[0] for row in events] == ["campaign-created"]
+        assert connection.execute("SELECT COUNT(*) FROM jsonl_outbox").fetchone()[0] == 1
+        snapshot = connection.execute(
+            "SELECT state_version FROM state_snapshots"
+            " WHERE campaign_id = 'c1' AND state_version = 0"
+        ).fetchone()
+        assert snapshot is not None
+        assert snapshot[0] == 0
