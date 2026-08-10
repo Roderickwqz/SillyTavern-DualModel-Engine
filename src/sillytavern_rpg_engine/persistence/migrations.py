@@ -32,7 +32,8 @@ class MigrationRunner:
             for version, sql in sorted(scripts.items()):
                 if version in applied:
                     continue
-                connection.executescript(sql)
+                for statement in self._split_statements(sql):
+                    connection.execute(statement)
                 connection.execute(
                     "INSERT INTO schema_migrations(version, applied_at)"
                     " VALUES (?, ?)",
@@ -48,3 +49,33 @@ class MigrationRunner:
             version = int(resource.name.split("_", 1)[0])
             scripts[version] = resource.read_text(encoding="utf-8")
         return scripts
+
+    def _split_statements(self, sql: str) -> list[str]:
+        statements = []
+        current = []
+        in_quote = False
+        index = 0
+        while index < len(sql):
+            char = sql[index]
+            if in_quote:
+                current.append(char)
+                if char == "'" and index + 1 < len(sql) and sql[index + 1] == "'":
+                    current.append(sql[index + 1])
+                    index += 1
+                elif char == "'":
+                    in_quote = False
+            elif char == "'":
+                in_quote = True
+                current.append(char)
+            elif char == ";":
+                statement = "".join(current).strip()
+                if statement:
+                    statements.append(statement)
+                current = []
+            else:
+                current.append(char)
+            index += 1
+        statement = "".join(current).strip()
+        if statement:
+            statements.append(statement)
+        return statements

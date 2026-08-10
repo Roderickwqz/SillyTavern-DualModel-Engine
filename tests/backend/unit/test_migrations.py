@@ -1,5 +1,7 @@
 import sqlite3
 
+import pytest
+
 from sillytavern_rpg_engine.persistence.database import Database
 from sillytavern_rpg_engine.persistence.migrations import MigrationRunner
 
@@ -48,3 +50,25 @@ def test_transaction_rolls_back_all_writes(tmp_path):
     with database.connect() as connection:
         count = connection.execute("SELECT COUNT(*) FROM campaigns").fetchone()[0]
     assert count == 0
+
+
+def test_failing_migration_leaves_no_tables(tmp_path):
+    database = Database(tmp_path / "atomic.sqlite3")
+    runner = MigrationRunner(database)
+    runner._load_scripts = lambda: {
+        1: (
+            "CREATE TABLE partial_one (id INTEGER);"
+            "CREATE TABLE partial_two (id INTEGER);"
+            "INSERT INTO does_not_exist (id) VALUES (1);"
+        )
+    }
+    with pytest.raises(sqlite3.OperationalError):
+        runner.apply()
+    with database.connect() as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert tables == set()
