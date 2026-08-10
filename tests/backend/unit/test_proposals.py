@@ -118,3 +118,24 @@ def test_set_rules_proposal_approves_end_to_end(database, prepared_alchemy):
     assert result.snapshot["campaign"]["rules"]["mode"] == "dnd-2024"
     assert result.snapshot["campaign"]["rules"]["enabled"] is True
     assert service.get("p-4").status is ProposalStatus.APPROVED
+
+
+def test_approved_proposal_is_not_flipped_stale_on_late_retry(database, prepared_alchemy):
+    state, mutation_engine = prepared_alchemy
+    service = ProposalService(database, mutation_engine, id_factory=lambda: "p-5", clock=lambda: "2026-08-10T00:00:00Z")
+    service.create("c1", "main", {"kind": "set_attribute", "entity_id": "erin", "attribute_key": "alchemy", "value": 45, "turn_id": None}, "candidate")
+    service.approve("p-5", expected_version=1)
+    state.apply_explicit("c1", "main", 2, SetAttributeOperation("erin", "alchemy", 37, "turn-3"))
+    with pytest.raises(StaleStateError):
+        service.approve("p-5", expected_version=3)
+    assert service.get("p-5").status is ProposalStatus.APPROVED
+
+
+def test_approved_proposal_cannot_be_rejected(database, prepared_alchemy):
+    _, mutation_engine = prepared_alchemy
+    service = ProposalService(database, mutation_engine, id_factory=lambda: "p-6", clock=lambda: "2026-08-10T00:00:00Z")
+    service.create("c1", "main", {"kind": "set_attribute", "entity_id": "erin", "attribute_key": "alchemy", "value": 45, "turn_id": None}, "candidate")
+    service.approve("p-6", expected_version=1)
+    with pytest.raises(ValidationError, match="not pending"):
+        service.reject("p-6")
+    assert service.get("p-6").status is ProposalStatus.APPROVED

@@ -309,24 +309,27 @@ class ProposalService:
         )
 
     def reject(self, proposal_id: str) -> Proposal:
-        """Mark a proposal Rejected; campaign state is never mutated."""
+        """Mark a Pending proposal Rejected; campaign state is never mutated."""
         now = self.clock()
         with self.database.transaction() as connection:
             cursor = connection.execute(
                 "UPDATE pending_proposals SET status = 'rejected', resolved_at = ?"
-                " WHERE id = ?",
+                " WHERE id = ? AND status = 'pending'",
                 (now, proposal_id),
             )
             if cursor.rowcount == 0:
-                raise NotFoundError(f"proposal {proposal_id} not found")
+                raise ValidationError(
+                    f"proposal {proposal_id} is not pending and cannot be rejected"
+                )
         return self.get(proposal_id)
 
     def _mark_stale(self, proposal_id: str) -> None:
         """Persist the Stale status in its own transaction so the refusal to
-        apply the mutation cannot roll the status update back."""
+        apply the mutation cannot roll the status update back; only a Pending
+        proposal may be marked, so an already resolved record is untouched."""
         with self.database.transaction() as connection:
             connection.execute(
                 "UPDATE pending_proposals SET status = 'stale', resolved_at = ?"
-                " WHERE id = ?",
+                " WHERE id = ? AND status = 'pending'",
                 (self.clock(), proposal_id),
             )
