@@ -1,0 +1,90 @@
+import json
+
+import pytest
+
+from sillytavern_rpg_engine.services.audit_export import JsonlAuditExporter
+from sillytavern_rpg_engine.services.campaigns import CampaignService
+from sillytavern_rpg_engine.services.campaign_export import CampaignExporter
+
+
+def create_campaign(database, event_id, campaign_id="c1"):
+    service = CampaignService(
+        database,
+        id_factory=lambda: event_id,
+        clock=lambda: "2026-08-10T00:00:00Z",
+    )
+    service.create_campaign(campaign_id, "Campaign")
+
+
+def test_jsonl_retry_does_not_duplicate_event(database, tmp_path):
+    create_campaign(database, "event-1")
+    output = tmp_path / "audit.jsonl"
+    exporter = JsonlAuditExporter(database)
+    assert exporter.flush(output) == 1
+    with database.transaction() as connection:
+        connection.execute("UPDATE jsonl_outbox SET exported_at = NULL")
+    assert exporter.flush(output) == 0
+    records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert [record["event_id"] for record in records] == ["event-1"]
+
+
+def test_campaign_export_contains_schema_and_no_credentials(database, tmp_path):
+    create_campaign(database, "event-2")
+    output = tmp_path / "campaign.json"
+    CampaignExporter(database).export("c1", output)
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["export_schema_version"] == 1
+    assert payload["campaign"]["id"] == "c1"
+    serialized = json.dumps(payload).casefold()
+    assert "api_key" not in serialized
+    assert "authorization" not in serialized
+
+
+def test_flush_appends_later_events_after_first_flush(database, tmp_path):
+    create_campaign(database, "event-1")
+    output = tmp_path / "audit.jsonl"
+    exporter = JsonlAuditExporter(database)
+    assert exporter.flush(output) == 1
+    create_campaign(database, "event-2", "c2")
+    assert exporter.flush(output) == 1
+    records = [
+        json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["event_id"] for record in records] == ["event-1", "event-2"]
+
+
+def test_exporters_require_existing_parent_directory(database, tmp_path):
+    create_campaign(database, "event-1")
+    missing = tmp_path / "missing" / "audit.jsonl"
+    with pytest.raises(FileNotFoundError):
+        JsonlAuditExporter(database).flush(missing)
+    with pytest.raises(FileNotFoundError):
+        CampaignExporter(database).export("c1", tmp_path / "missing" / "campaign.json")
+
+
+def test_export_verifies_clean(database, tmp_path):
+    create_campaign(database, "event-2")
+    output = tmp_path / "campaign.json"
+    exporter = CampaignExporter(database)
+    exporter.export("c1", output)
+    result = exporter.verify_export(output)
+    assert result["ok"] is True
+    assert result["campaign_id"] == "c1"
+    assert result["state_versions"] == [0]
+
+
+def test_verify_export_flags_tampered_payload(database, tmp_path):
+    create_campaign(database, "event-2")
+    output = tmp_path / "campaign.json"
+    exporter = CampaignExporter(database)
+    exporter.export("c1", output)
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    payload["audit_events"].append({"state_version": 6})
+    payload["extra"] = {"api_key": "leaked"}
+    output.write_text(json.dumps(payload), encoding="utf-8")
+    result = exporter.verify_export(output)
+    assert result["ok"] is False
+    assert any("api_key" in error for error in result["errors"])
+    assert any("state versions" in error for error in result["errors"])
+    output.write_text("{not json", encoding="utf-8")
+    assert exporter.verify_export(output)["ok"] is False
