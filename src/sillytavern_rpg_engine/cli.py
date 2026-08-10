@@ -2,6 +2,7 @@
 local campaign databases."""
 
 import argparse
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -22,31 +23,46 @@ def _add_database_argument(parser: argparse.ArgumentParser) -> None:
 
 def _run_init_database(args: argparse.Namespace) -> int:
     database = Database(args.database)
-    MigrationRunner(database).apply()
-    with database.connect() as connection:
-        version = connection.execute(
-            "SELECT MAX(version) FROM schema_migrations"
-        ).fetchone()[0]
+    try:
+        MigrationRunner(database).apply()
+        with database.connect() as connection:
+            version = connection.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()[0]
+    except sqlite3.Error as exc:
+        print(f"init-db failed: {exc}", file=sys.stderr)
+        return 1
     print(f"Schema version: {version}")
     return 0
 
 
 def _run_verify(args: argparse.Namespace) -> int:
+    if not args.database.is_file():
+        print(
+            f"verify failed: database file does not exist: {args.database}",
+            file=sys.stderr,
+        )
+        return 1
     database = Database(args.database)
     errors: list[str] = []
-    with database.connect() as connection:
-        integrity = connection.execute("PRAGMA integrity_check").fetchall()
-        if len(integrity) != 1 or integrity[0][0] != "ok":
-            errors.append(f"integrity check failed: {[row[0] for row in integrity]}")
-        foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
-        if foreign_keys:
-            errors.append(
-                f"foreign key violations: "
-                f"{[tuple(row) for row in foreign_keys]}"
-            )
+    try:
+        with database.connect() as connection:
+            integrity = connection.execute("PRAGMA integrity_check").fetchall()
+            if len(integrity) != 1 or integrity[0][0] != "ok":
+                errors.append(
+                    f"integrity check failed: {[row[0] for row in integrity]}"
+                )
+            foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if foreign_keys:
+                errors.append(
+                    f"foreign key violations: "
+                    f"{[tuple(row) for row in foreign_keys]}"
+                )
+    except sqlite3.Error as exc:
+        print(f"verify failed: {exc}", file=sys.stderr)
+        return 1
     if errors:
-        for error in errors:
-            print(error, file=sys.stderr)
+        print(f"verify failed: {'; '.join(errors)}", file=sys.stderr)
         return 1
     print("integrity check: ok")
     print("foreign key check: ok")
@@ -57,7 +73,7 @@ def _run_export(args: argparse.Namespace) -> int:
     database = Database(args.database)
     try:
         output = CampaignExporter(database).export(args.campaign, args.output)
-    except DomainError as exc:
+    except (DomainError, sqlite3.Error, FileNotFoundError) as exc:
         print(f"export failed: {exc}", file=sys.stderr)
         return 1
     print(f"exported: {output}")

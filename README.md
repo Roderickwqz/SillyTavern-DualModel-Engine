@@ -47,6 +47,7 @@ Phase 1 is a local state library plus maintenance CLI, not yet a SillyTavern API
 
 ```bash
 python -m pip install -e '.[dev]'
+mkdir -p data
 python -m sillytavern_rpg_engine init-db --database ./data/campaigns.sqlite3
 python -m sillytavern_rpg_engine verify --database ./data/campaigns.sqlite3
 python -m pytest tests/backend -q

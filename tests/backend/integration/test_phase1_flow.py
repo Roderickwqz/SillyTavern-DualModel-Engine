@@ -27,6 +27,19 @@ def test_cli_help_exits_zero():
     assert raised.value.code == 0
 
 
+@pytest.mark.parametrize(
+    "scenario",
+    ["corrupt", "missing"],
+)
+def test_cli_verify_reports_failure_nonzero(tmp_path: Path, scenario: str):
+    if scenario == "corrupt":
+        path = tmp_path / "corrupt.sqlite3"
+        path.write_bytes(b"garbage" * 100)
+    else:
+        path = tmp_path / "missing.sqlite3"
+    assert main(["verify", "--database", str(path)]) == 1
+
+
 def test_phase1_state_survives_restart_and_campaign_rules_are_optional(tmp_path: Path):
     path = tmp_path / "world.sqlite3"
     database = Database(path)
