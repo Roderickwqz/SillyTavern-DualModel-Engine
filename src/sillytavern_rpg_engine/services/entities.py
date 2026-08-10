@@ -36,6 +36,10 @@ class CreateEntityOperation:
 
     def apply(self, connection: sqlite3.Connection, context: MutationContext) -> dict[str, Any]:
         normalized_name = normalize_key(self.name)
+        if connection.execute(
+            "SELECT id FROM entities WHERE id = ?", (self.entity_id,)
+        ).fetchone() is not None:
+            raise ValidationError("entity id already exists")
         try:
             connection.execute(
                 "INSERT INTO entities(id, campaign_id, kind, name, normalized_name,"
