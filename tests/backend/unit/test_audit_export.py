@@ -28,6 +28,31 @@ def test_jsonl_retry_does_not_duplicate_event(database, tmp_path):
     assert [record["event_id"] for record in records] == ["event-1"]
 
 
+def test_flush_skips_valid_json_line_without_event_id(database, tmp_path):
+    create_campaign(database, "event-1")
+    output = tmp_path / "audit.jsonl"
+    exporter = JsonlAuditExporter(database)
+    assert exporter.flush(output) == 1
+    with open(output, "a", encoding="utf-8") as handle:
+        handle.write('{"no_event_id": true}\n')
+    with database.transaction() as connection:
+        connection.execute("UPDATE jsonl_outbox SET exported_at = NULL")
+    assert exporter.flush(output) == 0
+    records = [
+        json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["event_id"] for record in records if "event_id" in record] == ["event-1"]
+
+
+def test_flush_returns_zero_when_nothing_pending(database, tmp_path):
+    output = tmp_path / "audit.jsonl"
+    exporter = JsonlAuditExporter(database)
+    assert exporter.flush(output) == 0
+    create_campaign(database, "event-1")
+    assert exporter.flush(output) == 1
+    assert exporter.flush(output) == 0
+
+
 def test_campaign_export_contains_schema_and_no_credentials(database, tmp_path):
     create_campaign(database, "event-2")
     output = tmp_path / "campaign.json"
@@ -71,6 +96,28 @@ def test_export_verifies_clean(database, tmp_path):
     assert result["ok"] is True
     assert result["campaign_id"] == "c1"
     assert result["state_versions"] == [0]
+
+
+def test_verify_export_rejects_deeply_nested_forbidden_key(database, tmp_path):
+    create_campaign(database, "event-2")
+    output = tmp_path / "campaign.json"
+    exporter = CampaignExporter(database)
+    exporter.export("c1", output)
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    payload["extra"] = {"inner": {"api_key": "x"}}
+    tampered = tmp_path / "tampered.json"
+    tampered.write_text(json.dumps(payload), encoding="utf-8")
+    result = exporter.verify_export(tampered)
+    assert result["ok"] is False
+    assert any("api_key" in error for error in result["errors"])
+
+
+def test_export_leaves_no_temporary_sibling(database, tmp_path):
+    create_campaign(database, "event-2")
+    output = tmp_path / "campaign.json"
+    CampaignExporter(database).export("c1", output)
+    assert output.is_file()
+    assert not (tmp_path / "campaign.json.tmp").exists()
 
 
 def test_verify_export_flags_tampered_payload(database, tmp_path):

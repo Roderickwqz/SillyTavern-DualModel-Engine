@@ -65,8 +65,8 @@ class JsonlAuditExporter:
 
     @staticmethod
     def _existing_event_ids(output: Path) -> set[str]:
-        """Event IDs already present in the file; torn trailing lines from a
-        crash are skipped so their events get appended whole on retry."""
+        """Event IDs already present in the file; lines that do not parse or
+        lack an event_id are skipped so flush stays retryable."""
         if not output.is_file():
             return set()
         existing: set[str] = set()
@@ -76,5 +76,7 @@ class JsonlAuditExporter:
                     record = json.loads(line)
                 except ValueError:
                     continue
-                existing.add(record["event_id"])
+                event_id = record.get("event_id")
+                if isinstance(event_id, str):
+                    existing.add(event_id)
         return existing
