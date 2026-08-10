@@ -72,13 +72,19 @@ class MutationEngine:
             payload = request.operation.apply(connection, context)
             now = self.clock()
             event_id = self.id_factory()
-            self.campaign_repository.cas_bump(
+            bumped = self.campaign_repository.cas_bump(
                 connection,
                 campaign.id,
                 campaign.state_version,
                 next_version,
                 now,
             )
+            if not bumped:
+                current = self.campaign_repository.get(connection, campaign.id)
+                found = current.state_version if current is not None else None
+                raise StaleStateError(
+                    f"expected {campaign.state_version}, found {found}"
+                )
             snapshot = self.snapshot_builder.build(
                 connection, campaign.id, request.branch_id
             )

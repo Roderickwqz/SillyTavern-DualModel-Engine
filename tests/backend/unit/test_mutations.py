@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import json
 import sqlite3
 
 import pytest
@@ -66,6 +67,12 @@ def test_mutation_commits_version_event_outbox_and_snapshot(database, seeded_cam
         assert connection.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM jsonl_outbox").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM state_snapshots WHERE state_version = 1").fetchone()[0] == 1
+        snapshot = json.loads(
+            connection.execute(
+                "SELECT snapshot_json FROM state_snapshots WHERE state_version = 1"
+            ).fetchone()[0]
+        )
+        assert snapshot["campaign"]["name"] == "Renamed"
 
 
 def test_mutation_rolls_back_and_rejects_stale_version(database, seeded_campaign):
@@ -75,5 +82,7 @@ def test_mutation_rolls_back_and_rejects_stale_version(database, seeded_campaign
     with database.connect() as connection:
         assert connection.execute("SELECT name FROM campaigns WHERE id = 'c1'").fetchone()[0] == "Campaign"
         assert connection.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM jsonl_outbox").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM state_snapshots").fetchone()[0] == 0
     with pytest.raises(StaleStateError, match="expected 9, found 0"):
         engine.apply(MutationRequest("c1", "main", 9, "test", "stale", InsertMarker("No")))
