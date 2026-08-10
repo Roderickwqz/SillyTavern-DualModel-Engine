@@ -5,7 +5,7 @@ from typing import Any, Iterable
 
 from ..domain.models import Audience
 from ..persistence.database import Database
-from ..persistence.repositories import CampaignRepository
+from ..persistence.repositories import BranchRepository, CampaignRepository
 
 
 class ProjectionService:
@@ -19,6 +19,7 @@ class ProjectionService:
     def __init__(self, database: Database):
         self.database = database
         self.campaign_repository = CampaignRepository()
+        self.branch_repository = BranchRepository()
 
     def for_audience(
         self, campaign_id: str, branch_id: str, audience: Audience
@@ -36,6 +37,7 @@ class ProjectionService:
         requested = frozenset(audiences)
         with self.database.connect() as connection:
             campaign = self.campaign_repository.require(connection, campaign_id)
+            self.branch_repository.require(connection, campaign_id, branch_id)
             categories = self._visible_categories(connection, campaign_id, requested)
             values = self._values(connection, campaign_id, set(categories))
             entities = self._entities(connection, campaign_id, categories, values)

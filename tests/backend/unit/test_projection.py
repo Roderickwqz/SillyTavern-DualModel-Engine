@@ -1,5 +1,6 @@
 import pytest
 
+from sillytavern_rpg_engine.domain.errors import NotFoundError
 from sillytavern_rpg_engine.domain.models import (
     AgeStatus,
     AttributeDefinition,
@@ -118,3 +119,32 @@ def test_projection_orders_entities_by_normalized_name_and_attributes_by_categor
         {"key": "agility", "value": 5},
         {"key": "alchemy", "value": 10},
     ]
+
+
+def test_for_audience_unknown_campaign_raises_not_found(database):
+    service = ProjectionService(database)
+    with pytest.raises(NotFoundError, match="campaign"):
+        service.for_audience("ghost", "main", Audience.ENGINE)
+
+
+def test_for_audience_unknown_branch_raises_not_found(seeded_attributes, database):
+    service = ProjectionService(database)
+    with pytest.raises(NotFoundError, match="branch"):
+        service.for_audience("c1", "ghost", Audience.ENGINE)
+
+
+def test_visible_definition_without_value_is_absent(seeded_attributes, database):
+    campaigns = CampaignService(
+        database,
+        id_factory=iter(f"projection-event-{index}" for index in range(10, 20)).__next__,
+        clock=lambda: "2026-08-10T00:00:00Z",
+    )
+    state = EntityAttributeService(database, campaigns.mutation_engine)
+    state.apply_explicit("c1", "main", 1, DefineAttributeOperation(AttributeDefinition(
+        campaign_id="c1", key="swordcraft", label="剑术", category="skill",
+        value_type=AttributeType.NUMBER, display=DisplayType.BAR,
+        audiences=frozenset({Audience.ENGINE, Audience.PLAYER_UI}),
+        minimum=0, maximum=100,
+    ), ()))
+    player = ProjectionService(database).for_audience("c1", "main", Audience.PLAYER_UI)
+    assert "swordcraft" not in str(player)
