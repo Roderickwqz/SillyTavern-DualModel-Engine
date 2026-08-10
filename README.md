@@ -40,3 +40,14 @@ npm run check
 ```
 
 The complete manual-host procedure is in [tests/e2e/manual-model-checklist.md](tests/e2e/manual-model-checklist.md).
+
+## RPG Engine Core (Phase 1)
+
+Phase 1 is a local state library plus maintenance CLI, not yet a SillyTavern API. It owns a SQLite campaign database with migrations, campaigns, entities, dynamic attributes, projections, change proposals, and audit/export tooling. The existing JavaScript DualModel Engine remains untouched, but it must not be used as a second authority once the later LangGraph API is enabled.
+
+```bash
+python -m pip install -e '.[dev]'
+python -m sillytavern_rpg_engine init-db --database ./data/campaigns.sqlite3
+python -m sillytavern_rpg_engine verify --database ./data/campaigns.sqlite3
+python -m pytest tests/backend -q
+```
