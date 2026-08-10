@@ -6,7 +6,8 @@
 - 前端：SillyTavern + RPG Companion 兼容版
 - 后端：FastAPI + LangGraph
 - 权威存储：SQLite；JSONL 审计；YAML 规则与 Preset
-- 首个规则集：D&D 2024 修订版第五版（5.5e）
+- 默认规则模式：纯剧情 `narrative`
+- 首个可选规则集：D&D 2024 修订版第五版（5.5e）
 
 ## 1. 背景与目标
 
@@ -57,7 +58,7 @@ LangGraph 后端及其 SQLite 数据库是唯一权威状态。RPG Companion 只
 - 四级 Audience 信息隔离。
 - SQLite 持久化、JSONL 审计、快照、备份和导出。
 - swipe 分支识别与恢复。
-- 代码权威的 D&D 2024 / 5.5e 骰子与完整核心战斗规则。
+- 每个 Campaign 独立启停的 D&D 2024 / 5.5e 骰子与完整核心战斗规则。
 - RPG Companion Together 模式输出和动态 Tracker。
 
 首版不包含：
@@ -297,9 +298,39 @@ source: narrative_development
 
 ## 11. D&D 2024 / 5.5e、骰子与战斗
 
-### 11.1 规则集绑定
+### 11.1 Campaign 规则配置
 
-首个内置规则集固定为 D&D 2024 修订版第五版，内部 ID 为 `dnd-2024`。Campaign 创建时保存规则集 ID、数据版本和勘误版本；后续代码或规则数据升级不得静默重新解释旧回合。战役切换规则版本必须经过显式迁移、差异预览和确认。
+API 服务不全局绑定 D&D。每个 Campaign 独立持久化规则配置，默认纯剧情且不启用 D&D：
+
+```yaml
+rules:
+  mode: narrative
+  enabled: false
+  version: null
+```
+
+支持三种模式：
+
+| Mode | 行为 |
+|---|---|
+| `narrative` | 不执行 D&D 判定，只运行人物、关系、记忆和动态属性 |
+| `dnd-2024` | 启用 D&D 2024 / 5.5e 骰子、战斗和资源规则 |
+| `custom:<preset_id>` | 使用 Campaign 绑定的声明式自定义规则 |
+
+首个内置 D&D 规则集 ID 为 `dnd-2024`。Campaign 启用它时保存规则集 ID、数据版本和勘误版本；后续代码或规则数据升级不得静默重新解释旧回合。切换规则版本必须经过显式迁移、差异预览和确认。
+
+规则启停只能来自用户显式命令或本地 Campaign 管理接口，不能由 Narrator、剧情推断或普通 API 请求参数自动改变：
+
+```text
+/rules status
+/rules enable dnd-2024
+/rules disable
+/rules set narrative
+```
+
+启用 D&D 时先创建状态快照，检查参与人物是否具备所需角色数据，并要求补全或导入缺失字段；成功后才把 `mode` 和 `enabled` 原子提交为 `dnd-2024` 与 `true`。关闭时停止自动判定、资源消耗和 D&D Tracker 投影，但保留角色卡、战斗记录和规则审计，之后可以恢复。活动战斗中关闭规则需要确认，并保存战斗暂停快照。
+
+所有模式使用相同 OpenAI 兼容 API 和 `campaign_id`。不得通过每回合 Custom Body 的 `dnd_enabled` 一类字段控制规则，避免单次请求配置错误改变战役语义。
 
 规则实现以公开的 2024 Free Rules / SRD 5.2.1 核心机制为边界。项目不复制或捆绑未获授权的专有职业、子职、法术、怪物和冒险文本；额外内容通过用户提供或合法授权的数据包扩展。这里的“完整战斗”指核心战斗过程和规则组合完整，不表示首版内置所有已出版角色选项与怪物资料。
 
@@ -310,7 +341,7 @@ source: narrative_development
 
 ### 11.2 完整核心战斗范围
 
-首个完整规则集必须覆盖：
+当 `rules.mode` 为 `dnd-2024` 且 `rules.enabled` 为 `true` 时，首个完整规则集必须覆盖：
 
 - 战斗开始、突袭、先攻、同先攻处理、轮次和回合生命周期。
 - 速度、分段移动、困难地形、起身、爬行、跳跃、攀爬、游泳和强制移动。
@@ -343,7 +374,7 @@ LLM 或 RPG Companion 自带骰子均不是权威随机源。Python Rule Engine 
 
 普通玩家行动中，明确尝试需要判定的动作视为同意执行普通骰点。消耗稀缺资源、使用反应、不可逆选择或动作含义不明确时先询问。测试注入确定性随机源，生产保存实际骰面、修正、DC、结果和规则版本。
 
-RPG Companion 的 Encounter、Randomized Plot、Natural Plot 和正式骰子功能关闭。面板可以显示后端提供的最近骰点和战斗摘要，但不执行结算。
+RPG Companion 的 Encounter、Randomized Plot、Natural Plot 和正式骰子功能关闭。兼容版根据后端 Tracker 元数据自动切换面板：纯剧情模式隐藏 AC、先攻、法术位和战斗组件；D&D 模式显示后端提供的角色数据、最近骰点和战斗摘要，但不执行结算。
 
 ## 12. RPG Companion 兼容契约
 
@@ -351,10 +382,29 @@ RPG Companion 的 Encounter、Randomized Plot、Natural Plot 和正式骰子功�
 
 兼容版使用 Together 模式，关闭 Separate、External API、Auto Update 和 History Persistence。一次主请求完成剧情、状态提交和 Tracker 投影，不产生第二个会被误认作剧情回合的 API 请求。
 
+Presenter 在 Tracker 中附带只读规则元数据：
+
+```json
+{
+  "rules": {
+    "mode": "narrative",
+    "enabled": false,
+    "version": null
+  }
+}
+```
+
+兼容版按该元数据选择 Narrative、D&D 或 Custom 面板，不依赖用户手动切换 RPG Companion Preset。规则元数据只负责显示；前端修改它不能改变后端 Campaign 配置。
+
 ### 12.2 输出格式
 
 ```json
 {
+  "rules": {
+    "mode": "narrative",
+    "enabled": false,
+    "version": null
+  },
   "userStats": {
     "stats": [],
     "status": {},
@@ -385,7 +435,7 @@ RPG Companion 的 Encounter、Randomized Plot、Natural Plot 和正式骰子功�
 }
 ```
 
-原版字段保持兼容。新增 `attributes` 由兼容版通用渲染器按 category 分组，并按 display 选择控件。未知显示类型退化为只读文本，不丢弃数据。
+原版字段保持兼容。兼容版解析器额外保留根级 `rules`，新增 `attributes` 由通用渲染器按 category 分组，并按 display 选择控件。未知显示类型退化为只读文本，不丢弃数据。
 
 ### 12.3 只读权威模式
 
@@ -458,6 +508,8 @@ Custom Body 为每个聊天配置稳定 Campaign：
 }
 ```
 
+Custom Body 不携带规则启停字段。后端从 SQLite Campaign 配置读取 `rules.mode`、`rules.enabled` 和固定版本。
+
 后端提供至少：
 
 - `GET /v1/models`：连接探测。
@@ -496,7 +548,11 @@ RPG Companion 的合成 Tracker 指令由内容签名和结构共同识别。普
 - 新建、切换、编辑和删除 swipe 后恢复正确状态。
 - RPG Companion 兼容版解析、动态渲染和 per-swipe 恢复。
 - 导出、重启、迁移和备份恢复保持相同权威状态。
-- Campaign 固定 `dnd-2024` 规则版本；升级勘误不改变旧回合结果。
+- Narrative Campaign 不调用 D&D 规则，不要求角色具备 D&D 数据。
+- 不同 Campaign 可以同时使用 Narrative、D&D 2024 和 Custom 模式，互不影响。
+- D&D Campaign 固定 `dnd-2024` 规则版本；升级勘误不改变旧回合结果。
+- 启用 D&D 前补全角色数据并创建快照；关闭后停止结算但保留全部 D&D 状态。
+- 活动战斗中未经确认不能关闭规则；暂停和恢复使用相同战斗快照。
 
 ### 17.3 长时间测试
 
@@ -522,6 +578,9 @@ RPG Companion 的合成 Tracker 指令由内容签名和结构共同识别。普
 10. 成人亲密属性仅对明确成年人物启用，且不能替代具体场景中的当次决定。
 11. 骰点、战斗和资源变化都有不可变审计。
 12. 一万回合模拟仍能找回早期高重要度事件。
+13. 新 Campaign 默认 Narrative，不产生 D&D 骰点或资源结算。
+14. 同一 API 下不同 Campaign 可以分别启用和禁用 D&D。
+15. 关闭 D&D 后角色卡和战斗记录仍可恢复，RPG Companion 自动隐藏 D&D 面板。
 
 ## 18. 实施顺序约束
 
@@ -529,7 +588,7 @@ RPG Companion 的合成 Tracker 指令由内容签名和结构共同识别。普
 
 1. 独立 Python 领域模型、SQLite Schema、事务与版本。
 2. 动态属性、Audience、事件和记忆检索。
-3. 确定性规则、骰子与战斗事务。
+3. Campaign 规则配置、确定性规则、骰子与战斗事务。
 4. LangGraph 回合编排和 OpenAI 兼容 API。
 5. RPG Companion Presenter 与兼容版动态渲染。
 6. swipe、编辑、删除和长期模拟。
