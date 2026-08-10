@@ -61,6 +61,25 @@ def _enum(enum_type, value: str, field: str):
         raise ValidationError(f"invalid {field} value {value!r}") from exc
 
 
+def _as_tuple(payload: dict[str, Any], key: str) -> tuple:
+    """Require a JSON list for list-shaped fields; a string would be split
+    into characters and silently persisted."""
+    value = payload[key]
+    if not isinstance(value, list):
+        raise ValidationError(f"{key} must be a list")
+    return tuple(value)
+
+
+def _as_number(payload: dict[str, Any], key: str) -> float | None:
+    """Require a real number (not bool) or null for numeric fields."""
+    value = payload[key]
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, (int, float))
+    ):
+        raise ValidationError(f"{key} must be a number or null")
+    return value
+
+
 class OperationCodec:
     """Decode plain-JSON operation payloads into real MutationOperations.
 
@@ -89,7 +108,7 @@ class OperationCodec:
                 kind=_enum(EntityKind, payload["entity_kind"], "entity_kind"),
                 name=payload["name"],
                 age_status=_enum(AgeStatus, payload["age_status"], "age_status"),
-                aliases=tuple(payload["aliases"]),
+                aliases=_as_tuple(payload, "aliases"),
             )
         if kind == "define_attribute":
             definition = AttributeDefinition(
@@ -101,15 +120,15 @@ class OperationCodec:
                 display=_enum(DisplayType, payload["display"], "display"),
                 audiences=frozenset(
                     _enum(Audience, audience, "audience")
-                    for audience in payload["audiences"]
+                    for audience in _as_tuple(payload, "audiences")
                 ),
-                minimum=payload["minimum"],
-                maximum=payload["maximum"],
-                enum_values=tuple(payload["enum_values"]),
+                minimum=_as_number(payload, "minimum"),
+                maximum=_as_number(payload, "maximum"),
+                enum_values=_as_tuple(payload, "enum_values"),
                 unit=payload["unit"],
             )
             return DefineAttributeOperation(
-                definition, aliases=tuple(payload["aliases"])
+                definition, aliases=_as_tuple(payload, "aliases")
             )
         if kind == "set_attribute":
             return SetAttributeOperation(
@@ -118,9 +137,12 @@ class OperationCodec:
                 value=payload["value"],
                 turn_id=payload["turn_id"],
             )
+        enabled = payload["enabled"]
+        if not isinstance(enabled, bool):
+            raise ValidationError("enabled must be a boolean")
         rules = CampaignRules(
             mode=_enum(RulesMode, payload["mode"], "mode"),
-            enabled=payload["enabled"],
+            enabled=enabled,
             version=payload["version"],
             custom_preset_id=payload["custom_preset_id"],
         )
@@ -144,21 +166,26 @@ class Proposal:
 
 @dataclass(frozen=True)
 class ApproveProposalOperation:
-    """Decode and apply a stored proposal inside the authoritative mutation
-    transaction, then mark the proposal approved in the same commit."""
+    """Approve a proposal only while it is still Pending, inside the
+    authoritative mutation transaction; otherwise the whole mutation
+    rolls back and the inner operation never executes."""
 
     proposal_id: str
     operation_json: str
     resolved_at: str
 
     def apply(self, connection: sqlite3.Connection, context: MutationContext) -> dict[str, Any]:
-        inner = OperationCodec.decode(json.loads(self.operation_json))
-        payload = inner.apply(connection, context)
-        connection.execute(
+        cursor = connection.execute(
             "UPDATE pending_proposals SET status = 'approved', resolved_at = ?"
-            " WHERE id = ?",
+            " WHERE id = ? AND status = 'pending'",
             (self.resolved_at, self.proposal_id),
         )
+        if cursor.rowcount == 0:
+            raise ValidationError(
+                f"proposal {self.proposal_id} is not pending and cannot be approved"
+            )
+        inner = OperationCodec.decode(json.loads(self.operation_json))
+        payload = inner.apply(connection, context)
         return {"proposal_id": self.proposal_id, "operation": payload}
 
 
