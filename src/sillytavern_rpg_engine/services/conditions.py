@@ -93,6 +93,8 @@ class RemoveConditionOperation:
     def apply(self, connection: sqlite3.Connection, context: MutationContext) -> dict[str, Any]:
         require_dnd_2024(context.campaign)
         campaign_id = context.campaign.id
+        if isinstance(self.level, bool) or not isinstance(self.level, int) or self.level < 1:
+            raise ValidationError("condition level must be a positive integer")
         existing = condition_map(connection, campaign_id, self.entity_id)
         if self.condition not in existing:
             raise NotFoundError(

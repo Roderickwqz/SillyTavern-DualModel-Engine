@@ -83,3 +83,18 @@ def test_condition_immunity_rejects_application(database):
     conditions, _ = _service(database)
     with pytest.raises(ValidationError, match="immune"):
         conditions.apply("c1", 4, "pc1", Condition.POISONED, source="trap")
+
+
+def test_remove_exhaustion_rejects_invalid_level(database):
+    conditions, _ = _service(database)
+    conditions.apply("c1", 4, "pc1", Condition.EXHAUSTION, level=3, source="march")
+    with database.connect() as connection:
+        assert condition_map(connection, "c1", "pc1") == {Condition.EXHAUSTION: 3}
+    with pytest.raises(ValidationError, match="positive integer"):
+        conditions.remove("c1", 5, "pc1", Condition.EXHAUSTION, level=0)
+    with database.connect() as connection:
+        assert condition_map(connection, "c1", "pc1") == {Condition.EXHAUSTION: 3}
+    with pytest.raises(ValidationError, match="positive integer"):
+        conditions.remove("c1", 5, "pc1", Condition.EXHAUSTION, level=-2)
+    with database.connect() as connection:
+        assert condition_map(connection, "c1", "pc1") == {Condition.EXHAUSTION: 3}
