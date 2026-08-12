@@ -75,3 +75,15 @@ def test_fact_validation_and_projection_filtering(database, seeded):
     engine = ProjectionService(database).for_audience("c1", "main", Audience.ENGINE)
     assert "王国密探" not in str(player)
     assert engine["entities"][0]["facts"][0]["content"] == "王国密探"
+
+
+def test_projection_empty_audiences_returns_no_facts(database, seeded):
+    state = EntityAttributeService(database, seeded.mutation_engine)
+    state.apply_explicit("c1", "main", 1, AssertFactOperation(
+        fact_id="f-4", entity_id="erin", fact_type=FactType.GENERAL,
+        fact_key="home", content="住在银月城", importance=2,
+        audiences=frozenset({Audience.ENGINE, Audience.PLAYER_UI}),
+        turn_id="turn-1",
+    ))
+    projection = ProjectionService(database).for_audiences("c1", "main", [])
+    assert projection["entities"][0]["facts"] == []

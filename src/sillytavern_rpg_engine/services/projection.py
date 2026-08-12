@@ -97,6 +97,8 @@ class ProjectionService:
     ) -> dict[str, list[dict[str, Any]]]:
         """Read current facts visible to the requested audiences, by entity."""
         audience_values = sorted(audience.value for audience in requested)
+        if not audience_values:
+            return {}
         placeholders = ", ".join("?" for _ in audience_values)
         rows = connection.execute(
             "SELECT entity_id, fact_type, fact_key, content, importance"
