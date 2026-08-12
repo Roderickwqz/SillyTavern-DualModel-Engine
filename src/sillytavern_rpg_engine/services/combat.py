@@ -546,7 +546,7 @@ class MoveOperation:
         require_dnd_2024(context.campaign)
         if isinstance(self.feet, bool) or not isinstance(self.feet, int) or self.feet < 0:
             raise ValidationError("feet must be a non-negative integer")
-        _, combatants = require_active_encounter(
+        encounter, combatants = require_active_encounter(
             connection, context.campaign.id, context.branch_id
         )
         row = next(
@@ -554,6 +554,12 @@ class MoveOperation:
         )
         if row is None:
             raise ValidationError(f"{self.entity_id!r} is not in the encounter")
+        if self.mode is not MovementMode.FORCED:
+            current = active_combatant(encounter, combatants)
+            if current["entity_id"] != self.entity_id:
+                raise ValidationError(
+                    f"it is not {self.entity_id!r}'s turn (not the active combatant)"
+                )
         conditions = condition_map(
             connection, context.campaign.id, self.entity_id
         )

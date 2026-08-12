@@ -145,6 +145,16 @@ def test_help_grants_advantage_and_reaction_budget(database):
     result = combat.use_reaction("c1", result.state_version, "pc1", "shield")
 
 
+def test_voluntary_movement_requires_active_combatant(database):
+    combat, _, version = _world(database)
+    result = _start(combat, version)
+    with pytest.raises(ValidationError, match="active"):
+        combat.move("c1", result.state_version, "orc", feet=10, mode=MovementMode.WALK)
+    result = combat.move("c1", result.state_version, "orc", feet=10, mode=MovementMode.FORCED)
+    with database.connect() as connection:
+        assert _row(connection, "orc")["movement_used"] == 0
+
+
 def test_movement_costs_and_budget(database):
     combat, _, version = _world(database)
     result = _start(combat, version)
