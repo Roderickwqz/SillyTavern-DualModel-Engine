@@ -188,8 +188,16 @@ class SpellProfile:
             raise ValidationError("spell level must be an integer in 0..9")
         if self.attack and self.save_ability is not None:
             raise ValidationError("a spell is either an attack or a save")
-        if not self.attack and self.save_ability is None and not self.healing:
-            raise ValidationError("save_ability is required for non-attack spells")
+        if (
+            not self.attack
+            and self.save_ability is None
+            and self.healing is None
+            and self.damage is None
+            and not self.concentration
+        ):
+            raise ValidationError(
+                "non-attack spells need a save, damage, or healing"
+            )
         if self.save_ability is not None and self.save_ability not in ABILITIES:
             raise ValidationError(f"invalid save_ability {self.save_ability!r}")
         if self.ability not in ABILITIES:

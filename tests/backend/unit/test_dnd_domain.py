@@ -50,7 +50,7 @@ def test_spell_profile_validation():
                         healing=None, concentration=False, duration_rounds=None,
                         ability="int")
     assert bolt.level == 0
-    with pytest.raises(ValidationError, match="save_ability"):
+    with pytest.raises(ValidationError, match="save, damage, or healing"):
         SpellProfile(key="bad", level=1, attack=False, save_ability=None,
                      damage=None, damage_type=None, healing=None,
                      concentration=False, duration_rounds=None, ability="int")
