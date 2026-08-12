@@ -80,3 +80,20 @@ def test_codec_rejects_unknown_keys_and_bad_enums():
             "trait_key": "openness", "tier": "cosmic", "delta": 5,
             "cause": "x", "turn_id": None, "source": "narrative_development",
         })
+
+
+def test_codec_rejects_phase2_missing_keys_wrong_types_and_unknown_kind():
+    with pytest.raises(ValidationError, match="missing keys"):
+        OperationCodec.decode({
+            "kind": "assert_fact", "entity_id": "erin",
+            "fact_type": "identity", "fact_key": "home", "content": "银月城",
+            "importance": 3, "audiences": ["engine"], "turn_id": None,
+        })
+    with pytest.raises(ValidationError, match="audiences must be a list"):
+        OperationCodec.decode({
+            "kind": "assert_fact", "fact_id": "f-1", "entity_id": "erin",
+            "fact_type": "identity", "fact_key": "home", "content": "银月城",
+            "importance": 3, "audiences": "engine", "turn_id": None,
+        })
+    with pytest.raises(ValidationError, match="unsupported operation kind"):
+        OperationCodec.decode({"kind": "bogus", "fact_id": "f-1"})
