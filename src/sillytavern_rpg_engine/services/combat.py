@@ -320,6 +320,7 @@ class AdvanceTurnOperation:
         )
         ending = combatants[encounter["active_index"]]
         _clear_debuffs(connection, combatants, ending["entity_id"], "end")
+        end_fired = self._triggers(connection, context, ending, "turn_end", combatants)
         next_index = encounter["active_index"] + 1
         round_number = encounter["round_number"]
         if next_index >= len(combatants):
@@ -378,6 +379,9 @@ class AdvanceTurnOperation:
                 starting["id"],
             ),
         )
+        start_fired = self._triggers(
+            connection, context, starting, "turn_start", combatants
+        )
         return {
             "encounter_id": encounter["id"],
             "round": round_number,
@@ -385,7 +389,16 @@ class AdvanceTurnOperation:
             "concentration_ended": concentrating is None
             and starting["concentrating_spell"] is not None,
             "recharged": recharged,
+            "triggers": end_fired + start_fired,
         }
+
+    def _triggers(self, connection, context, row, when, combatants):
+        from .monsters import process_turn_triggers
+
+        return process_turn_triggers(
+            connection, context, self.roller, self.roll_id_factory, row, when,
+            combatants,
+        )
 
 
 @dataclass(frozen=True)
