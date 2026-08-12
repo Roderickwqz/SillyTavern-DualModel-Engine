@@ -19,6 +19,7 @@ from ..domain.dnd import (
     Cover,
     CreatureSize,
     Condition,
+    MasteryProperty,
     WeaponProfile,
     WeaponProperty,
     ability_modifier,
@@ -61,6 +62,7 @@ class AttackSpec:
     extra_attack: bool = False
     is_opportunity: bool = False
     use_nick: bool = False
+    cleave_target_id: str | None = None
     suppress_positive_modifier: bool = False
     flat_damage: int | None = None
     attacker_size: CreatureSize = CreatureSize.MEDIUM
@@ -115,7 +117,18 @@ def _spend_budget(
         if not spec.other_weapon_light:
             raise ValidationError("the other weapon must be light")
         if spec.use_nick:
-            pass  # Task 11 validates and consumes the Nick use
+            from .mastery import mark_mastery, mastery_used
+
+            if spec.weapon.mastery is not MasteryProperty.NICK:
+                raise ValidationError("nick requires a nick weapon")
+            mastered = spec.weapon.key in read_list(
+                connection, context.campaign.id, attacker_id, "weapon_masteries"
+            )
+            if not mastered:
+                raise ValidationError("weapon mastery not unlocked for this weapon")
+            if mastery_used(row, "nick"):
+                raise ValidationError("nick already used this turn")
+            mark_mastery(connection, row["id"], "nick")
         elif row["bonus_used"]:
             raise ValidationError("bonus action already used this turn")
         else:
@@ -328,10 +341,12 @@ class AttackOperation:
     spec: AttackSpec
 
     def apply(self, connection: sqlite3.Connection, context: MutationContext) -> dict:
-        # Mastery callbacks are wired in Task 11 once mastery.py exists.
+        from .mastery import on_hit, on_miss
+
         return resolve_strike(
             connection, context, self.roller, self.roll_id_factory,
             self.attacker_id, self.spec,
+            mastery_on_hit=on_hit, mastery_on_miss=on_miss,
         )
 
 
