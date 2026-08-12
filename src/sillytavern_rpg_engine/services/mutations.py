@@ -68,10 +68,10 @@ class MutationEngine:
                 connection, request.campaign_id, request.branch_id
             )
             next_version = campaign.state_version + 1
-            context = MutationContext(campaign, request.branch_id, next_version)
-            payload = request.operation.apply(connection, context)
             now = self.clock()
             event_id = self.id_factory()
+            context = MutationContext(campaign, request.branch_id, next_version, now)
+            payload = request.operation.apply(connection, context)
             bumped = self.campaign_repository.cas_bump(
                 connection,
                 campaign.id,
