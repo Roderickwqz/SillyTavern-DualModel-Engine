@@ -52,3 +52,13 @@ python -m sillytavern_rpg_engine init-db --database ./data/campaigns.sqlite3
 python -m sillytavern_rpg_engine verify --database ./data/campaigns.sqlite3
 python -m pytest tests/backend -q
 ```
+
+## RPG Engine Core (Phase 2)
+
+Phase 2 adds long memory and personality on top of the Phase 1 core: temporally valid facts (superseded, never deleted), permanent audience-filtered memory events with FTS5 trigram search, directed relationships, capped and inertia-checked trait change events, provenance-linked development arcs and summaries, and a tiered retrieval service for future prompt assembly. Trait deltas are capped per tier (normal ≤ 3, important ≤ 8, major ≤ 20) and by a 25-point inertia window over the last 5 events. The FTS index is derivable and can be rebuilt at any time:
+
+```bash
+python -m sillytavern_rpg_engine rebuild-memory-index --database ./data/campaigns.sqlite3
+```
+
+Authoritative entity/attribute state remains campaign-global; branch-scoped divergence arrives with the Phase 6 branching plan.

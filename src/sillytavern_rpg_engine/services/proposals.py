@@ -9,6 +9,13 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from ..domain.errors import NotFoundError, StaleStateError, ValidationError
+from ..domain.memory import (
+    FactType,
+    MemoryEventType,
+    SummaryScope,
+    TraitTier,
+    validate_importance,
+)
 from ..domain.models import (
     AgeStatus,
     AttributeDefinition,
@@ -23,16 +30,29 @@ from ..domain.models import (
 from ..domain.operations import MutationContext, MutationOperation
 from ..persistence.database import Database
 from ..persistence.repositories import BranchRepository, CampaignRepository
+from .arcs import CloseArcOperation, OpenArcOperation
 from .attributes import DefineAttributeOperation, SetAttributeOperation
 from .campaigns import SetRulesOperation
 from .entities import CreateEntityOperation
+from .facts import AssertFactOperation
+from .memory_events import RecordMemoryEventOperation
 from .mutations import MutationEngine, MutationRequest, MutationResult
+from .relationships import SetRelationshipOperation
+from .summaries import UpsertSummaryOperation
+from .traits import RecordTraitEventOperation
 
 ALLOWED_KINDS = frozenset({
     "create_entity",
     "define_attribute",
     "set_attribute",
     "set_rules",
+    "assert_fact",
+    "record_memory_event",
+    "record_trait_event",
+    "set_relationship",
+    "upsert_summary",
+    "open_arc",
+    "close_arc",
 })
 
 _EXPECTED_KEYS: dict[str, frozenset[str]] = {
@@ -50,6 +70,31 @@ _EXPECTED_KEYS: dict[str, frozenset[str]] = {
     "set_rules": frozenset({
         "kind", "mode", "enabled", "version", "custom_preset_id",
     }),
+    "assert_fact": frozenset({
+        "kind", "fact_id", "entity_id", "fact_type", "fact_key", "content",
+        "importance", "audiences", "turn_id",
+    }),
+    "record_memory_event": frozenset({
+        "kind", "event_id", "event_type", "content", "importance", "audiences",
+        "participant_entity_ids", "location_entity_id", "turn_id", "source",
+    }),
+    "record_trait_event": frozenset({
+        "kind", "event_id", "entity_id", "trait_key", "tier", "delta", "cause",
+        "turn_id", "source",
+    }),
+    "set_relationship": frozenset({
+        "kind", "from_entity_id", "to_entity_id", "dimension", "value",
+        "audiences", "turn_id",
+    }),
+    "upsert_summary": frozenset({
+        "kind", "scope", "scope_key", "content", "audiences",
+        "source_event_ids",
+    }),
+    "open_arc": frozenset({
+        "kind", "arc_id", "entity_id", "dimension", "label", "summary",
+        "source_event_ids", "start_turn_id",
+    }),
+    "close_arc": frozenset({"kind", "arc_id", "end_turn_id", "summary"}),
 }
 
 
@@ -70,6 +115,14 @@ def _as_tuple(payload: dict[str, Any], key: str) -> tuple:
     return tuple(value)
 
 
+def _as_id(payload: dict[str, Any], key: str) -> str:
+    """Require a non-empty string identifier."""
+    value = payload[key]
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError(f"{key} must be a non-empty string")
+    return value
+
+
 def _as_number(payload: dict[str, Any], key: str) -> float | None:
     """Require a real number (not bool) or null for numeric fields."""
     value = payload[key]
@@ -83,7 +136,8 @@ def _as_number(payload: dict[str, Any], key: str) -> float | None:
 class OperationCodec:
     """Decode plain-JSON operation payloads into real MutationOperations.
 
-    Only the four Phase 1 kinds are accepted, each with an exact key set;
+    Phase 1 and Phase 2 operation kinds are accepted, each with an exact key
+    set;
     unknown keys, missing keys, and unknown kinds raise ValidationError.
     Class names, import paths, callables, SQL, and pickle data are never
     accepted because nothing beyond the fixed field shapes is read.
@@ -137,16 +191,101 @@ class OperationCodec:
                 value=payload["value"],
                 turn_id=payload["turn_id"],
             )
-        enabled = payload["enabled"]
-        if not isinstance(enabled, bool):
-            raise ValidationError("enabled must be a boolean")
-        rules = CampaignRules(
-            mode=_enum(RulesMode, payload["mode"], "mode"),
-            enabled=enabled,
-            version=payload["version"],
-            custom_preset_id=payload["custom_preset_id"],
+        if kind == "set_rules":
+            enabled = payload["enabled"]
+            if not isinstance(enabled, bool):
+                raise ValidationError("enabled must be a boolean")
+            rules = CampaignRules(
+                mode=_enum(RulesMode, payload["mode"], "mode"),
+                enabled=enabled,
+                version=payload["version"],
+                custom_preset_id=payload["custom_preset_id"],
+            )
+            return SetRulesOperation(rules)
+        if kind == "assert_fact":
+            return AssertFactOperation(
+                fact_id=_as_id(payload, "fact_id"),
+                entity_id=_as_id(payload, "entity_id"),
+                fact_type=_enum(FactType, payload["fact_type"], "fact_type"),
+                fact_key=payload["fact_key"],
+                content=payload["content"],
+                importance=validate_importance(payload["importance"]),
+                audiences=frozenset(
+                    _enum(Audience, a, "audience")
+                    for a in _as_tuple(payload, "audiences")
+                ),
+                turn_id=payload["turn_id"],
+            )
+        if kind == "record_memory_event":
+            return RecordMemoryEventOperation(
+                event_id=_as_id(payload, "event_id"),
+                event_type=_enum(
+                    MemoryEventType, payload["event_type"], "event_type"
+                ),
+                content=payload["content"],
+                importance=validate_importance(payload["importance"]),
+                audiences=frozenset(
+                    _enum(Audience, a, "audience")
+                    for a in _as_tuple(payload, "audiences")
+                ),
+                participants=_as_tuple(payload, "participant_entity_ids"),
+                location_entity_id=payload["location_entity_id"],
+                turn_id=payload["turn_id"],
+                source=payload["source"],
+            )
+        if kind == "record_trait_event":
+            return RecordTraitEventOperation(
+                event_id=_as_id(payload, "event_id"),
+                entity_id=_as_id(payload, "entity_id"),
+                trait_key=payload["trait_key"],
+                tier=_enum(TraitTier, payload["tier"], "tier"),
+                delta=payload["delta"],
+                cause=payload["cause"],
+                turn_id=payload["turn_id"],
+                source=payload["source"],
+            )
+        if kind == "set_relationship":
+            return SetRelationshipOperation(
+                from_entity_id=payload["from_entity_id"],
+                to_entity_id=payload["to_entity_id"],
+                dimension=payload["dimension"],
+                value=payload["value"],
+                audiences=(
+                    None
+                    if payload["audiences"] is None
+                    else frozenset(
+                        _enum(Audience, a, "audience")
+                        for a in _as_tuple(payload, "audiences")
+                    )
+                ),
+                turn_id=payload["turn_id"],
+            )
+        if kind == "upsert_summary":
+            return UpsertSummaryOperation(
+                scope=_enum(SummaryScope, payload["scope"], "scope"),
+                scope_key=payload["scope_key"],
+                content=payload["content"],
+                audiences=frozenset(
+                    _enum(Audience, a, "audience")
+                    for a in _as_tuple(payload, "audiences")
+                ),
+                source_event_ids=_as_tuple(payload, "source_event_ids"),
+            )
+        if kind == "open_arc":
+            return OpenArcOperation(
+                arc_id=_as_id(payload, "arc_id"),
+                entity_id=_as_id(payload, "entity_id"),
+                dimension=payload["dimension"],
+                label=payload["label"],
+                summary=payload["summary"],
+                source_event_ids=_as_tuple(payload, "source_event_ids"),
+                start_turn_id=payload["start_turn_id"],
+            )
+        return CloseArcOperation(
+            arc_id=_as_id(payload, "arc_id"),
+            end_turn_id=payload["end_turn_id"],
+            summary=payload["summary"],
         )
-        return SetRulesOperation(rules)
 
 
 @dataclass(frozen=True)
