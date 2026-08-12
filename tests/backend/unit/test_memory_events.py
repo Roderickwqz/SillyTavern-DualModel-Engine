@@ -71,6 +71,19 @@ def test_unknown_participant_and_index_rebuild(database, seeded):
     assert len(service.search("c1", "main", ALL, "寻人告示")) == 1
 
 
+def test_rebuild_returns_parity_count_with_n_events(database, seeded):
+    service, _ = seeded
+    for index in range(3):
+        service.record(
+            "c1", "main", 2 + index, type=MemoryEventType.SCENE,
+            content=f"银月城事件 {index}", importance=2, audiences=ALL,
+            turn_id=f"turn-{index}",
+        )
+    with database.transaction() as connection:
+        connection.execute("DELETE FROM memory_events_fts")
+    assert MemoryIndexService(database).rebuild() == 3
+
+
 def test_recent_orders_pinned_before_newer_unpinned(database, seeded):
     service, _ = seeded
     service.record("c1", "main", 2, type=MemoryEventType.COMMITMENT,

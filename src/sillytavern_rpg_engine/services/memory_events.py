@@ -258,7 +258,9 @@ class MemoryEventService:
             ).fetchall()
             return [self._to_event(connection, row) for row in rows]
 
-    def _to_event(self, connection, row) -> MemoryEvent:
+    def _to_event(
+        self, connection: sqlite3.Connection, row: sqlite3.Row
+    ) -> MemoryEvent:
         participants = tuple(
             item[0]
             for item in connection.execute(
@@ -300,6 +302,16 @@ class MemoryIndexService:
                 "INSERT INTO memory_events_fts(rowid, content)"
                 " SELECT rowid, content FROM memory_events"
             )
-            return connection.execute(
+            events_count = connection.execute(
+                "SELECT COUNT(*) FROM memory_events"
+            ).fetchone()[0]
+            fts_count = connection.execute(
                 "SELECT COUNT(*) FROM memory_events_fts"
             ).fetchone()[0]
+            if events_count != fts_count:
+                raise RuntimeError(
+                    "memory_events_fts parity mismatch:"
+                    f" memory_events={events_count},"
+                    f" memory_events_fts={fts_count}"
+                )
+            return fts_count
