@@ -154,6 +154,34 @@ def test_concentration_replaces_ticks_and_ends(database):
         assert row["concentrating_spell"] is None
 
 
+def test_non_combatant_cannot_cast_during_encounter(database):
+    spells, _, version = _world(database)
+    ids = iter(f"e{n}" for n in range(2000, 3000))
+    clock = lambda: "2026-08-12T00:00:00Z"
+    dnd = DndRulesService(database, id_factory=lambda: next(ids), clock=clock)
+    entities = EntityAttributeService(database, dnd.mutation_engine)
+    entities.apply_explicit(
+        "c1", "main", version,
+        CreateEntityOperation(entity_id="out", kind=EntityKind.CHARACTER, name="Outsider"),
+    )
+    version += 1
+    slots = [2, 0, 0, 0, 0, 0, 0, 0, 0]
+    for key, value in (
+        ("ability_int", 12), ("spell_slots_max", slots), ("spell_slots_current", slots),
+    ):
+        entities.apply_explicit(
+            "c1", "main", version, SetAttributeOperation("out", key, value),
+        )
+        version += 1
+    before = _slots(database, "out")
+    with pytest.raises(ValidationError, match="not in the encounter"):
+        spells.cast(
+            "c1", version, "out", MAGIC_MISSILE, slot_level=1,
+            target_ids=("orc",), roller=SequenceDiceRoller([2, 2, 2]),
+        )
+    assert _slots(database, "out") == before
+
+
 def test_healing_spell_and_slot_validation(database):
     spells, _, version = _world(database)
     with pytest.raises(ValidationError, match="slot level"):

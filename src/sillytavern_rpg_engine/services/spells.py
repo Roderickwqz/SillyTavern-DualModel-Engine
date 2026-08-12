@@ -84,7 +84,7 @@ class CastSpellOperation:
             (r for r in combatants if r["entity_id"] == self.caster_id), None
         )
         if row is None:
-            return None
+            raise ValidationError(f"{self.caster_id!r} is not in the encounter")
         current = active_combatant(encounter, combatants)
         if current["entity_id"] != self.caster_id:
             raise ValidationError(f"it is not {self.caster_id!r}'s turn")
