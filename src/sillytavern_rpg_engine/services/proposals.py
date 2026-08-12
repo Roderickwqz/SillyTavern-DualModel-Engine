@@ -53,6 +53,8 @@ ALLOWED_KINDS = frozenset({
     "upsert_summary",
     "open_arc",
     "close_arc",
+    "apply_condition",
+    "remove_condition",
 })
 
 _EXPECTED_KEYS: dict[str, frozenset[str]] = {
@@ -95,6 +97,10 @@ _EXPECTED_KEYS: dict[str, frozenset[str]] = {
         "source_event_ids", "start_turn_id",
     }),
     "close_arc": frozenset({"kind", "arc_id", "end_turn_id", "summary"}),
+    "apply_condition": frozenset({
+        "kind", "entity_id", "condition", "level", "source",
+    }),
+    "remove_condition": frozenset({"kind", "entity_id", "condition", "level"}),
 }
 
 
@@ -146,6 +152,36 @@ def _as_number(payload: dict[str, Any], key: str) -> float | None:
     ):
         raise ValidationError(f"{key} must be a number or null")
     return value
+
+
+def _positive_int_level(payload: dict[str, Any]) -> int:
+    level = payload["level"]
+    if isinstance(level, bool) or not isinstance(level, int) or level < 1:
+        raise ValidationError("level must be a positive integer")
+    return level
+
+
+def _decode_apply_condition(payload: dict[str, Any]) -> MutationOperation:
+    from ..domain.dnd import Condition as _Condition
+    from .conditions import ApplyConditionOperation
+
+    return ApplyConditionOperation(
+        entity_id=_as_id(payload, "entity_id"),
+        condition=_enum(_Condition, payload["condition"], "condition"),
+        source=_as_str(payload, "source"),
+        level=_positive_int_level(payload),
+    )
+
+
+def _decode_remove_condition(payload: dict[str, Any]) -> MutationOperation:
+    from ..domain.dnd import Condition as _Condition
+    from .conditions import RemoveConditionOperation
+
+    return RemoveConditionOperation(
+        entity_id=_as_id(payload, "entity_id"),
+        condition=_enum(_Condition, payload["condition"], "condition"),
+        level=_positive_int_level(payload),
+    )
 
 
 class OperationCodec:
@@ -296,6 +332,10 @@ class OperationCodec:
                 source_event_ids=_as_tuple(payload, "source_event_ids"),
                 start_turn_id=_as_optional_str(payload, "start_turn_id"),
             )
+        if kind == "apply_condition":
+            return _decode_apply_condition(payload)
+        if kind == "remove_condition":
+            return _decode_remove_condition(payload)
         return CloseArcOperation(
             arc_id=_as_id(payload, "arc_id"),
             end_turn_id=_as_optional_str(payload, "end_turn_id"),

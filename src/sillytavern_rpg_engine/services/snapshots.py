@@ -30,6 +30,8 @@ class SnapshotBuilder:
             "attribute_definitions": definitions,
             "facts": facts,
             "relationships": relationships,
+            "conditions": self._conditions(connection, campaign_id),
+            "combat": self._combat(connection, campaign_id, branch_id),
         }
 
     def _campaign(self, connection, campaign_id: str) -> dict[str, Any]:
@@ -175,3 +177,58 @@ class SnapshotBuilder:
             }
             for row in rows
         ]
+
+    def _conditions(self, connection, campaign_id: str) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT entity_id, condition, level, source FROM entity_conditions"
+            " WHERE campaign_id = ? ORDER BY entity_id, condition",
+            (campaign_id,),
+        ).fetchall()
+        return [
+            {
+                "entity_id": row["entity_id"],
+                "condition": row["condition"],
+                "level": row["level"],
+                "source": row["source"],
+            }
+            for row in rows
+        ]
+
+    def _combat(self, connection, campaign_id: str, branch_id: str) -> dict | None:
+        encounter = connection.execute(
+            "SELECT id, round_number, active_index FROM combat_encounters"
+            " WHERE campaign_id = ? AND branch_id = ? AND status = 'active'",
+            (campaign_id, branch_id),
+        ).fetchone()
+        if encounter is None:
+            return None
+        rows = connection.execute(
+            "SELECT entity_id, initiative, action_used, bonus_used,"
+            " reaction_used, movement_total, movement_used, hidden, dodging,"
+            " disengaged, concentrating_spell FROM combatants"
+            " WHERE encounter_id = ? ORDER BY initiative DESC, entity_id",
+            (encounter["id"],),
+        ).fetchall()
+        order = [row["entity_id"] for row in rows]
+        return {
+            "encounter_id": encounter["id"],
+            "round": encounter["round_number"],
+            "order": order,
+            "active_entity_id": order[encounter["active_index"]] if order else None,
+            "combatants": [
+                {
+                    "entity_id": row["entity_id"],
+                    "initiative": row["initiative"],
+                    "action_used": bool(row["action_used"]),
+                    "bonus_used": bool(row["bonus_used"]),
+                    "reaction_used": bool(row["reaction_used"]),
+                    "movement_total": row["movement_total"],
+                    "movement_used": row["movement_used"],
+                    "hidden": bool(row["hidden"]),
+                    "dodging": bool(row["dodging"]),
+                    "disengaged": bool(row["disengaged"]),
+                    "concentrating_spell": row["concentrating_spell"],
+                }
+                for row in rows
+            ],
+        }

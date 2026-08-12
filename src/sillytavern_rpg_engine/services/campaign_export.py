@@ -20,6 +20,9 @@ _EXPECTED_ROOT_KEYS = frozenset(
         "pending_proposals",
         "audit_events",
         "latest_snapshots",
+        "dice_rolls",
+        "entity_conditions",
+        "combat_encounters",
     }
 )
 _FORBIDDEN_KEYS = frozenset({"api_key", "authorization", "token", "secret"})
@@ -105,6 +108,9 @@ class CampaignExporter:
             proposals = self._proposals(connection, campaign_id)
             audit_events = self._audit_events(connection, campaign_id)
             snapshots = self._latest_snapshots(connection, campaign_id)
+            dice_rolls = self._dice_rolls(connection, campaign_id)
+            conditions = self._entity_conditions(connection, campaign_id)
+            encounters = self._combat_encounters(connection, campaign_id)
         return {
             "export_schema_version": 1,
             "exported_at": now,
@@ -114,6 +120,9 @@ class CampaignExporter:
             "pending_proposals": proposals,
             "audit_events": audit_events,
             "latest_snapshots": snapshots,
+            "dice_rolls": dice_rolls,
+            "entity_conditions": conditions,
+            "combat_encounters": encounters,
         }
 
     @staticmethod
@@ -201,6 +210,69 @@ class CampaignExporter:
             }
             for row in rows
         ]
+
+    @staticmethod
+    def _dice_rolls(connection, campaign_id) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT id, branch_id, turn_id, roller_entity_id, purpose, formula,"
+            " faces_json, modifier, total, dc, success, critical, rules_version,"
+            " state_version, created_at FROM dice_rolls"
+            " WHERE campaign_id = ? ORDER BY state_version, id",
+            (campaign_id,),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "branch_id": row["branch_id"],
+                "turn_id": row["turn_id"],
+                "roller_entity_id": row["roller_entity_id"],
+                "purpose": row["purpose"],
+                "formula": row["formula"],
+                "faces": json.loads(row["faces_json"]),
+                "modifier": row["modifier"],
+                "total": row["total"],
+                "dc": row["dc"],
+                "success": None if row["success"] is None else bool(row["success"]),
+                "critical": bool(row["critical"]),
+                "rules_version": row["rules_version"],
+                "state_version": row["state_version"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _entity_conditions(connection, campaign_id) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT entity_id, condition, level, source, applied_state_version"
+            " FROM entity_conditions WHERE campaign_id = ?"
+            " ORDER BY entity_id, condition",
+            (campaign_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _combat_encounters(connection, campaign_id) -> list[dict[str, Any]]:
+        encounters = connection.execute(
+            "SELECT id, branch_id, status, round_number, active_index,"
+            " created_state_version, ended_state_version, created_at"
+            " FROM combat_encounters WHERE campaign_id = ? ORDER BY id",
+            (campaign_id,),
+        ).fetchall()
+        result = []
+        for encounter in encounters:
+            combatants = connection.execute(
+                "SELECT entity_id, initiative FROM combatants"
+                " WHERE encounter_id = ? ORDER BY initiative DESC, entity_id",
+                (encounter["id"],),
+            ).fetchall()
+            result.append(
+                {
+                    **dict(encounter),
+                    "combatants": [dict(row) for row in combatants],
+                }
+            )
+        return result
 
     @staticmethod
     def _check_campaign_matches(
