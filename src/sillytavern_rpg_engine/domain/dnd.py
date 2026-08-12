@@ -197,7 +197,10 @@ class SpellProfile:
         if self.damage is not None:
             if self.damage_type is None:
                 raise ValidationError("damage_type is required with damage")
-            DamageType(self.damage_type)
+            try:
+                DamageType(self.damage_type)
+            except ValueError as exc:
+                raise ValidationError(f"invalid damage_type {self.damage_type!r}") from exc
         if self.concentration and self.duration_rounds is None:
             raise ValidationError("concentration spells require duration_rounds")
 

@@ -2,7 +2,6 @@ import pytest
 
 from sillytavern_rpg_engine.domain.dice import DiceFormula
 from sillytavern_rpg_engine.domain.dnd import (
-    ABILITIES,
     CONDITION_EFFECTS,
     DND2024_RULES_VERSION,
     Condition,
@@ -59,6 +58,14 @@ def test_spell_profile_validation():
         SpellProfile(key="bad", level=1, attack=False, save_ability="dex",
                      damage=None, damage_type=None, healing=None,
                      concentration=True, duration_rounds=None, ability="int")
+
+
+def test_spell_profile_invalid_damage_type():
+    with pytest.raises(ValidationError, match="damage_type"):
+        SpellProfile(key="bad", level=0, attack=True, save_ability=None,
+                     damage=DiceFormula(1, 10), damage_type="sparkle",
+                     healing=None, concentration=False, duration_rounds=None,
+                     ability="int")
 
 
 def test_cover_bonus_and_total_cover():
