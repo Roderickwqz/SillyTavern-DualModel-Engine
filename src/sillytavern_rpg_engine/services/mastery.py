@@ -89,9 +89,9 @@ def on_hit(
             return {"property": "cleave", "used": False}
         if mastery_used(attacker_row, mastery.value):
             raise ValidationError(f"{mastery.value} already used this turn")
-        mark_mastery(connection, attacker_row["id"], mastery.value)
         if not spec.cleave_target_id:
             return {"property": "cleave", "used": False}
+        mark_mastery(connection, attacker_row["id"], mastery.value)
         second = AttackSpec(
             target_id=spec.cleave_target_id,
             weapon=spec.weapon,

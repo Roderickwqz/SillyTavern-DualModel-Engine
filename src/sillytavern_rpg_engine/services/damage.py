@@ -276,6 +276,9 @@ class DeathSaveOperation:
             RemoveConditionOperation(self.target_id, Condition.UNCONSCIOUS).apply(
                 connection, context
             )
+            SetAttributeOperation(self.target_id, "is_stable", False).apply(
+                connection, context
+            )
             SetAttributeOperation(self.target_id, "death_saves_success", 0).apply(
                 connection, context
             )
@@ -293,6 +296,9 @@ class DeathSaveOperation:
             failures += 1
         result = "rolling"
         if failures >= 3:
+            SetAttributeOperation(
+                self.target_id, "death_saves_failure", min(failures, 3)
+            ).apply(connection, context)
             SetAttributeOperation(self.target_id, "is_dead", True).apply(connection, context)
             result = "died"
         else:

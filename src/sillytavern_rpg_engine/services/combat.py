@@ -192,9 +192,10 @@ class AddCombatantOperation:
 
     def apply(self, connection: sqlite3.Connection, context: MutationContext) -> dict:
         require_dnd_2024(context.campaign)
-        encounter, _ = require_active_encounter(
+        encounter, combatants = require_active_encounter(
             connection, context.campaign.id, context.branch_id
         )
+        active_entity_id = active_combatant(encounter, combatants)["entity_id"]
         initiative = _roll_initiative(
             connection, context, self.roller, self.roll_id, self.entry
         )
@@ -204,6 +205,16 @@ class AddCombatantOperation:
             )
         except sqlite3.IntegrityError as exc:
             raise ValidationError("combatant already in encounter") from exc
+        _, combatants = require_active_encounter(
+            connection, context.campaign.id, context.branch_id
+        )
+        active_index = next(
+            i for i, row in enumerate(combatants) if row["entity_id"] == active_entity_id
+        )
+        connection.execute(
+            "UPDATE combat_encounters SET active_index = ? WHERE id = ?",
+            (active_index, encounter["id"]),
+        )
         return {
             "encounter_id": encounter["id"],
             "entity_id": self.entry.entity_id,

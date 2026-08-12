@@ -118,6 +118,29 @@ def _hp(database, entity_id):
         return json.loads(row["value_json"])
 
 
+def test_cleave_without_target_does_not_consume_once_per_turn(database):
+    attacks, _, version = _world(database, ["greataxe"])
+    result = attacks.attack(
+        "c1", version, "pc1",
+        AttackSpec(target_id="orc", weapon=AXE),
+        roller=SequenceDiceRoller([15, 5]),
+    )
+    with database.connect() as connection:
+        uses = json.loads(connection.execute(
+            "SELECT mastery_uses_json FROM combatants WHERE entity_id = 'pc1'"
+        ).fetchone()["mastery_uses_json"])
+        assert uses.get("cleave") is not True
+    result = attacks.attack(
+        "c1", result.state_version, "pc1",
+        AttackSpec(
+            target_id="orc", weapon=AXE, extra_attack=True,
+            cleave_target_id="goblin",
+        ),
+        roller=SequenceDiceRoller([15, 5, 14, 3]),
+    )
+    assert _hp(database, "goblin") == 27
+
+
 def test_cleave_hits_second_target_once_per_turn(database):
     attacks, _, version = _world(database, ["greataxe"])
     result = attacks.attack(

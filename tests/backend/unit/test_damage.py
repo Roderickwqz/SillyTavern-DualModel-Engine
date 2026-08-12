@@ -132,6 +132,37 @@ def test_death_saves_natural_outcomes_and_stabilize(database):
     assert _hp_at(database, "is_dead") is True
 
 
+def test_third_death_save_failure_persists_count(database):
+    damage, _, version = _world(database)
+    result = damage.deal("c1", version, "pc1", 12, "fire")
+    result = damage.death_save(
+        "c1", result.state_version, SequenceDiceRoller([1]), "pc1"
+    )
+    assert _hp_at(database, "death_saves_failure") == 2
+    damage.death_save(
+        "c1", result.state_version, SequenceDiceRoller([5]), "pc1"
+    )
+    assert _hp_at(database, "is_dead") is True
+    assert _hp_at(database, "death_saves_failure") == 3
+
+
+def test_nat_1_on_two_failures_persists_three_failures(database):
+    damage, _, version = _world(database)
+    result = damage.deal("c1", version, "pc1", 12, "fire")
+    result = damage.death_save(
+        "c1", result.state_version, SequenceDiceRoller([5]), "pc1"
+    )
+    result = damage.death_save(
+        "c1", result.state_version, SequenceDiceRoller([5]), "pc1"
+    )
+    assert _hp_at(database, "death_saves_failure") == 2
+    damage.death_save(
+        "c1", result.state_version, SequenceDiceRoller([1]), "pc1"
+    )
+    assert _hp_at(database, "is_dead") is True
+    assert _hp_at(database, "death_saves_failure") == 3
+
+
 def test_natural_20_death_save_revives_with_1_hp(database):
     damage, _, version = _world(database)
     result = damage.deal("c1", version, "pc1", 12, "fire")
@@ -139,3 +170,15 @@ def test_natural_20_death_save_revives_with_1_hp(database):
     assert _hp_at(database) == 1
     with database.connect() as connection:
         assert condition_map(connection, "c1", "pc1") == {}
+
+
+def test_natural_20_death_save_revives_clears_is_stable(database):
+    damage, _, version = _world(database)
+    result = damage.deal("c1", version, "pc1", 12, "fire")
+    result = damage.stabilize("c1", result.state_version, "pc1")
+    assert _hp_at(database, "is_stable") is True
+    damage.death_save(
+        "c1", result.state_version, SequenceDiceRoller([20]), "pc1"
+    )
+    assert _hp_at(database) == 1
+    assert _hp_at(database, "is_stable") is False

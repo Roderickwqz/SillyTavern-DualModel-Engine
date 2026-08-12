@@ -148,3 +148,40 @@ def test_add_and_end_combat(database):
         assert row["ended_state_version"] == ended.state_version
     with pytest.raises(NotFoundError, match="active"):
         combat.end("c1", expected_version=ended.state_version)
+
+
+def test_add_combatant_reconciles_active_index_after_reorder(database):
+    combat, entities, version = _world(database)
+    result = combat.start(
+        "c1", expected_version=version,
+        roller=SequenceDiceRoller([18, 9]),
+        entries=(CombatantEntry("pc1"), CombatantEntry("orc")),
+    )
+    result = combat.advance_turn(
+        "c1", result.state_version, SequenceDiceRoller([])
+    )
+    entities.apply_explicit("c1", "main", result.state_version, CreateEntityOperation(
+        entity_id="goblin", kind=EntityKind.CHARACTER, name="Goblin",
+    ))
+    version = result.state_version + 1
+    for key, value in (("ability_dex", 10), ("speed", 30)):
+        entities.apply_explicit(
+            "c1", "main", version, SetAttributeOperation("goblin", key, value)
+        )
+        version += 1
+    result = combat.add_combatant(
+        "c1", expected_version=version,
+        roller=SequenceDiceRoller([15]), entry=CombatantEntry("goblin"),
+    )
+    with database.connect() as connection:
+        encounter = connection.execute(
+            "SELECT active_index FROM combat_encounters"
+        ).fetchone()
+        assert encounter["active_index"] == 2
+        order = connection.execute(
+            "SELECT entity_id, initiative FROM combatants"
+            " ORDER BY initiative DESC, entity_id"
+        ).fetchall()
+        assert [(r["entity_id"], r["initiative"]) for r in order] == [
+            ("pc1", 20), ("goblin", 15), ("orc", 10),
+        ]
