@@ -12,6 +12,7 @@ class MutationContext:
     campaign: Campaign
     branch_id: str
     next_state_version: int
+    now: str
 
 
 class MutationOperation(Protocol):

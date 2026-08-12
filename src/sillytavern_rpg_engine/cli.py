@@ -10,6 +10,7 @@ from .domain.errors import DomainError
 from .persistence.database import Database
 from .persistence.migrations import MigrationRunner
 from .services.campaign_export import CampaignExporter
+from .services.memory_events import MemoryIndexService
 
 
 def _add_database_argument(parser: argparse.ArgumentParser) -> None:
@@ -69,6 +70,17 @@ def _run_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_rebuild_memory_index(args: argparse.Namespace) -> int:
+    database = Database(args.database)
+    try:
+        count = MemoryIndexService(database).rebuild()
+    except (sqlite3.Error, RuntimeError) as exc:
+        print(f"rebuild-memory-index failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Indexed {count} memory events")
+    return 0
+
+
 def _run_export(args: argparse.Namespace) -> int:
     database = Database(args.database)
     try:
@@ -98,6 +110,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_database_argument(verify)
     verify.set_defaults(handler=_run_verify)
+
+    rebuild = subparsers.add_parser(
+        "rebuild-memory-index",
+        help="rebuild the FTS5 memory event index from the event table",
+    )
+    _add_database_argument(rebuild)
+    rebuild.set_defaults(handler=_run_rebuild_memory_index)
 
     export = subparsers.add_parser(
         "export", help="export one campaign to a JSON file"

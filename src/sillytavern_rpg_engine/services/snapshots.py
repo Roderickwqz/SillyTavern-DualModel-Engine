@@ -22,10 +22,14 @@ class SnapshotBuilder:
         campaign = self._campaign(connection, campaign_id)
         entities = self._entities(connection, campaign_id)
         definitions = self._definitions(connection, campaign_id)
+        facts = self._facts(connection, campaign_id)
+        relationships = self._relationships(connection, campaign_id)
         return {
             "campaign": campaign,
             "entities": entities,
             "attribute_definitions": definitions,
+            "facts": facts,
+            "relationships": relationships,
         }
 
     def _campaign(self, connection, campaign_id: str) -> dict[str, Any]:
@@ -105,6 +109,49 @@ class SnapshotBuilder:
                 }
             )
         return values
+
+    def _relationships(self, connection, campaign_id: str) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT from_entity_id, to_entity_id, dimension, value_json,"
+            " audiences_json, updated_turn_id FROM relationships"
+            " WHERE campaign_id = ?"
+            " ORDER BY from_entity_id, to_entity_id, dimension",
+            (campaign_id,),
+        ).fetchall()
+        return [
+            {
+                "from_entity_id": row["from_entity_id"],
+                "to_entity_id": row["to_entity_id"],
+                "dimension": row["dimension"],
+                "value": json.loads(row["value_json"]),
+                "audiences": json.loads(row["audiences_json"]),
+                "updated_turn_id": row["updated_turn_id"],
+            }
+            for row in rows
+        ]
+
+    def _facts(self, connection, campaign_id: str) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT entity_id, fact_type, fact_key, content, importance,"
+            " audiences_json, valid_from, turn_id, source FROM facts"
+            " WHERE campaign_id = ? AND valid_until IS NULL"
+            " ORDER BY entity_id, fact_key",
+            (campaign_id,),
+        ).fetchall()
+        return [
+            {
+                "entity_id": row["entity_id"],
+                "fact_type": row["fact_type"],
+                "fact_key": row["fact_key"],
+                "content": row["content"],
+                "importance": row["importance"],
+                "audiences": json.loads(row["audiences_json"]),
+                "valid_from": row["valid_from"],
+                "turn_id": row["turn_id"],
+                "source": row["source"],
+            }
+            for row in rows
+        ]
 
     def _definitions(self, connection, campaign_id: str) -> list[dict[str, Any]]:
         rows = connection.execute(
