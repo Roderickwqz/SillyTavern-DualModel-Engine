@@ -97,3 +97,41 @@ def test_caps_inertia_duplicates_and_bounds(database, seeded):
         service.record_change("c1", "main", 6, entity_id="erin",
                               trait_key="risk", tier=TraitTier.MAJOR,
                               delta=20, cause="过度冒险", turn_id="t-8")
+
+
+def test_inertia_succeeds_when_oldest_event_falls_out_of_window(database, seeded):
+    service, _ = seeded
+    for i in range(5):
+        service.record_change(
+            "c1", "main", 3 + i, entity_id="erin", trait_key="openness",
+            tier=TraitTier.IMPORTANT, delta=5, cause=f"累积波动{i}",
+            turn_id=f"inertia-t-{i}",
+        )
+    result = service.record_change(
+        "c1", "main", 8, entity_id="erin", trait_key="openness",
+        tier=TraitTier.NORMAL, delta=1, cause="小幅调整",
+        turn_id="inertia-t-5",
+    )
+    assert result.snapshot["entities"][0]["attributes"][0]["value"] == 61
+
+
+def test_inertia_rejects_when_pending_fills_window_at_cap(database, seeded):
+    service, _ = seeded
+    setup = (
+        (TraitTier.IMPORTANT, 5),
+        (TraitTier.IMPORTANT, 5),
+        (TraitTier.IMPORTANT, 5),
+        (TraitTier.MAJOR, 10),
+    )
+    for i, (tier, delta) in enumerate(setup):
+        service.record_change(
+            "c1", "main", 3 + i, entity_id="erin", trait_key="openness",
+            tier=tier, delta=delta, cause=f"边界波动{i}",
+            turn_id=f"cap-t-{i}",
+        )
+    with pytest.raises(ValidationError, match="inertia"):
+        service.record_change(
+            "c1", "main", 7, entity_id="erin", trait_key="openness",
+            tier=TraitTier.NORMAL, delta=1, cause="越界调整",
+            turn_id="cap-t-4",
+        )

@@ -138,7 +138,7 @@ class RecordTraitEventOperation:
             "SELECT delta FROM trait_events"
             " WHERE entity_id = ? AND trait_key = ?"
             " ORDER BY rowid DESC LIMIT ?",
-            (self.entity_id, definition.key, TRAIT_INERTIA_WINDOW),
+            (self.entity_id, definition.key, TRAIT_INERTIA_WINDOW - 1),
         ).fetchall()
         inertia = sum(abs(item["delta"]) for item in recent) + abs(self.delta)
         if inertia > TRAIT_INERTIA_CAP:
