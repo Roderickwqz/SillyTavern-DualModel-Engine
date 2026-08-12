@@ -184,7 +184,7 @@ def test_nick_frees_bonus_action_once_per_turn(database):
         )
 
 
-def test_sap_vex_slow_and_topple(database):
+def test_sap_and_topple(database):
     attacks, combat, version = _world(database, ["mace", "rapier", "quarterstaff"])
     # sap: hit -> orc's next attack has disadvantage
     result = attacks.attack(
@@ -207,6 +207,40 @@ def test_sap_vex_slow_and_topple(database):
     )
     with database.connect() as connection:
         assert condition_map(connection, "c1", "pc1") == {Condition.PRONE: 1}
+
+
+def test_slow_debuff_reduces_movement_and_does_not_stack(database):
+    attacks, combat, version = _world(database, ["longbow"])
+    result = attacks.attack(
+        "c1", version, "pc1",
+        AttackSpec(target_id="orc", weapon=LONGBOW, distance_ft=30),
+        roller=SequenceDiceRoller([15, 5]),
+    )
+    with database.connect() as connection:
+        debuffs = json.loads(connection.execute(
+            "SELECT debuffs_json FROM combatants WHERE entity_id = 'orc'"
+        ).fetchone()["debuffs_json"])
+        assert debuffs["slow"] == {
+            "source": "pc1", "clear": "start", "amount": 10,
+        }
+    result = attacks.attack(
+        "c1", result.state_version, "pc1",
+        AttackSpec(
+            target_id="orc", weapon=LONGBOW, distance_ft=30,
+            extra_attack=True,
+        ),
+        roller=SequenceDiceRoller([15, 5]),
+    )
+    with database.connect() as connection:
+        debuffs = json.loads(connection.execute(
+            "SELECT debuffs_json FROM combatants WHERE entity_id = 'orc'"
+        ).fetchone()["debuffs_json"])
+        assert debuffs["slow"]["amount"] == 10
+    result = combat.advance_turn("c1", result.state_version, SequenceDiceRoller([]))
+    with database.connect() as connection:
+        assert connection.execute(
+            "SELECT movement_total FROM combatants WHERE entity_id = 'orc'"
+        ).fetchone()["movement_total"] == 20
 
 
 def test_vex_grants_advantage_until_end_of_next_turn(database):

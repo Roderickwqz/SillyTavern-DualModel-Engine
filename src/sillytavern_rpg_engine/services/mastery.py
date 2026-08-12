@@ -9,6 +9,7 @@ from ..domain.dnd import (
     Condition,
     CreatureSize,
     MasteryProperty,
+    WeaponProperty,
     ability_modifier,
 )
 from ..domain.errors import ValidationError
@@ -19,9 +20,6 @@ from .conditions import ApplyConditionOperation
 from .damage import DamageResult, apply_damage
 from .dice import record_roll
 from .dnd_pack import read_int, read_list
-
-ONCE_PER_TURN_ON_HIT = frozenset({MasteryProperty.CLEAVE})
-
 
 def _mastered(connection, campaign_id: str, attacker_id: str, spec: AttackSpec) -> bool:
     return spec.weapon.mastery is not None and spec.weapon.key in read_list(
@@ -86,11 +84,12 @@ def on_hit(
         return None
     campaign_id = context.campaign.id
     attacker_id = attacker_row["entity_id"]
-    if mastery in ONCE_PER_TURN_ON_HIT:
+    if mastery is MasteryProperty.CLEAVE:
+        if WeaponProperty.RANGED in spec.weapon.properties:
+            return {"property": "cleave", "used": False}
         if mastery_used(attacker_row, mastery.value):
             raise ValidationError(f"{mastery.value} already used this turn")
         mark_mastery(connection, attacker_row["id"], mastery.value)
-    if mastery is MasteryProperty.CLEAVE:
         if not spec.cleave_target_id:
             return {"property": "cleave", "used": False}
         second = AttackSpec(
