@@ -23,11 +23,13 @@ class SnapshotBuilder:
         entities = self._entities(connection, campaign_id)
         definitions = self._definitions(connection, campaign_id)
         facts = self._facts(connection, campaign_id)
+        relationships = self._relationships(connection, campaign_id)
         return {
             "campaign": campaign,
             "entities": entities,
             "attribute_definitions": definitions,
             "facts": facts,
+            "relationships": relationships,
         }
 
     def _campaign(self, connection, campaign_id: str) -> dict[str, Any]:
@@ -107,6 +109,26 @@ class SnapshotBuilder:
                 }
             )
         return values
+
+    def _relationships(self, connection, campaign_id: str) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT from_entity_id, to_entity_id, dimension, value_json,"
+            " audiences_json, updated_turn_id FROM relationships"
+            " WHERE campaign_id = ?"
+            " ORDER BY from_entity_id, to_entity_id, dimension",
+            (campaign_id,),
+        ).fetchall()
+        return [
+            {
+                "from_entity_id": row["from_entity_id"],
+                "to_entity_id": row["to_entity_id"],
+                "dimension": row["dimension"],
+                "value": json.loads(row["value_json"]),
+                "audiences": json.loads(row["audiences_json"]),
+                "updated_turn_id": row["updated_turn_id"],
+            }
+            for row in rows
+        ]
 
     def _facts(self, connection, campaign_id: str) -> list[dict[str, Any]]:
         rows = connection.execute(

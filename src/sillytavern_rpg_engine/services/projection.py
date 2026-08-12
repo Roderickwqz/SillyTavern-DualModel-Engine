@@ -41,7 +41,10 @@ class ProjectionService:
             categories = self._visible_categories(connection, campaign_id, requested)
             values = self._values(connection, campaign_id, set(categories))
             facts = self._facts(connection, campaign_id, requested)
-            entities = self._entities(connection, campaign_id, categories, values, facts)
+            relationships = self._relationships(connection, campaign_id, requested)
+            entities = self._entities(
+                connection, campaign_id, categories, values, facts, relationships
+            )
         return {
             "campaign_id": campaign.id,
             "branch_id": branch_id,
@@ -120,6 +123,33 @@ class ProjectionService:
             )
         return facts
 
+    def _relationships(
+        self, connection, campaign_id: str, requested: frozenset[Audience]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Read outgoing relationships visible to the audiences, by source."""
+        audience_values = sorted(audience.value for audience in requested)
+        if not audience_values:
+            return {}
+        placeholders = ", ".join("?" for _ in audience_values)
+        rows = connection.execute(
+            "SELECT from_entity_id, to_entity_id, dimension, value_json"
+            " FROM relationships r WHERE campaign_id = ?"
+            " AND EXISTS (SELECT 1 FROM json_each(r.audiences_json)"
+            f" WHERE value IN ({placeholders}))"
+            " ORDER BY from_entity_id, to_entity_id, dimension",
+            (campaign_id, *audience_values),
+        ).fetchall()
+        relationships: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            relationships.setdefault(row["from_entity_id"], []).append(
+                {
+                    "to": row["to_entity_id"],
+                    "dimension": row["dimension"],
+                    "value": json.loads(row["value_json"]),
+                }
+            )
+        return relationships
+
     def _entities(
         self,
         connection,
@@ -127,6 +157,7 @@ class ProjectionService:
         categories: dict[str, str],
         values: dict[str, list[tuple[str, str, Any]]],
         facts: dict[str, list[dict[str, Any]]],
+        relationships: dict[str, list[dict[str, Any]]],
     ) -> list[dict[str, Any]]:
         rows = connection.execute(
             "SELECT id, kind, name FROM entities"
@@ -149,6 +180,7 @@ class ProjectionService:
                         for key, value in entity_values
                     ],
                     "facts": facts.get(row["id"], []),
+                    "relationships": relationships.get(row["id"], []),
                 }
             )
         return entities
