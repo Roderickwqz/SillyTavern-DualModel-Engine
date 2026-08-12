@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from importlib.resources import files
+import re
 import sqlite3
 
 from .database import Database
@@ -54,6 +55,8 @@ class MigrationRunner:
         statements = []
         current = []
         in_quote = False
+        begin_depth = 0
+        last_block_token = ""
         index = 0
         while index < len(sql):
             char = sql[index]
@@ -68,12 +71,28 @@ class MigrationRunner:
                 in_quote = True
                 current.append(char)
             elif char == ";":
-                statement = "".join(current).strip()
-                if statement:
-                    statements.append(statement)
-                current = []
+                if begin_depth == 0:
+                    statement = "".join(current).strip()
+                    if statement:
+                        statements.append(statement)
+                    current = []
+                    last_block_token = ""
+                else:
+                    current.append(char)
             else:
                 current.append(char)
+                if not in_quote:
+                    text = "".join(current).rstrip()
+                    if re.search(r"(?<!\w)BEGIN$", text, re.IGNORECASE):
+                        if last_block_token != "BEGIN":
+                            begin_depth += 1
+                            last_block_token = "BEGIN"
+                    elif re.search(r"(?<!\w)END$", text, re.IGNORECASE):
+                        if last_block_token != "END":
+                            begin_depth = max(0, begin_depth - 1)
+                            last_block_token = "END"
+                    elif not (char.isalnum() or char == "_"):
+                        last_block_token = ""
             index += 1
         statement = "".join(current).strip()
         if statement:
