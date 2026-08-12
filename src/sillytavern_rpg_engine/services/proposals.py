@@ -123,6 +123,21 @@ def _as_id(payload: dict[str, Any], key: str) -> str:
     return value
 
 
+def _as_str(payload: dict[str, Any], key: str) -> str:
+    """Require a non-empty string field."""
+    return _as_id(payload, key)
+
+
+def _as_optional_str(payload: dict[str, Any], key: str) -> str | None:
+    """Require a string or null."""
+    value = payload[key]
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValidationError(f"{key} must be a string or null")
+    return value
+
+
 def _as_number(payload: dict[str, Any], key: str) -> float | None:
     """Require a real number (not bool) or null for numeric fields."""
     value = payload[key]
@@ -207,14 +222,14 @@ class OperationCodec:
                 fact_id=_as_id(payload, "fact_id"),
                 entity_id=_as_id(payload, "entity_id"),
                 fact_type=_enum(FactType, payload["fact_type"], "fact_type"),
-                fact_key=payload["fact_key"],
-                content=payload["content"],
+                fact_key=_as_str(payload, "fact_key"),
+                content=_as_str(payload, "content"),
                 importance=validate_importance(payload["importance"]),
                 audiences=frozenset(
                     _enum(Audience, a, "audience")
                     for a in _as_tuple(payload, "audiences")
                 ),
-                turn_id=payload["turn_id"],
+                turn_id=_as_optional_str(payload, "turn_id"),
             )
         if kind == "record_memory_event":
             return RecordMemoryEventOperation(
@@ -222,33 +237,33 @@ class OperationCodec:
                 event_type=_enum(
                     MemoryEventType, payload["event_type"], "event_type"
                 ),
-                content=payload["content"],
+                content=_as_str(payload, "content"),
                 importance=validate_importance(payload["importance"]),
                 audiences=frozenset(
                     _enum(Audience, a, "audience")
                     for a in _as_tuple(payload, "audiences")
                 ),
                 participants=_as_tuple(payload, "participant_entity_ids"),
-                location_entity_id=payload["location_entity_id"],
-                turn_id=payload["turn_id"],
-                source=payload["source"],
+                location_entity_id=_as_optional_str(payload, "location_entity_id"),
+                turn_id=_as_optional_str(payload, "turn_id"),
+                source=_as_str(payload, "source"),
             )
         if kind == "record_trait_event":
             return RecordTraitEventOperation(
                 event_id=_as_id(payload, "event_id"),
                 entity_id=_as_id(payload, "entity_id"),
-                trait_key=payload["trait_key"],
+                trait_key=_as_str(payload, "trait_key"),
                 tier=_enum(TraitTier, payload["tier"], "tier"),
                 delta=payload["delta"],
-                cause=payload["cause"],
-                turn_id=payload["turn_id"],
-                source=payload["source"],
+                cause=_as_str(payload, "cause"),
+                turn_id=_as_optional_str(payload, "turn_id"),
+                source=_as_str(payload, "source"),
             )
         if kind == "set_relationship":
             return SetRelationshipOperation(
-                from_entity_id=payload["from_entity_id"],
-                to_entity_id=payload["to_entity_id"],
-                dimension=payload["dimension"],
+                from_entity_id=_as_id(payload, "from_entity_id"),
+                to_entity_id=_as_id(payload, "to_entity_id"),
+                dimension=_as_str(payload, "dimension"),
                 value=payload["value"],
                 audiences=(
                     None
@@ -258,13 +273,13 @@ class OperationCodec:
                         for a in _as_tuple(payload, "audiences")
                     )
                 ),
-                turn_id=payload["turn_id"],
+                turn_id=_as_optional_str(payload, "turn_id"),
             )
         if kind == "upsert_summary":
             return UpsertSummaryOperation(
                 scope=_enum(SummaryScope, payload["scope"], "scope"),
-                scope_key=payload["scope_key"],
-                content=payload["content"],
+                scope_key=_as_str(payload, "scope_key"),
+                content=_as_str(payload, "content"),
                 audiences=frozenset(
                     _enum(Audience, a, "audience")
                     for a in _as_tuple(payload, "audiences")
@@ -275,16 +290,16 @@ class OperationCodec:
             return OpenArcOperation(
                 arc_id=_as_id(payload, "arc_id"),
                 entity_id=_as_id(payload, "entity_id"),
-                dimension=payload["dimension"],
-                label=payload["label"],
-                summary=payload["summary"],
+                dimension=_as_str(payload, "dimension"),
+                label=_as_str(payload, "label"),
+                summary=_as_str(payload, "summary"),
                 source_event_ids=_as_tuple(payload, "source_event_ids"),
-                start_turn_id=payload["start_turn_id"],
+                start_turn_id=_as_optional_str(payload, "start_turn_id"),
             )
         return CloseArcOperation(
             arc_id=_as_id(payload, "arc_id"),
-            end_turn_id=payload["end_turn_id"],
-            summary=payload["summary"],
+            end_turn_id=_as_optional_str(payload, "end_turn_id"),
+            summary=_as_optional_str(payload, "summary"),
         )
 
 

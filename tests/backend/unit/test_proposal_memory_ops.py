@@ -97,3 +97,35 @@ def test_codec_rejects_phase2_missing_keys_wrong_types_and_unknown_kind():
         })
     with pytest.raises(ValidationError, match="unsupported operation kind"):
         OperationCodec.decode({"kind": "bogus", "fact_id": "f-1"})
+
+
+@pytest.mark.parametrize("payload, match", [
+    ({
+        "kind": "assert_fact", "fact_id": "f-1", "entity_id": "erin",
+        "fact_type": "identity", "fact_key": "home", "content": 123,
+        "importance": 3, "audiences": ["engine"], "turn_id": None,
+    }, "content must be a non-empty string"),
+    ({
+        "kind": "record_memory_event", "event_id": "e-1",
+        "event_type": "scene", "content": "x", "importance": 2,
+        "audiences": ["engine"], "participant_entity_ids": [],
+        "location_entity_id": None, "turn_id": None, "source": 42,
+    }, "source must be a non-empty string"),
+    ({
+        "kind": "record_trait_event", "event_id": "t-1", "entity_id": "erin",
+        "trait_key": "openness", "tier": "important", "delta": 5,
+        "cause": 99, "turn_id": None, "source": "narrative_development",
+    }, "cause must be a non-empty string"),
+    ({
+        "kind": "upsert_summary", "scope": "character", "scope_key": "erin",
+        "content": 1, "audiences": ["engine"], "source_event_ids": ["e-1"],
+    }, "content must be a non-empty string"),
+    ({
+        "kind": "open_arc", "arc_id": "a-1", "entity_id": "erin",
+        "dimension": "openness", "label": 0, "summary": "开始",
+        "source_event_ids": ["t-1"], "start_turn_id": None,
+    }, "label must be a non-empty string"),
+])
+def test_codec_rejects_non_string_phase2_fields(payload, match):
+    with pytest.raises(ValidationError, match=match):
+        OperationCodec.decode(payload)

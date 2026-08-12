@@ -105,7 +105,8 @@ class RecordMemoryEventOperation:
             " SELECT rowid, content FROM memory_events WHERE id = ?",
             (self.event_id,),
         )
-        for entity_id in self.participants:
+        participants = tuple(dict.fromkeys(self.participants))
+        for entity_id in participants:
             connection.execute(
                 "INSERT INTO memory_event_participants(campaign_id, event_id,"
                 " entity_id) VALUES (?, ?, ?)",

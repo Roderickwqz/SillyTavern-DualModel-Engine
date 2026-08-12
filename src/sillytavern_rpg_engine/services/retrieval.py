@@ -2,21 +2,17 @@
 
 from dataclasses import dataclass
 import json
-from typing import Any, Iterable
+from typing import Any
 
-from ..domain.memory import PINNED_EVENT_TYPES
 from ..domain.models import Audience
 from ..persistence.database import Database
 from ..persistence.repositories import BranchRepository, CampaignRepository
 from .memory_events import MemoryEventService
 from .projection import ProjectionService
 
-_PINNED = tuple(sorted(event.value for event in PINNED_EVENT_TYPES))
-
-
 @dataclass(frozen=True)
 class RetrievalQuery:
-    """One bounded context request; ``limit`` caps every section."""
+    """One bounded context request; ``limit`` caps event list sections."""
 
     campaign_id: str
     branch_id: str

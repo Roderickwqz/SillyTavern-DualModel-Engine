@@ -84,6 +84,21 @@ def test_rebuild_returns_parity_count_with_n_events(database, seeded):
     assert MemoryIndexService(database).rebuild() == 3
 
 
+def test_duplicate_participants_deduped_on_record(database, seeded):
+    service, _ = seeded
+    service.record(
+        "c1", "main", 2, type=MemoryEventType.SCENE,
+        content="艾琳与同伴在银月城会合", importance=2, audiences=ALL,
+        participants=("erin", "erin", "erin"),
+    )
+    with database.connect() as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM memory_event_participants WHERE entity_id = ?",
+            ("erin",),
+        ).fetchone()[0]
+    assert count == 1
+
+
 def test_recent_orders_pinned_before_newer_unpinned(database, seeded):
     service, _ = seeded
     service.record("c1", "main", 2, type=MemoryEventType.COMMITMENT,

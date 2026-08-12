@@ -74,7 +74,7 @@ def _run_rebuild_memory_index(args: argparse.Namespace) -> int:
     database = Database(args.database)
     try:
         count = MemoryIndexService(database).rebuild()
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, RuntimeError) as exc:
         print(f"rebuild-memory-index failed: {exc}", file=sys.stderr)
         return 1
     print(f"Indexed {count} memory events")

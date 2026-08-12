@@ -195,13 +195,14 @@ class ArcService:
         arc_id: str,
         end_turn_id: str | None = None,
         summary: str | None = None,
+        source: str = "user-command",
     ) -> MutationResult:
         return self.mutation_engine.apply(
             MutationRequest(
                 campaign_id=campaign_id,
                 branch_id=branch_id,
                 expected_version=expected_version,
-                source="user-command",
+                source=source,
                 event_type="development-arc-closed",
                 operation=CloseArcOperation(arc_id, end_turn_id, summary),
             )
