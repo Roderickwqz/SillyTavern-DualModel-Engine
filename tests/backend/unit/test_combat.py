@@ -76,11 +76,11 @@ def test_start_rolls_initiative_sorts_and_blocks_second_active(database):
         )
 
 
-def test_surprised_rolls_with_disadvantage_and_ties_break_on_dex(database):
+def test_surprised_rolls_with_disadvantage_and_ties_break_on_entity_id(database):
     combat, _, version = _world(database)
     # pc1 surprised: 2d20 keep lower -> (10, 18) keeps 10 (+2) = 12
     # orc: 12 (+1) = 13; tie-break not needed here
-    result = combat.start(
+    combat.start(
         "c1", expected_version=version,
         roller=SequenceDiceRoller([10, 18, 12]),
         entries=(CombatantEntry("pc1", surprised=True), CombatantEntry("orc")),
@@ -94,6 +94,23 @@ def test_surprised_rolls_with_disadvantage_and_ties_break_on_dex(database):
             "SELECT faces_json FROM dice_rolls WHERE roller_entity_id = 'pc1'"
         ).fetchone()
         assert faces["faces_json"] == "[18, 10]"
+
+
+def test_equal_initiative_totals_tie_break_on_entity_id(database):
+    combat, _, version = _world(database)
+    # pc1: 10 (+2) = 12; orc: 11 (+1) = 12 -> tie on total, orc before pc1
+    combat.start(
+        "c1", expected_version=version,
+        roller=SequenceDiceRoller([10, 11]),
+        entries=(CombatantEntry("pc1"), CombatantEntry("orc")),
+    )
+    with database.connect() as connection:
+        order = connection.execute(
+            "SELECT entity_id, initiative FROM combatants ORDER BY initiative DESC, entity_id"
+        ).fetchall()
+        assert [(r["entity_id"], r["initiative"]) for r in order] == [
+            ("orc", 12), ("pc1", 12),
+        ]
 
 
 def test_add_and_end_combat(database):
