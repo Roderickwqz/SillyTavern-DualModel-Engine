@@ -449,6 +449,19 @@ class ProposalService:
             created_at=now,
         )
 
+    def pending(self, campaign_id: str, branch_id: str) -> list[Proposal]:
+        """List Pending proposals for one branch, oldest first."""
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT id, campaign_id, branch_id, base_state_version,"
+                " operation_json, reason, status, created_at, resolved_at"
+                " FROM pending_proposals"
+                " WHERE campaign_id = ? AND branch_id = ? AND status = 'pending'"
+                " ORDER BY created_at, id",
+                (campaign_id, branch_id),
+            ).fetchall()
+        return [_to_proposal(row) for row in rows]
+
     def get(self, proposal_id: str) -> Proposal:
         with self.database.connect() as connection:
             row = connection.execute(
