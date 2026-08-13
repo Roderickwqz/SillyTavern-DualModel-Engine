@@ -104,13 +104,17 @@ def _repair(
         if field in payload and payload[field] is None:
             payload[field] = turn_id
     for field in _ENTITY_FIELDS.get(kind, ()):
+        if field not in payload:
+            raise ValidationError(f"{kind} is missing reference field {field!r}")
         payload[field] = resolve_reference(connection, campaign_id, payload[field])
     if kind == "record_memory_event":
         payload["participant_entity_ids"] = [
             resolve_reference(connection, campaign_id, ref)
             for ref in payload.get("participant_entity_ids", [])
         ]
-        if payload.get("location_entity_id"):
+        # Resolve whenever the key is present: empty/whitespace locations fail
+        # in resolve_reference, dropping the op instead of crashing at apply.
+        if "location_entity_id" in payload:
             payload["location_entity_id"] = resolve_reference(
                 connection, campaign_id, payload["location_entity_id"]
             )

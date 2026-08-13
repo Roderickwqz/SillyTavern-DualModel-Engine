@@ -93,3 +93,38 @@ def test_unknown_entity_reference_drops_only_that_operation(database):
     assert len(result.operations) == 1
     assert result.operations[0].payload["entity_id"] == "erin"
     assert len(result.drops) == 1
+
+
+def test_missing_reference_field_drops_only_that_operation(database):
+    id_factory = _world(database)
+    client = ScriptedLLMClient([json.dumps({
+        "operations": [
+            {"kind": "set_attribute", "attribute_key": "hp",
+             "value": 1, "turn_id": None},
+            {"kind": "set_attribute", "entity_id": "erin", "attribute_key": "hp",
+             "value": 1, "turn_id": None},
+        ]
+    })])
+    result = _extract(database, client, id_factory)
+    assert result.error is None
+    assert len(result.operations) == 1
+    assert result.operations[0].payload["entity_id"] == "erin"
+    assert len(result.drops) == 1
+    assert "entity_id" in result.drops[0]["error"]
+
+
+def test_empty_location_reference_drops_the_memory_event(database):
+    id_factory = _world(database)
+    client = ScriptedLLMClient([json.dumps({
+        "operations": [
+            {"kind": "record_memory_event", "event_id": "",
+             "event_type": "general", "content": "在空地交谈",
+             "importance": 2, "audiences": ["engine"],
+             "participant_entity_ids": ["erin"], "location_entity_id": "",
+             "turn_id": None, "source": "chat"},
+        ]
+    })])
+    result = _extract(database, client, id_factory)
+    assert result.error is None
+    assert result.operations == ()
+    assert len(result.drops) == 1
