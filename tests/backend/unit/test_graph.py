@@ -167,3 +167,14 @@ def test_critic_rewrite_replaces_narrative(database):
     content = _content(runner.run(_payload("我环顾四周。")))
     assert "修订:艾琳在炼金铺。" in content
     assert "草稿" not in content
+
+
+def test_short_query_text_completes_without_error(database):
+    """Regression: 2-char QUERY input (状态) must not 400 on FTS validation."""
+    _world(database)
+    narrator = ScriptedLLMClient(["艾琳的炼金术当前没有记录数值。"])
+    runner = TurnRunner(default_services(database, _settings(), narrator))
+    response = runner.run(_payload("状态"))
+    assert response["object"] == "chat.completion"
+    assert "choices" in response
+    assert response["choices"][0]["message"]["content"]

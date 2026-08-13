@@ -55,6 +55,18 @@ def test_chat_completion_roundtrip(database):
     assert "你好,冒险者。" in content and "```json" in content
 
 
+def test_malformed_json_body_returns_400(database):
+    _campaign(database)
+    client = _client(database, ScriptedLLMClient([]))
+    response = client.post(
+        "/v1/chat/completions",
+        content=b"{not json",
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["type"] == "invalid_request_error"
+
+
 def test_errors_use_openai_envelope(database):
     _campaign(database)
     client = _client(database, ScriptedLLMClient([]))

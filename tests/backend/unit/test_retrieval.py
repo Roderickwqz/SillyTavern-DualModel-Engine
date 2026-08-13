@@ -135,3 +135,15 @@ def test_assemble_filters_audience_and_pins_commitments(database):
     assert any(
         "王国密探" in event["content"] for event in engine["recent_events"]
     )
+
+
+def test_assemble_skips_fts_for_short_text(database):
+    """Short player text (<3 chars) must not call memory_events.search."""
+    build_world(database)
+    context = RetrievalService(database).assemble(RetrievalQuery(
+        campaign_id="c1", branch_id="main",
+        audiences=frozenset({Audience.PLAYER_UI}),
+        text="继续", scene_entity_ids=("erin",), limit=3,
+    ))
+    assert context["related_events"] == []
+    assert context["current_state"]["entities"][0]["name"] == "艾琳"

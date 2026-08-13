@@ -58,7 +58,7 @@ class RetrievalService:
                     query.campaign_id, query.branch_id, query.audiences,
                     query.text, limit=query.limit,
                 )
-            ) if query.text else [],
+            ) if query.text and len(query.text.strip()) >= 3 else [],
             "scene_events": self._event_dicts(
                 self.events.for_entities(
                     query.campaign_id, query.branch_id,

@@ -89,7 +89,11 @@ def create_app(
                 ),
                 status_code=503,
             )
-        return runner.run(await request.json())
+        try:
+            payload = await request.json()
+        except ValueError:
+            raise ValidationError("request body must be valid JSON")
+        return runner.run(payload)
 
     @app.get("/health")
     def health(deep: int = 0):
