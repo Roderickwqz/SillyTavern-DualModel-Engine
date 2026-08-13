@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 from fastapi.testclient import TestClient
 
@@ -77,12 +78,42 @@ def test_errors_use_openai_envelope(database):
 
 def test_admin_export_contains_no_credentials(database):
     _campaign(database)
-    client = _client(database, ScriptedLLMClient([]))
+    sentinel = "sk-sentinel-key"
+    settings = Settings(
+        database_path=":memory:", host="127.0.0.1", port=8000,
+        max_history_messages=40,
+        narrator=ModelConfig(
+            "http://x/v1", sentinel, "narrator-model", 0.8, 5.0, 512,
+        ),
+        critic=None,
+    )
+    client = TestClient(create_app(settings, database, ScriptedLLMClient([])))
     response = client.get("/admin/campaigns/c1/export")
     assert response.status_code == 200
-    assert response.json()["campaign"]["id"] == "c1"
+    payload = response.json()
+    assert payload["campaign"]["id"] == "c1"
+    assert sentinel not in json.dumps(payload)
     missing = client.get("/admin/campaigns/nope/export")
     assert missing.status_code == 404
+
+
+def test_health_sqlite_failure_returns_complete_body(database, monkeypatch):
+    _campaign(database)
+    client = _client(database, ScriptedLLMClient([]))
+
+    def _fail_connect():
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(database, "connect", _fail_connect)
+    response = client.get("/health")
+    assert response.status_code == 503
+    body = response.json()
+    assert body == {
+        "status": "degraded",
+        "integrity": "disk I/O error",
+        "schema_version": None,
+        "models": {"narrator": "configured", "critic": "disabled"},
+    }
 
 
 def test_degraded_mode_serves_diagnostics_only(database):

@@ -24,7 +24,6 @@ _STATUS = {
     NotFoundError: (404, "not_found"),
     StaleStateError: (409, "stale_state"),
     AmbiguousEntityError: (409, "ambiguous_entity"),
-    LLMError: (502, "upstream_error"),
 }
 
 
@@ -81,7 +80,7 @@ def create_app(
         return {"object": "list", "data": data}
 
     @app.post("/v1/chat/completions")
-    async def chat_completions(request: Request) -> dict[str, Any]:
+    async def chat_completions(request: Request):
         if runner is None:
             return JSONResponse(
                 _error_body(
@@ -93,7 +92,11 @@ def create_app(
         return runner.run(await request.json())
 
     @app.get("/health")
-    def health(deep: int = 0) -> dict[str, Any]:
+    def health(deep: int = 0):
+        models: dict[str, str] = {
+            "narrator": "configured",
+            "critic": "configured" if settings.critic is not None else "disabled",
+        }
         try:
             with database.connect() as connection:
                 integrity = connection.execute("PRAGMA quick_check").fetchone()[0]
@@ -102,12 +105,14 @@ def create_app(
                 ).fetchone()[0]
         except sqlite3.Error as exc:
             return JSONResponse(
-                {"status": "degraded", "integrity": str(exc)}, status_code=503
+                {
+                    "status": "degraded",
+                    "integrity": str(exc),
+                    "schema_version": None,
+                    "models": models,
+                },
+                status_code=503,
             )
-        models: dict[str, str] = {
-            "narrator": "configured",
-            "critic": "configured" if settings.critic is not None else "disabled",
-        }
         if deep:
             models["narrator"] = "up" if narrator.ping() else "down"
             if critic is not None:
