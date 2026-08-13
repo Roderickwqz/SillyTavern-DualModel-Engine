@@ -18,7 +18,11 @@ from ..domain.memory import (
 from ..domain.models import Audience
 from ..domain.operations import MutationContext
 from ..persistence.database import Database
-from ..persistence.repositories import dump_json
+from ..persistence.repositories import (
+    BranchRepository,
+    CampaignRepository,
+    dump_json,
+)
 from .mutations import MutationEngine, MutationRequest, MutationResult
 
 _EVENT_COLUMN_NAMES = (
@@ -137,6 +141,69 @@ class MemoryEventService:
             database, id_factory=id_factory, clock=clock
         )
         self.id_factory = id_factory
+        self.clock = clock
+        self.campaign_repository = CampaignRepository()
+        self.branch_repository = BranchRepository()
+
+    def record_transcript(
+        self,
+        campaign_id: str,
+        branch_id: str,
+        *,
+        type: MemoryEventType,
+        content: str,
+        importance: int,
+        audiences: frozenset[Audience],
+        participants: tuple[str, ...] = (),
+        turn_id: str | None = None,
+    ) -> str:
+        """Append a turn transcript event WITHOUT bumping the state version.
+
+        Transcripts are bookkeeping (like the turns row): a version bump per
+        turn would invalidate every Pending proposal before the player can
+        confirm it. The turns row is the audit record for the transcript.
+        """
+        if not content.strip():
+            raise ValidationError("memory event content must not be empty")
+        validate_importance(importance)
+        validate_audiences(audiences)
+        event_id = self.id_factory()
+        with self.database.transaction() as connection:
+            campaign = self.campaign_repository.require(connection, campaign_id)
+            self.branch_repository.require(connection, campaign_id, branch_id)
+            for entity_id in participants:
+                if connection.execute(
+                    "SELECT id FROM entities WHERE id = ? AND campaign_id = ?",
+                    (entity_id, campaign_id),
+                ).fetchone() is None:
+                    raise NotFoundError(
+                        f"entity {entity_id!r} not found in campaign"
+                        f" {campaign_id}"
+                    )
+            connection.execute(
+                "INSERT INTO memory_events(id, campaign_id, branch_id, turn_id,"
+                " event_type, content, importance, audiences_json,"
+                " location_entity_id, source, state_version, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'turn', ?, ?)",
+                (
+                    event_id, campaign_id, branch_id, turn_id, type.value,
+                    content, importance,
+                    dump_json(sorted(a.value for a in audiences)),
+                    campaign.state_version, self.clock(),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO memory_events_fts(rowid, content)"
+                " SELECT rowid, content FROM memory_events WHERE id = ?",
+                (event_id,),
+            )
+            for entity_id in dict.fromkeys(participants):
+                connection.execute(
+                    "INSERT INTO memory_event_participants(campaign_id,"
+                    " event_id, entity_id) VALUES (?, ?, ?)",
+                    (campaign_id, event_id, entity_id),
+                )
+        return event_id
 
     def record(
         self,
