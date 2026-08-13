@@ -8,7 +8,12 @@ version = "0.1.0"
 description = "Local authoritative RPG state engine for SillyTavern"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "langgraph>=1.0,<2",
+    "uvicorn>=0.30",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3,<9"]
