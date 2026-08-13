@@ -66,3 +66,40 @@ Authoritative entity/attribute state remains campaign-global; branch-scoped dive
 ## RPG Engine Core (Phase 3)
 
 Phase 3 adds the D&D 2024 / 5.5e rules layer: per-campaign opt-in (`DndRulesService.seed_pack` → fill character data → `enable`, which fails atomically with a missing-fields report when any character is incomplete), authoritative dice with injectable randomness (`DiceRoller`; production uses `secrets`, tests use scripted sequences), and immutable `dice_rolls` records pinned to the campaign's rules version (`srd-5.2.1`). Combat covers initiative with 2024 surprise (Disadvantage), round/turn lifecycle, action/bonus-action/reaction/movement budgets, movement costs (difficult terrain, crawl, stand up, forced, mounted), attack resolution with aggregated advantage/disadvantage, cover, criticals, weapon properties (Light, Loading, Thrown, Reach, Finesse), grapple/shove saves, all eight 2024 Weapon Mastery properties (Cleave/Nick once per turn), the full damage pipeline (immunity → resistance halving → vulnerability doubling, temp HP, 0 HP dying, death saves, massive damage), 2024 conditions including 6-level Exhaustion (−2/level on d20 Tests, −5 ft/level), spell-slot transactions (one slot per turn, concentration with damage checks and duration countdown), short/long rests, monster multiattack, Recharge, and data-driven turn triggers. Narrative campaigns never execute D&D resolution; every rules-gated operation validates the pinned rules version.
+
+## OpenAI-compatible API server
+
+Install with API dependencies and start the server:
+
+```bash
+python -m pip install -e ".[dev]"
+python -m sillytavern_rpg_engine serve --database ./rpg.sqlite3
+```
+
+SillyTavern → API Connection → Custom OpenAI Compatible:
+
+- Base URL: `http://127.0.0.1:8000/v1`
+- Custom Body: `{"campaign_id": "campaign-001"}`
+
+Environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RPG_NARRATOR_MODEL` | (required) | Narrator model id |
+| `RPG_NARRATOR_BASE_URL` | `http://127.0.0.1:5000/v1` | Narrator endpoint |
+| `RPG_NARRATOR_API_KEY` | empty | Narrator key |
+| `RPG_NARRATOR_TEMPERATURE` | `0.8` | Sampling temperature |
+| `RPG_NARRATOR_TIMEOUT_SECONDS` | `120` | Upstream timeout |
+| `RPG_NARRATOR_MAX_TOKENS` | `1024` | Reply cap |
+| `RPG_CRITIC_MODEL` | unset | Critic model id; unset = single-model mode |
+| `RPG_CRITIC_BASE_URL` / `RPG_CRITIC_API_KEY` | inherit narrator | Critic endpoint |
+| `RPG_CRITIC_TEMPERATURE` / `RPG_CRITIC_TIMEOUT_SECONDS` / `RPG_CRITIC_MAX_TOKENS` | `0.8` / `120` / `1024` | Critic sampling |
+| `RPG_SERVER_HOST` / `RPG_SERVER_PORT` | `127.0.0.1` / `8000` | Bind address |
+| `RPG_DATABASE` | `./rpg.sqlite3` | Default database path |
+| `RPG_MAX_HISTORY_MESSAGES` | `40` | Prompt history cap |
+
+Endpoints: `GET /v1/models`, `POST /v1/chat/completions` (non-streaming),
+`GET /health` (`?deep=1` pings upstreams), `GET /admin/campaigns/{id}/export`.
+
+Chat commands: `确认提案 <id>` / `reject <id>` manage pending proposals;
+`查询…` is read-only; explicit changes (`把X调整为Y`) apply immediately.

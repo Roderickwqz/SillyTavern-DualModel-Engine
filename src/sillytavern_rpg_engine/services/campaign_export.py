@@ -50,7 +50,7 @@ class CampaignExporter:
             raise FileNotFoundError(
                 f"output directory does not exist: {parent}"
             )
-        payload = self._build_payload(campaign_id)
+        payload = self.build_payload(campaign_id)
         temporary = output.with_name(output.name + ".tmp")
         with open(temporary, "w", encoding="utf-8") as handle:
             handle.write(dump_json(payload))
@@ -98,7 +98,7 @@ class CampaignExporter:
             "errors": errors,
         }
 
-    def _build_payload(self, campaign_id: str) -> dict[str, Any]:
+    def build_payload(self, campaign_id: str) -> dict[str, Any]:
         now = self.clock()
         with self.database.connect() as connection:
             snapshot = self.snapshot_builder.build(
@@ -124,6 +124,8 @@ class CampaignExporter:
             "entity_conditions": conditions,
             "combat_encounters": encounters,
         }
+
+    _build_payload = build_payload
 
     @staticmethod
     def _branches(connection, campaign_id: str) -> list[dict[str, Any]]:

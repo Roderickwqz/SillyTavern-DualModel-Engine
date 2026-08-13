@@ -6,9 +6,12 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from .config import load_settings
 from .domain.errors import DomainError
+from .llm.openai import OpenAIChatClient
 from .persistence.database import Database
 from .persistence.migrations import MigrationRunner
+from .server.app import create_app
 from .services.campaign_export import CampaignExporter
 from .services.memory_events import MemoryIndexService
 
@@ -81,6 +84,36 @@ def _run_rebuild_memory_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_serve(args: argparse.Namespace) -> int:
+    try:
+        settings = load_settings()
+    except DomainError as exc:
+        print(f"serve failed: {exc}", file=sys.stderr)
+        return 1
+    database = Database(args.database)
+    degraded = False
+    try:
+        MigrationRunner(database).apply()
+    except sqlite3.Error as exc:
+        print(
+            f"serve: migration failed ({exc}); starting in read-only"
+            " diagnostic mode",
+            file=sys.stderr,
+        )
+        degraded = True
+    narrator = OpenAIChatClient(settings.narrator)
+    critic = OpenAIChatClient(settings.critic) if settings.critic else None
+    app = create_app(settings, database, narrator, critic, degraded=degraded)
+    import uvicorn
+
+    uvicorn.run(
+        app,
+        host=args.host or settings.host,
+        port=args.port or settings.port,
+    )
+    return 0
+
+
 def _run_export(args: argparse.Namespace) -> int:
     database = Database(args.database)
     try:
@@ -127,6 +160,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output", type=Path, required=True, help="destination JSON file"
     )
     export.set_defaults(handler=_run_export)
+
+    serve = subparsers.add_parser(
+        "serve", help="run the OpenAI-compatible API server"
+    )
+    _add_database_argument(serve)
+    serve.add_argument("--host", default=None, help="bind host (env RPG_SERVER_HOST)")
+    serve.add_argument(
+        "--port", type=int, default=None,
+        help="bind port (env RPG_SERVER_PORT)",
+    )
+    serve.set_defaults(handler=_run_serve)
 
     return parser
 
