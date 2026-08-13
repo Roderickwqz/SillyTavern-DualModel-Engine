@@ -1,6 +1,7 @@
 """LLM client contracts and implementations."""
 
 from .client import ChatMessage, LLMClient, LLMError, LLMResponse
+from .openai import OpenAIChatClient
 from .scripted import ScriptedLLMClient
 
 __all__ = [
@@ -8,5 +9,6 @@ __all__ = [
     "LLMClient",
     "LLMError",
     "LLMResponse",
+    "OpenAIChatClient",
     "ScriptedLLMClient",
 ]
