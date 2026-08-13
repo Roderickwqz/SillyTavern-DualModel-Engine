@@ -1,0 +1,127 @@
+"""Turn records: one row per committed game turn (bookkeeping, not state)."""
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
+from typing import Callable
+from uuid import uuid4
+
+from ..domain.errors import NotFoundError, ValidationError
+from ..persistence.database import Database
+
+
+@dataclass(frozen=True)
+class Turn:
+    id: str
+    campaign_id: str
+    branch_id: str
+    parent_turn_id: str | None
+    intent: str
+    player_text: str
+    response_text: str
+    history_hash: str
+    removed_instructions: tuple[str, ...]
+    state_before_version: int
+    state_after_version: int
+    created_at: str
+
+
+def _to_turn(row) -> Turn:
+    return Turn(
+        id=row["id"],
+        campaign_id=row["campaign_id"],
+        branch_id=row["branch_id"],
+        parent_turn_id=row["parent_turn_id"],
+        intent=row["intent"],
+        player_text=row["player_text"],
+        response_text=row["response_text"],
+        history_hash=row["history_hash"],
+        removed_instructions=tuple(json.loads(row["removed_instructions_json"])),
+        state_before_version=row["state_before_version"],
+        state_after_version=row["state_after_version"],
+        created_at=row["created_at"],
+    )
+
+
+class TurnService:
+    """Append-only turn log; parentage follows the branch's latest turn."""
+
+    def __init__(
+        self,
+        database: Database,
+        id_factory: Callable[[], str] = lambda: uuid4().hex,
+        clock: Callable[[], str] = lambda: datetime.now(timezone.utc).isoformat(),
+    ):
+        self.database = database
+        self.id_factory = id_factory
+        self.clock = clock
+
+    def record(
+        self,
+        campaign_id: str,
+        branch_id: str,
+        *,
+        intent: str,
+        player_text: str,
+        response_text: str,
+        history_hash: str,
+        state_before_version: int,
+        state_after_version: int,
+        turn_id: str | None = None,
+        removed_instructions: tuple[str, ...] = (),
+    ) -> Turn:
+        if not player_text.strip():
+            raise ValidationError("player_text must not be empty")
+        if state_after_version < state_before_version:
+            raise ValidationError(
+                "state_after_version must be >= state_before_version"
+            )
+        turn_id = turn_id or self.id_factory()
+        now = self.clock()
+        with self.database.transaction() as connection:
+            parent = connection.execute(
+                "SELECT id FROM turns WHERE campaign_id = ? AND branch_id = ?"
+                " ORDER BY created_at DESC, id DESC LIMIT 1",
+                (campaign_id, branch_id),
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO turns(id, campaign_id, branch_id, parent_turn_id,"
+                " intent, player_text, response_text, history_hash,"
+                " removed_instructions_json,"
+                " state_before_version, state_after_version, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    turn_id, campaign_id, branch_id,
+                    parent["id"] if parent else None,
+                    intent, player_text, response_text, history_hash,
+                    json.dumps(list(removed_instructions), ensure_ascii=False),
+                    state_before_version, state_after_version, now,
+                ),
+            )
+        return Turn(
+            id=turn_id, campaign_id=campaign_id, branch_id=branch_id,
+            parent_turn_id=parent["id"] if parent else None,
+            intent=intent, player_text=player_text, response_text=response_text,
+            history_hash=history_hash,
+            removed_instructions=tuple(removed_instructions),
+            state_before_version=state_before_version,
+            state_after_version=state_after_version, created_at=now,
+        )
+
+    def latest(self, campaign_id: str, branch_id: str) -> Turn | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM turns WHERE campaign_id = ? AND branch_id = ?"
+                " ORDER BY created_at DESC, id DESC LIMIT 1",
+                (campaign_id, branch_id),
+            ).fetchone()
+        return _to_turn(row) if row else None
+
+    def get(self, turn_id: str) -> Turn:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM turns WHERE id = ?", (turn_id,)
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"turn {turn_id} not found")
+        return _to_turn(row)
