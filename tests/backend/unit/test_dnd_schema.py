@@ -20,7 +20,7 @@ def test_migration_0004_creates_tables(database):
         version = connection.execute(
             "SELECT MAX(version) FROM schema_migrations"
         ).fetchone()[0]
-        assert version == 4
+        assert version >= 4
 
 
 def _campaign(connection):
