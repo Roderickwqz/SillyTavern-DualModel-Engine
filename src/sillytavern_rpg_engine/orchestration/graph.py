@@ -86,14 +86,28 @@ class TurnState(TypedDict, total=False):
     response: dict[str, Any]
 
 
-def build_graph(services: TurnServices):
-    database = services.database
-    campaigns = CampaignRepository()
-
+def _make_version_fn(
+    database: Database, campaigns: CampaignRepository,
+) -> Any:
     def _version(campaign_id: str) -> int:
         with database.connect() as connection:
             return campaigns.require(connection, campaign_id).state_version
 
+    return _version
+
+
+def _store_gate(result: GateResult) -> dict[str, Any]:
+    return {
+        "applied": result.applied,
+        "pending": result.pending,
+        "dropped": result.dropped,
+        "gate_message": result.message,
+    }
+
+
+def _make_normalize_node(
+    services: TurnServices, _version: Any,
+) -> Any:
     def node_normalize(state: TurnState) -> dict[str, Any]:
         request = normalize_request(state["raw"])
         return {
@@ -102,9 +116,17 @@ def build_graph(services: TurnServices):
             "state_before_version": _version(request.campaign_id),
         }
 
+    return node_normalize
+
+
+def _make_route_node() -> Any:
     def node_route(state: TurnState) -> dict[str, Any]:
         return {"intent": route_intent(state["request"].player_text).value}
 
+    return node_route
+
+
+def _make_scene_node(database: Database) -> Any:
     def node_scene(state: TurnState) -> dict[str, Any]:
         request = state["request"]
         with database.connect() as connection:
@@ -113,6 +135,10 @@ def build_graph(services: TurnServices):
             )
         return {"scene_entity_ids": scan.entity_ids}
 
+    return node_scene
+
+
+def _make_retrieve_node(services: TurnServices) -> Any:
     def node_retrieve(state: TurnState) -> dict[str, Any]:
         request = state["request"]
         context = services.retrieval.assemble(RetrievalQuery(
@@ -124,6 +150,10 @@ def build_graph(services: TurnServices):
         ))
         return {"context": context}
 
+    return node_retrieve
+
+
+def _make_answer_node(services: TurnServices) -> Any:
     def node_answer(state: TurnState) -> dict[str, Any]:
         request = state["request"]
         response = generate(
@@ -133,6 +163,10 @@ def build_graph(services: TurnServices):
         )
         return {"narrative": response.content.strip()}
 
+    return node_answer
+
+
+def _make_narrate_node(services: TurnServices) -> Any:
     def node_narrate(state: TurnState) -> dict[str, Any]:
         request = state["request"]
         response = generate(
@@ -141,6 +175,10 @@ def build_graph(services: TurnServices):
         )
         return {"narrative": response.content.strip()}
 
+    return node_narrate
+
+
+def _make_extract_node(services: TurnServices, database: Database) -> Any:
     def node_extract(state: TurnState) -> dict[str, Any]:
         request = state["request"]
         with database.connect() as connection:
@@ -159,14 +197,10 @@ def build_graph(services: TurnServices):
             "extraction_error": result.error,
         }
 
-    def _store_gate(result: GateResult) -> dict[str, Any]:
-        return {
-            "applied": result.applied,
-            "pending": result.pending,
-            "dropped": result.dropped,
-            "gate_message": result.message,
-        }
+    return node_extract
 
+
+def _make_gate_explicit_node(services: TurnServices, database: Database) -> Any:
     def node_gate_explicit(state: TurnState) -> dict[str, Any]:
         request = state["request"]
         command = parse_proposal_command(request.player_text)
@@ -195,6 +229,10 @@ def build_graph(services: TurnServices):
             Intent.EXPLICIT_CHANGE, extraction.operations,
         ))
 
+    return node_gate_explicit
+
+
+def _make_gate_action_node(services: TurnServices, database: Database) -> Any:
     def node_gate_action(state: TurnState) -> dict[str, Any]:
         request = state["request"]
         return _store_gate(run_gate(
@@ -203,6 +241,10 @@ def build_graph(services: TurnServices):
             Intent.ACTION, state.get("operations", ()),
         ))
 
+    return node_gate_action
+
+
+def _make_critic_node(services: TurnServices) -> Any:
     def node_critic(state: TurnState) -> dict[str, Any]:
         request = state["request"]
         outcome = run_critic(
@@ -229,6 +271,12 @@ def build_graph(services: TurnServices):
             "rewritten": outcome.rewritten,
         }
 
+    return node_critic
+
+
+def _make_commit_node(
+    services: TurnServices, _version: Any,
+) -> Any:
     def node_commit(state: TurnState) -> dict[str, Any]:
         request = state["request"]
         intent = state["intent"]
@@ -266,6 +314,10 @@ def build_graph(services: TurnServices):
         )
         return {}
 
+    return node_commit
+
+
+def _make_respond_node(services: TurnServices, database: Database) -> Any:
     def node_respond(state: TurnState) -> dict[str, Any]:
         request = state["request"]
         tracker = TrackerPresenter(database).render(
@@ -293,22 +345,35 @@ def build_graph(services: TurnServices):
                       "total_tokens": 0},
         }}
 
-    def _route_after_retrieve(state: TurnState) -> str:
-        return state["intent"]
+    return node_respond
+
+
+def _route_after_retrieve(state: TurnState) -> str:
+    return state["intent"]
+
+
+def build_graph(services: TurnServices):
+    database = services.database
+    campaigns = CampaignRepository()
+    _version = _make_version_fn(database, campaigns)
 
     builder = StateGraph(TurnState)
-    builder.add_node("normalize", node_normalize)
-    builder.add_node("route", node_route)
-    builder.add_node("scene", node_scene)
-    builder.add_node("retrieve", node_retrieve)
-    builder.add_node("answer", node_answer)
-    builder.add_node("narrate", node_narrate)
-    builder.add_node("extract", node_extract)
-    builder.add_node("gate_explicit", node_gate_explicit)
-    builder.add_node("gate_action", node_gate_action)
-    builder.add_node("critic", node_critic)
-    builder.add_node("commit", node_commit)
-    builder.add_node("respond", node_respond)
+    builder.add_node("normalize", _make_normalize_node(services, _version))
+    builder.add_node("route", _make_route_node())
+    builder.add_node("scene", _make_scene_node(database))
+    builder.add_node("retrieve", _make_retrieve_node(services))
+    builder.add_node("answer", _make_answer_node(services))
+    builder.add_node("narrate", _make_narrate_node(services))
+    builder.add_node("extract", _make_extract_node(services, database))
+    builder.add_node(
+        "gate_explicit", _make_gate_explicit_node(services, database),
+    )
+    builder.add_node(
+        "gate_action", _make_gate_action_node(services, database),
+    )
+    builder.add_node("critic", _make_critic_node(services))
+    builder.add_node("commit", _make_commit_node(services, _version))
+    builder.add_node("respond", _make_respond_node(services, database))
     builder.add_edge(START, "normalize")
     builder.add_edge("normalize", "route")
     builder.add_edge("route", "scene")
