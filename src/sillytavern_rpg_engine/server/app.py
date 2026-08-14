@@ -134,4 +134,50 @@ def create_app(
     def admin_export(campaign_id: str) -> dict[str, Any]:
         return exporter.build_payload(campaign_id)
 
+    @app.get("/admin/campaigns/{campaign_id}/branches")
+    def admin_branches(campaign_id: str) -> dict[str, Any]:
+        """List branch diagnostics: each branch with its head pointer and the
+        campaign-wide count of detached turns. Branches with no head row yet
+        (fresh campaigns) report ``state_version`` 0 and a null
+        ``latest_turn_id``."""
+        with database.connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM campaigns WHERE id = ?", (campaign_id,)
+            ).fetchone() is None:
+                raise NotFoundError(f"campaign {campaign_id} not found")
+            branches = connection.execute(
+                "SELECT id, parent_branch_id, status FROM branches"
+                " WHERE campaign_id = ? ORDER BY id",
+                (campaign_id,),
+            ).fetchall()
+            heads = {
+                row["branch_id"]: row
+                for row in connection.execute(
+                    "SELECT branch_id, state_version, latest_turn_id"
+                    " FROM branch_heads WHERE campaign_id = ?",
+                    (campaign_id,),
+                ).fetchall()
+            }
+            detached = connection.execute(
+                "SELECT COUNT(*) FROM turns"
+                " WHERE campaign_id = ? AND status = 'detached'",
+                (campaign_id,),
+            ).fetchone()[0]
+        return {
+            "branches": [
+                {
+                    "id": row["id"],
+                    "parent_branch_id": row["parent_branch_id"],
+                    "status": row["status"],
+                    "head": {
+                        "state_version": head["state_version"] if head else 0,
+                        "latest_turn_id": head["latest_turn_id"] if head else None,
+                    },
+                }
+                for row in branches
+                for head in [heads.get(row["id"])]
+            ],
+            "detached_turns": detached,
+        }
+
     return app

@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sillytavern_rpg_engine.config import ModelConfig, Settings
 from sillytavern_rpg_engine.llm import ScriptedLLMClient
 from sillytavern_rpg_engine.server.app import create_app
+from sillytavern_rpg_engine.services.branches import BranchService
 from sillytavern_rpg_engine.services.campaigns import CampaignService
 
 NARRATOR_CFG = ModelConfig("http://x/v1", "", "narrator-model", 0.8, 5.0, 512)
@@ -122,6 +123,97 @@ def test_admin_export_contains_no_credentials(database):
     assert sentinel not in json.dumps(payload)
     missing = client.get("/admin/campaigns/nope/export")
     assert missing.status_code == 404
+
+
+def test_admin_lists_branches(database):
+    _campaign(database)
+    client = _client(database, ScriptedLLMClient([]))
+    response = client.get("/admin/campaigns/c1/branches")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["branches"][0]["id"] == "main"
+    assert body["branches"][0]["parent_branch_id"] is None
+    assert body["branches"][0]["status"] == "active"
+    assert body["branches"][0]["head"] == {
+        "state_version": 0, "latest_turn_id": None,
+    }
+    assert body["detached_turns"] == 0
+
+
+def test_admin_branches_unknown_campaign_returns_404(database):
+    _campaign(database)
+    client = _client(database, ScriptedLLMClient([]))
+    response = client.get("/admin/campaigns/nope/branches")
+    assert response.status_code == 404
+    assert response.json()["error"]["type"] == "not_found"
+
+
+def test_admin_branches_lists_forked_branch_with_head(database):
+    _campaign(database)
+    narrator = ScriptedLLMClient([
+        "叙述一", json.dumps({"operations": []}),
+    ])
+    client = _client(database, narrator)
+    response = client.post("/v1/chat/completions", json={
+        "campaign_id": "c1",
+        "messages": [{"role": "user", "content": "我走进炼金铺。"}],
+    })
+    assert response.status_code == 200, response.text
+    with database.connect() as connection:
+        turn = connection.execute(
+            "SELECT id, state_after_version FROM turns"
+            " ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+    BranchService(database, id_factory=lambda: "fork-1",
+                  clock=lambda: "2026-08-13T00:01:00Z").fork(
+        "c1", "main", turn["id"], new_branch_id="fork-1",
+    )
+    body = client.get("/admin/campaigns/c1/branches").json()
+    assert {branch["id"] for branch in body["branches"]} == {"main", "fork-1"}
+    child = next(branch for branch in body["branches"]
+                 if branch["id"] == "fork-1")
+    assert child["parent_branch_id"] == "main"
+    assert child["status"] == "active"
+    assert child["head"] == {
+        "state_version": turn["state_after_version"],
+        "latest_turn_id": turn["id"],
+    }
+    main = next(branch for branch in body["branches"]
+                if branch["id"] == "main")
+    assert main["head"]["latest_turn_id"] == turn["id"]
+
+
+def test_admin_branches_counts_detached_turns(database):
+    _campaign(database)
+    narrator = ScriptedLLMClient([
+        "叙述一", json.dumps({"operations": []}),
+        "叙述二", json.dumps({"operations": []}),
+        "叙述三", json.dumps({"operations": []}),
+        "叙述四", json.dumps({"operations": []}),
+    ])
+    client = _client(database, narrator)
+    history: list[dict] = []
+    for text in ("我走进炼金铺。", "我拿起一瓶药剂。"):
+        history.append({"role": "user", "content": text})
+        response = client.post("/v1/chat/completions", json={
+            "campaign_id": "c1", "messages": history,
+        })
+        assert response.status_code == 200, response.text
+        history.append({
+            "role": "assistant",
+            "content": response.json()["choices"][0]["message"]["content"],
+        })
+    history = [
+        {"role": "user", "content": "我走进炼金铺。"},
+        {"role": "user", "content": "我拿起一瓶药剂。"},
+    ]
+    response = client.post("/v1/chat/completions", json={
+        "campaign_id": "c1",
+        "messages": history + [{"role": "user", "content": "我放下药剂。"}],
+    })
+    assert response.status_code == 200, response.text
+    body = client.get("/admin/campaigns/c1/branches").json()
+    assert body["detached_turns"] == 1
 
 
 def test_health_sqlite_failure_returns_complete_body(database, monkeypatch):
