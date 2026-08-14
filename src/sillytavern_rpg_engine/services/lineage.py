@@ -60,7 +60,12 @@ class LineageResolver:
         BranchResolutionError on ambiguity or when no prefix matches any
         active turn.
         """
-        if len(messages) == 1:
+        if (
+            len(messages) == 1
+            and not self.turns.find_by_lineage_before(
+                campaign_id, _history_hash(())
+            )
+        ):
             return BranchContext("main", None, restored=False)
         prefix_hash = lineage_hash_before(messages)
         rows = self.turns.find_by_lineage_after(campaign_id, prefix_hash)

@@ -228,3 +228,55 @@ def test_edit_history_detaches_and_continues(database):
         ).fetchone()[0]
     assert detached >= 1
     assert active >= 1
+
+
+def test_swipe_history_forks_branch_via_runner(database):
+    """Swiping turn-2's reply (turn-1's reply echoed in its place) must fork
+    a branch-swipe-* child and record the new turn on that child branch."""
+    CampaignService(
+        database, id_factory=lambda: "cid", clock=lambda: "2026-08-13T00:00:00Z",
+    ).create_campaign("c1", "测试")
+    # ACTION turns need two narrator calls each: narrate + extract.
+    narrator = ScriptedLLMClient([
+        "回复甲", json.dumps({"operations": []}),
+        "回复乙", json.dumps({"operations": []}),
+        "回复丙", json.dumps({"operations": []}),
+    ])
+    runner = TurnRunner(default_services(database, _settings(), narrator))
+
+    history = []
+    first = runner.run({
+        "campaign_id": "c1",
+        "messages": history + [{"role": "user", "content": "a"}],
+    })
+    history.extend([
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": _content(first)},
+    ])
+    runner.run({
+        "campaign_id": "c1",
+        "messages": history + [{"role": "user", "content": "b"}],
+    })
+    # Swipe: turn-2's assistant slot now holds turn-1's reply; continue.
+    swiped = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": _content(first)},
+        {"role": "user", "content": "b"},
+        {"role": "assistant", "content": _content(first)},
+        {"role": "user", "content": "c"},
+    ]
+    result = runner.run({"campaign_id": "c1", "messages": swiped})
+    assert result["object"] == "chat.completion"
+    assert _content(result)
+    with database.connect() as connection:
+        branch = connection.execute(
+            "SELECT id FROM branches WHERE campaign_id = 'c1'"
+            " AND id LIKE 'branch-swipe-%'"
+        ).fetchone()
+        assert branch is not None
+        child_turns = connection.execute(
+            "SELECT COUNT(*) FROM turns WHERE campaign_id = 'c1'"
+            " AND branch_id = ?",
+            (branch["id"],),
+        ).fetchone()[0]
+    assert child_turns >= 1

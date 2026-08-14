@@ -156,6 +156,36 @@ def test_edit_drops_assistant_and_restores_to_prefix(database):
     assert state_version == first.state_after_version
 
 
+def test_single_message_on_existing_history_resets_via_detach(database):
+    """A 1-message request on a campaign with recorded turns (e.g. a new
+    SillyTavern chat session echoing no history) must reset to the first
+    turn: restore its state and detach every later turn, instead of
+    silently starting a duplicate empty-lineage turn on main."""
+    _boot(database)
+    first = _record_turn(database, player="a", response="A")
+    second = _record_turn(
+        database, player="b", response="B",
+        prefix=(ChatMessage("user", "a"), ChatMessage("assistant", "A")),
+    )
+    messages = (ChatMessage("user", "c"),)
+    ctx = LineageResolver(database).resolve("c1", messages)
+    assert ctx.branch_id == "main"
+    assert ctx.parent_turn_id == first.id
+    assert ctx.restored is True
+    with database.connect() as connection:
+        statuses = {
+            row["id"]: row["status"]
+            for row in connection.execute(
+                "SELECT id, status FROM turns WHERE campaign_id = 'c1'"
+            ).fetchall()
+        }
+        state_version = connection.execute(
+            "SELECT state_version FROM campaigns WHERE id = 'c1'"
+        ).fetchone()["state_version"]
+    assert statuses == {first.id: "active", second.id: "detached"}
+    assert state_version == first.state_after_version
+
+
 def test_swipe_forks_child_branch(database):
     _boot(database)
     turn = _record_turn(database)
