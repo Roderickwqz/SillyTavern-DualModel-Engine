@@ -8,6 +8,8 @@ import { extensionSettings, FEATURE_FLAGS, addDebugLog } from '../../core/state.
 import { saveSettings } from '../../core/persistence.js';
 import { extractInventory } from './inventoryParser.js';
 import { repairJSON, extractJSONFromText } from '../../utils/jsonRepair.js';
+// COMPAT: LangGraph authoritative tracker support
+import { isTrackerPayload, normalizeTrackerPayload } from '../../compat/trackerSchema.js';
 
 /**
  * Unwraps common envelope keys models may use around tracker payloads.
@@ -200,7 +202,8 @@ export function parseResponse(responseText, options = {}) {
     const result = {
         userStats: null,
         infoBox: null,
-        characterThoughts: null
+        characterThoughts: null,
+        compat: null
     };
 
     // DEBUG: Log full response for troubleshooting
@@ -289,6 +292,9 @@ export function parseResponse(responseText, options = {}) {
                     result.characterThoughts = JSON.stringify(unifiedCharacters);
                     // console.log('[RPG Parser] ✓ Extracted characters from unified structure');
                 }
+                if (isTrackerPayload(unwrapped)) {
+                    result.compat = normalizeTrackerPayload(unwrapped);
+                }
 
                 foundUnified = true;
                 break; // Found unified structure, stop searching
@@ -337,6 +343,9 @@ export function parseResponse(responseText, options = {}) {
                     const normalizedCharacters = normalizedParsed.characters || normalizedParsed.presentCharacters || normalizedParsed.characterThoughts;
                     if (normalizedCharacters) {
                         result.characterThoughts = JSON.stringify(normalizedCharacters);
+                    }
+                    if (isTrackerPayload(normalizedParsed)) {
+                        result.compat = normalizeTrackerPayload(normalizedParsed);
                     }
                     continue; // Skip further classification
                 }
@@ -409,6 +418,9 @@ export function parseResponse(responseText, options = {}) {
                     const normalizedCharacters = normalizedParsed.characters || normalizedParsed.presentCharacters || normalizedParsed.characterThoughts;
                     if (normalizedCharacters) {
                         result.characterThoughts = JSON.stringify(normalizedCharacters);
+                    }
+                    if (isTrackerPayload(normalizedParsed)) {
+                        result.compat = normalizeTrackerPayload(normalizedParsed);
                     }
                 } else if (normalizedParsed.stats || normalizedParsed.status || normalizedParsed.skills || normalizedParsed.inventory || normalizedParsed.quests) {
                     result.userStats = jsonContent;
