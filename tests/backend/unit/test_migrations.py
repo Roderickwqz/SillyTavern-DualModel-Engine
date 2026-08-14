@@ -65,6 +65,20 @@ def test_migration_0006_adds_lineage_columns(database):
         ).fetchone() is not None
 
 
+def test_migration_0007_adds_lineage_before_index(database):
+    with database.connect() as connection:
+        index = connection.execute(
+            "SELECT name FROM sqlite_master"
+            " WHERE type = 'index' AND name = 'idx_turns_lineage_before'"
+        ).fetchone()
+        cols = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(turns)").fetchall()
+        }
+    assert index is not None
+    assert "lineage_hash_before" in cols
+
+
 def test_failing_migration_leaves_no_tables(tmp_path):
     database = Database(tmp_path / "atomic.sqlite3")
     runner = MigrationRunner(database)
