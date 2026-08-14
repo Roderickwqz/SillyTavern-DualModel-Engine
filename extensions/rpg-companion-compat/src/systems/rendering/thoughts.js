@@ -23,6 +23,9 @@ import {
 import { isItemLocked, setItemLock } from '../generation/lockManager.js';
 import { renderAlternatePresentCharacters } from '../ui/alternatePresentCharacters.js';
 import { queueThoughtBasedExpressionsUpdate } from '../integration/thoughtBasedExpressions.js';
+// COMPAT: authoritative dynamic attributes + read-only guard
+import { renderAttributeList } from '../../compat/attributes.js';
+import { guardReadOnly } from '../../compat/readOnly.js';
 
 /**
  * Helper to generate lock icon HTML if setting is enabled
@@ -425,6 +428,14 @@ export function renderThoughts({ preserveScroll = false, useCommittedFallback = 
                             </div>
                 `;
 
+                // COMPAT: append backend-authoritative per-character attributes
+                const compatCharacter = (lastGeneratedData.compat?.characters ?? []).find(
+                    (candidate) => candidate.name === char.name,
+                );
+                if (compatCharacter?.attributes?.length) {
+                    html += renderAttributeList(compatCharacter.attributes, { readOnly: true });
+                }
+
                 // Render character stats if enabled (outside rpg-character-info)
                 if (enabledCharStats.length > 0) {
                     const lockIconHtml = getLockIconHtml('characters', `${char.name}.stats`);
@@ -478,6 +489,8 @@ export function renderThoughts({ preserveScroll = false, useCommittedFallback = 
     }
 
     $thoughtsContainer.html(html);
+    // COMPAT: strip all edit affordances in authoritative mode
+    guardReadOnly($thoughtsContainer[0]);
 
     debugLog('[RPG Thoughts] ✓ HTML rendered to container');
     debugLog('[RPG Thoughts] =======================================================');

@@ -23,6 +23,9 @@ import { buildInventorySummary } from '../generation/promptBuilder.js';
 import { isItemLocked, setItemLock } from '../generation/lockManager.js';
 import { updateFabWidgets } from '../ui/mobile.js';
 import { getStatBarColors } from '../ui/theme.js';
+// COMPAT: authoritative dynamic attributes + read-only guard
+import { renderAttributeList } from '../../compat/attributes.js';
+import { guardReadOnly } from '../../compat/readOnly.js';
 
 /**
  * Extracts the base name (before parentheses) and converts to snake_case for use as JSON key.
@@ -440,12 +443,21 @@ export function renderUserStats() {
 
     html += '</div>'; // Close rpg-stats-content
 
+    // COMPAT: append backend-authoritative dynamic attributes
+    if (lastGeneratedData.compat?.userStats?.attributes?.length) {
+        html += renderAttributeList(
+            lastGeneratedData.compat.userStats.attributes, { readOnly: true },
+        );
+    }
+
     // console.log('[RPG UserStats Render] Generated HTML length:', html.length);
     // console.log('[RPG UserStats Render] HTML preview:', html.substring(0, 300));
     // console.log('[RPG UserStats Render] Container exists:', !!$userStatsContainer, '$userStatsContainer length:', $userStatsContainer?.length);
 
     // Always render to the #rpg-user-stats container (mobile layout just moves it around in DOM)
     $userStatsContainer.html(html);
+    // COMPAT: strip all edit affordances in authoritative mode
+    guardReadOnly($userStatsContainer[0]);
     // console.log('[RPG UserStats Render] ✓ HTML rendered to #rpg-user-stats container');
 
     // Add event listeners for editable stat values
