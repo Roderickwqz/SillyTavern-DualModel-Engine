@@ -11935,3 +11935,6 @@ body.documentstyle .rpg-inline-thoughts {
 .rpg-attr-bar { background: rgba(255,255,255,0.08); height: 8px; border-radius: 4px; overflow: hidden; }
 .rpg-attr-bar > span { display: block; height: 100%; background: var(--rpg-highlight, #e94560); }
 .rpg-compat-stale { background: #5c2b2b; color: #fff; padding: 0.5rem; border-radius: 4px; margin-bottom: 0.5rem; }
+
+/* COMPAT: settings lockdown (spec §12.1) */
+.rpg-compat-hidden { display: none !important; }

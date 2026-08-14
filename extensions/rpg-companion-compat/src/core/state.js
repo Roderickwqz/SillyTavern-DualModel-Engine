@@ -10,8 +10,10 @@
  * Extension settings - persisted to SillyTavern settings
  */
 export let extensionSettings = {
-    settingsVersion: 5, // Version number for settings migrations
+    settingsVersion: 6, // Version number for settings migrations
     enabled: true,
+    // COMPAT: LangGraph authoritative fork — Together mode only, read-only UI
+    compatMode: true,
     autoUpdate: false,
     updateDepth: 4, // How many messages to include in the context
     generationMode: 'together', // 'separate' or 'together' - whether to generate with main response or separately
