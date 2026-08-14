@@ -51,3 +51,13 @@ def test_duplicate_campaign_rejected_and_bootstrap_artifacts_are_singular(databa
         ).fetchone()
         assert snapshot is not None
         assert snapshot[0] == 0
+
+
+def test_create_campaign_marks_main_as_live_owner(database):
+    service = CampaignService(database, id_factory=iter(["bootstrap"]).__next__, clock=lambda: "2026-08-10T00:00:00Z")
+    service.create_campaign("c1", "Story")
+    with database.connect() as connection:
+        owner = connection.execute(
+            "SELECT last_active_branch_id FROM campaigns WHERE id = 'c1'"
+        ).fetchone()["last_active_branch_id"]
+    assert owner == "main"

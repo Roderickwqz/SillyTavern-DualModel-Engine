@@ -91,8 +91,8 @@ class CampaignService:
         with self.database.transaction() as connection:
             try:
                 connection.execute(
-                    "INSERT INTO campaigns(id, name, created_at, updated_at)"
-                    " VALUES (?, ?, ?, ?)",
+                    "INSERT INTO campaigns(id, name, created_at, updated_at,"
+                    " last_active_branch_id) VALUES (?, ?, ?, ?, 'main')",
                     (campaign_id, name, now, now),
                 )
             except sqlite3.IntegrityError as exc:

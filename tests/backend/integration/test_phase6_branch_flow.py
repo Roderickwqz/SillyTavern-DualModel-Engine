@@ -552,3 +552,225 @@ def test_swipe_child_inherits_parent_memory(database):
     assert seed_copy["id"] in recent_ids
     assert seed_copy["id"] in related_ids
     assert seed_copy["id"] in scene_ids
+
+
+def test_switch_back_with_query_mixed_history_restores_main(database):
+    """A query-mixed switch-back request resolves through the unrecorded-
+    tail continuation path, which must apply the same head-vs-live
+    divergence check as the exact-match path: otherwise the narrate
+    renders the child's live state and the next main mutation collides
+    with main's own snapshot (500)."""
+    _world(database)
+    narrator = ScriptedLLMClient([
+        json.dumps({"operations": [json.loads(_SET_OP % 40)]}),  # turn 1: 40 -> v3
+        json.dumps({"operations": [json.loads(_SET_OP % 40)]}),  # turn 2: 40 -> v4
+        json.dumps({"operations": [json.loads(_SET_OP % 35)]}),  # swipe child: 35 -> v3
+        "艾琳的炼金术是 35。",                                    # child query answer
+        "叙述五",                                               # switch-back narrate
+        json.dumps({"operations": []}),                         # switch-back extract
+        json.dumps({"operations": [json.loads(_SET_OP % 50)]}),  # main turn: 50 -> v5
+    ])
+    client = _client(database, narrator)
+
+    main_history: list[dict] = []
+    for _ in range(2):
+        content = _chat(client, main_history, "把艾琳的炼金术调整为40")
+        assert "已应用 1 项变更" in content
+
+    # Swipe turn 1; the child applies its own change (live version 3).
+    child_history = [
+        {"role": "user", "content": "把艾琳的炼金术调整为40"},
+        {"role": "assistant", "content": "艾琳没有抬头。"},
+        {"role": "user", "content": "把艾琳的炼金术调整为40"},
+        {"role": "assistant", "content": "艾琳把瓶子放回架上。"},
+    ]
+    content = _chat(client, child_history, "把艾琳的炼金术调整为35")
+    assert "已应用 1 项变更" in content
+    child_history.append({"role": "assistant", "content": content})
+
+    # A query on the child's history, then switch back to main's history
+    # with the query pair mixed into the visible messages.
+    query_content = _chat(client, child_history, "查询艾琳的炼金术")
+    assert "35" in query_content
+    switch_history = list(main_history) + [
+        {"role": "user", "content": "查询艾琳的炼金术"},
+        {"role": "assistant", "content": query_content},
+    ]
+    content = _chat(client, switch_history, "我合上笔记。")
+    assert "叙述五" in content
+
+    with database.connect() as connection:
+        value = connection.execute(
+            "SELECT value_json FROM attribute_values"
+            " WHERE entity_id = 'erin' AND attribute_key = 'alchemy'"
+        ).fetchone()["value_json"]
+        branches = connection.execute(
+            "SELECT COUNT(*) FROM branches"
+        ).fetchone()[0]
+        turn = connection.execute(
+            "SELECT branch_id, parent_turn_id, state_before_version"
+            " FROM turns WHERE player_text = '我合上笔记。'"
+        ).fetchone()
+        turn2 = connection.execute(
+            "SELECT id FROM turns WHERE state_after_version = 4"
+            " AND branch_id = 'main'"
+        ).fetchone()
+    assert value == "40"
+    assert branches == 2
+    assert turn["branch_id"] == "main"
+    assert turn["parent_turn_id"] == turn2["id"]
+    assert turn["state_before_version"] == 4
+
+    # The next applied mutation on main must succeed (no snapshot collision).
+    content = _chat(client, switch_history, "把艾琳的炼金术调整为50")
+    assert "已应用 1 项变更" in content
+    with database.connect() as connection:
+        value = connection.execute(
+            "SELECT value_json FROM attribute_values"
+            " WHERE entity_id = 'erin' AND attribute_key = 'alchemy'"
+        ).fetchone()["value_json"]
+    assert value == "50"
+
+
+def test_switch_back_same_version_restores_owned_branch(database):
+    """Version equality is not an ownership test: when a swipe child
+    re-applies mutations to roll the live version back up to the parent's
+    head version, only the last_active_branch_id marker reveals the live
+    tables belong to the child. The switch-back must still restore the
+    parent's snapshot, or the parent's next turn commits against the
+    child's live state (silent chain pollution)."""
+    _world(database)
+    narrator = ScriptedLLMClient([
+        json.dumps({"operations": [json.loads(_SET_OP % 40)]}),  # main: 40 -> v3
+        json.dumps({"operations": [json.loads(_SET_OP % 35)]}),  # main: 35 -> v4
+        json.dumps({"operations": [json.loads(_SET_OP % 60)]}),  # main: 60 -> v5
+        json.dumps({"operations": [json.loads(_SET_OP % 35)]}),  # child A: 35 -> v3
+        json.dumps({"operations": [json.loads(_SET_OP % 40)]}),  # child B: 40 -> v4
+        json.dumps({"operations": [json.loads(_SET_OP % 80)]}),  # child C: 80 -> v5
+        "叙述七",                                               # switch-back narrate
+        json.dumps({"operations": []}),                         # switch-back extract
+        json.dumps({"operations": [json.loads(_SET_OP % 50)]}),  # main: 50 -> v6
+    ])
+    client = _client(database, narrator)
+
+    main_history: list[dict] = []
+    for text in ("把艾琳的炼金术调整为40", "把艾琳的炼金术调整为35",
+                 "把艾琳的炼金术调整为60"):
+        content = _chat(client, main_history, text)
+        assert "已应用 1 项变更" in content
+
+    # Swipe turn 1; the child re-applies mutations to reach the same
+    # version as main's head on both branches.
+    child_history = [
+        {"role": "user", "content": "把艾琳的炼金术调整为40"},
+        {"role": "assistant", "content": "艾琳没有抬头。"},
+        {"role": "user", "content": "把艾琳的炼金术调整为35"},
+        {"role": "assistant", "content": "艾琳把瓶子放回架上。"},
+    ]
+    for text in ("把艾琳的炼金术调整为35", "把艾琳的炼金术调整为40",
+                 "把艾琳的炼金术调整为80"):
+        content = _chat(client, child_history, text)
+        assert "已应用 1 项变更" in content
+
+    with database.connect() as connection:
+        child = connection.execute(
+            "SELECT id FROM branches WHERE id LIKE 'branch-swipe-%'"
+        ).fetchone()["id"]
+        main_head = connection.execute(
+            "SELECT state_version FROM branch_heads WHERE branch_id = 'main'"
+        ).fetchone()["state_version"]
+        child_head = connection.execute(
+            "SELECT state_version FROM branch_heads WHERE branch_id = ?",
+            (child,),
+        ).fetchone()["state_version"]
+        live = connection.execute(
+            "SELECT state_version, last_active_branch_id"
+            " FROM campaigns WHERE id = 'c1'"
+        ).fetchone()
+    assert main_head == 5
+    assert child_head == 5
+    assert live["state_version"] == 5
+    assert live["last_active_branch_id"] == child
+
+    # Switch back to main: the versions match, only ownership diverges.
+    content = _chat(client, main_history, "我合上笔记。")
+    assert "叙述七" in content
+    with database.connect() as connection:
+        value = connection.execute(
+            "SELECT value_json FROM attribute_values"
+            " WHERE entity_id = 'erin' AND attribute_key = 'alchemy'"
+        ).fetchone()["value_json"]
+        owner = connection.execute(
+            "SELECT last_active_branch_id FROM campaigns WHERE id = 'c1'"
+        ).fetchone()["last_active_branch_id"]
+        turn = connection.execute(
+            "SELECT branch_id, parent_turn_id, state_before_version"
+            " FROM turns WHERE player_text = '我合上笔记。'"
+        ).fetchone()
+        turn3 = connection.execute(
+            "SELECT id FROM turns WHERE player_text = '把艾琳的炼金术调整为60'"
+        ).fetchone()
+    assert value == "60"
+    assert owner == "main"
+    assert turn["branch_id"] == "main"
+    assert turn["parent_turn_id"] == turn3["id"]
+    assert turn["state_before_version"] == 5
+
+    # The next applied mutation on main must commit cleanly at v6.
+    content = _chat(client, main_history, "把艾琳的炼金术调整为50")
+    assert "已应用 1 项变更" in content
+    with database.connect() as connection:
+        value = connection.execute(
+            "SELECT value_json FROM attribute_values"
+            " WHERE entity_id = 'erin' AND attribute_key = 'alchemy'"
+        ).fetchone()["value_json"]
+    assert value == "50"
+
+
+def test_query_edit_keeps_head_fresh(database):
+    """The edit path must detach before restoring: restore computes the
+    head's latest_turn_id from the active set, and a query turn commits
+    nothing, so restore-before-detach would leave the head pointing at a
+    now-detached turn forever."""
+    _world(database)
+    narrator = ScriptedLLMClient([
+        "叙述一", json.dumps({"operations": []}),
+        "叙述二", json.dumps({"operations": []}),
+        "艾琳的炼金术是 40。",
+    ])
+    client = _client(database, narrator)
+
+    history: list[dict] = []
+    _chat(client, history, "我走进炼金铺。")
+    _chat(client, history, "我拿起一瓶药剂。")
+
+    with database.connect() as connection:
+        turn1 = connection.execute(
+            "SELECT id FROM turns WHERE player_text = '我走进炼金铺。'"
+        ).fetchone()
+        turn2 = connection.execute(
+            "SELECT id FROM turns WHERE player_text = '我拿起一瓶药剂。'"
+        ).fetchone()
+
+    # Query with an edited history (assistant replies dropped): the edit
+    # path detaches turn 2 and the head must land on the matched parent.
+    history = [
+        {"role": "user", "content": "我走进炼金铺。"},
+        {"role": "user", "content": "我拿起一瓶药剂。"},
+    ]
+    content = _chat(client, history, "查询艾琳的炼金术")
+    assert "40" in content
+
+    with database.connect() as connection:
+        head = connection.execute(
+            "SELECT latest_turn_id FROM branch_heads WHERE branch_id = 'main'"
+        ).fetchone()["latest_turn_id"]
+        turn1_status = connection.execute(
+            "SELECT status FROM turns WHERE id = ?", (turn1["id"],)
+        ).fetchone()["status"]
+        turn2_status = connection.execute(
+            "SELECT status FROM turns WHERE id = ?", (turn2["id"],)
+        ).fetchone()["status"]
+    assert head == turn1["id"]
+    assert turn1_status == "active"
+    assert turn2_status == "detached"

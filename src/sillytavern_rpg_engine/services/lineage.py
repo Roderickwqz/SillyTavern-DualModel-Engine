@@ -56,10 +56,12 @@ class LineageResolver:
         lineage_hash_after equals lineage_hash_before(messages), continue
         on that turn's branch; the branch's stored head is restored first
         when it diverged from the live global state (another branch owns
-        the live tables since this one was last active). Otherwise fall
-        back to the longest known prefix of the visible history
-        (edit/delete/swipe). A first-ever message on a fresh campaign (no
-        recorded history) resolves to branch "main" with no parent. Raises
+        the live tables since this one was last active, tracked by
+        campaigns.last_active_branch_id, or the head version no longer
+        matches the live version). Otherwise fall back to the longest
+        known prefix of the visible history (edit/delete/swipe). A
+        first-ever message on a fresh campaign (no recorded history)
+        resolves to branch "main" with no parent. Raises
         BranchResolutionError on ambiguity or when no prefix matches any
         active turn.
         """
@@ -81,10 +83,13 @@ class LineageResolver:
             )
         if len(rows) == 1:
             parent = rows[0]
-            head_version, live_version = self._branch_head_and_live(
-                campaign_id, parent.branch_id
+            head_version, live_version, last_active_branch_id = (
+                self._branch_head_and_live(campaign_id, parent.branch_id)
             )
-            if head_version is not None and head_version != live_version:
+            if self._needs_restore(
+                parent.branch_id, head_version, live_version,
+                last_active_branch_id,
+            ):
                 # The live shared tables belong to a different branch since
                 # this branch was last active (swipe forks roll the global
                 # version back to their fork point). Restore this branch's
@@ -100,8 +105,9 @@ class LineageResolver:
 
     def _branch_head_and_live(
         self, campaign_id: str, branch_id: str,
-    ) -> tuple[int | None, int]:
-        """Return (branch head version, live campaign version) in one read.
+    ) -> tuple[int | None, int, str | None]:
+        """Return (branch head version, live campaign version,
+        last_active_branch_id) in one read.
 
         The head version is None when the branch has no head row yet
         (fresh campaigns and legacy data predating branch_heads); callers
@@ -115,7 +121,8 @@ class LineageResolver:
                 (campaign_id, branch_id),
             ).fetchone()
             live = connection.execute(
-                "SELECT state_version FROM campaigns WHERE id = ?",
+                "SELECT state_version, last_active_branch_id"
+                " FROM campaigns WHERE id = ?",
                 (campaign_id,),
             ).fetchone()
         if live is None:
@@ -123,7 +130,32 @@ class LineageResolver:
         return (
             head["state_version"] if head is not None else None,
             live["state_version"],
+            live["last_active_branch_id"],
         )
+
+    @staticmethod
+    def _needs_restore(
+        branch_id: str,
+        head_version: int | None,
+        live_version: int,
+        last_active_branch_id: str | None,
+    ) -> bool:
+        """True when the branch's state must be restored before continuing.
+
+        Divergence means either another branch owns the live tables
+        (last_active_branch_id differs; version equality is not an
+        ownership test, so a child that re-rolled to the same version
+        would otherwise silently pollute the parent's chain) or the
+        branch's head version no longer matches the live version. A NULL
+        last_active_branch_id is legacy data: fall back to the version
+        check only. A missing head (no head row yet) carries no
+        divergence signal; there is nothing to restore to.
+        """
+        if head_version is None:
+            return False
+        if last_active_branch_id is not None and last_active_branch_id != branch_id:
+            return True
+        return head_version != live_version
 
     def _resolve_by_prefix(
         self, campaign_id: str, messages: tuple[ChatMessage, ...]
@@ -135,13 +167,16 @@ class LineageResolver:
         The deepest (largest k) match is the parent. If the trailing
         assistant message is a swipe (a stored response_hash exists and
         differs from the visible reply), fork a child branch and restore
-        the parent's before-state; otherwise restore the matched head
-        first (so a failed restore leaves branch state consistent), then
-        detach later turns on the matched branch. Before forking, trailing
-        pairs that are unrecorded query exchanges (QUERY turns record no
-        turn row) continue on the matched turn instead of forking, so a
-        mid-chat question does not spawn a spurious branch. Raises
-        BranchResolutionError when no prefix matches any active turn.
+        the parent's before-state; otherwise detach later turns on the
+        matched branch first, then restore the matched head (restore
+        recomputes the head's latest_turn_id from the post-detach active
+        set, and a failed restore leaves the branch with a correct head
+        and detached tail for the resolver's retry). Before forking,
+        trailing pairs that are unrecorded query exchanges (QUERY turns
+        record no turn row) continue on the matched turn instead of
+        forking, so a mid-chat question does not spawn a spurious branch.
+        Raises BranchResolutionError when no prefix matches any active
+        turn.
         """
         for k in range(len(messages) - 1, -1, -1):
             h = _history_hash(messages[:k])
@@ -173,10 +208,17 @@ class LineageResolver:
                     campaign_id, child, parent.state_before_version
                 )
                 return BranchContext(child, None, restored=True)
+            # Detach before restore: detach_after is an idempotent plain
+            # UPDATE that cannot fail meaningfully, so restoring afterwards
+            # (1) recomputes latest_turn_id from the post-detach active set
+            # and points the head at the matched parent instead of a
+            # now-detached turn, and (2) on a failed restore leaves the
+            # branch with a correct head and detached tail; the resolver's
+            # retry then re-attempts the restore, which is consistent.
+            self.turns.detach_after(campaign_id, parent.branch_id, parent.id)
             self.snapshots.restore(
                 campaign_id, parent.branch_id, parent.state_after_version
             )
-            self.turns.detach_after(campaign_id, parent.branch_id, parent.id)
             return BranchContext(parent.branch_id, parent.id, restored=True)
         raise BranchResolutionError(
             f"cannot map visible history to any known parent for campaign"
@@ -198,9 +240,11 @@ class LineageResolver:
         step: when the visible prefix at k matches some active turn's
         lineage_hash_after and none of the dropped pairs starts a
         recorded turn, the trailing pairs are unrecorded exchanges and
-        the next turn continues on that turn's branch with no fork or
-        restore (the new turn's lineage hashes include the query pairs,
-        so the chain self-heals).
+        the next turn continues on that turn's branch with no fork (the
+        new turn's lineage hashes include the query pairs, so the chain
+        self-heals). A switch-back hidden behind the query pair still
+        restores the branch's stored head when the branch diverged from
+        the live state.
         """
         for k in range(len(messages) - 3, -1, -2):
             prefix_hash = _history_hash(messages[:k])
@@ -215,6 +259,23 @@ class LineageResolver:
             if self._dropped_pairs_recorded(campaign_id, messages, k):
                 return None
             turn = rows[0]
+            head_version, live_version, last_active_branch_id = (
+                self._branch_head_and_live(campaign_id, turn.branch_id)
+            )
+            if self._needs_restore(
+                turn.branch_id, head_version, live_version,
+                last_active_branch_id,
+            ):
+                # The trailing query exchange still counts as a switch
+                # back: when another branch owns the live tables (or the
+                # version diverged), the continued turn must land on this
+                # branch's restored state, or it narrates against the
+                # other branch's state and the next mutation collides
+                # with this branch's own snapshot.
+                self.snapshots.restore(
+                    campaign_id, turn.branch_id, head_version
+                )
+                return BranchContext(turn.branch_id, turn.id, restored=True)
             return BranchContext(turn.branch_id, turn.id, restored=False)
         return None
 

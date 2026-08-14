@@ -50,7 +50,8 @@ class BranchService:
         self, campaign_id: str, branch_id: str,
         state_version: int, turn_id: str | None,
     ) -> None:
-        """Upsert the branch's head pointer to the given turn and version."""
+        """Upsert the branch's head pointer to the given turn and version;
+        a committed turn also marks the branch as the live owner."""
         now = self._clock()
         with self.database.connect() as connection:
             self.branch_repository.require(connection, campaign_id, branch_id)
@@ -62,6 +63,11 @@ class BranchService:
                 " latest_turn_id = excluded.latest_turn_id,"
                 " updated_at = excluded.updated_at",
                 (campaign_id, branch_id, state_version, turn_id, now),
+            )
+            connection.execute(
+                "UPDATE campaigns SET last_active_branch_id = ?"
+                " WHERE id = ?",
+                (branch_id, campaign_id),
             )
 
     def fork(

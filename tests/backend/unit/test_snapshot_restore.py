@@ -83,8 +83,12 @@ def test_restore_reverts_live_state_to_snapshot(database):
         state_version = connection.execute(
             "SELECT state_version FROM campaigns WHERE id = 'c1'"
         ).fetchone()["state_version"]
+        owner = connection.execute(
+            "SELECT last_active_branch_id FROM campaigns WHERE id = 'c1'"
+        ).fetchone()["last_active_branch_id"]
     assert value == "10"
     assert state_version == 3
+    assert owner == "main"
 
 
 def test_restore_removes_events_newer_than_snapshot(database):
@@ -274,9 +278,13 @@ def test_restore_falls_back_to_ancestor_branch_snapshot(database):
             " AND branch_id = ?",
             (child,),
         ).fetchone()
+        owner = connection.execute(
+            "SELECT last_active_branch_id FROM campaigns WHERE id = 'c1'"
+        ).fetchone()["last_active_branch_id"]
     assert value == "10"
     assert copied is not None
     assert head["state_version"] == 2
+    assert owner == child
 
 
 def test_restore_without_ancestor_snapshot_still_raises(database):

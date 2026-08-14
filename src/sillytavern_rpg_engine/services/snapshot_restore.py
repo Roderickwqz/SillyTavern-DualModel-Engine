@@ -332,13 +332,14 @@ class SnapshotRestoreService:
         marks Pending proposals based on state newer than state_version
         as Stale, and resets the branch head pointer to the restored
         version (pointing at the branch's newest active turn), so the
-        branch can keep applying mutations. When the snapshot is
-        inherited from an ancestor branch (a fresh child), the ancestor's
-        memory_events at or below state_version are copied to the child
-        with fresh ids, FTS parity, and participant links, so the child's
-        retrieval is not permanently empty. Returns the restored
-        state_version. Raises NotFoundError when the campaign or branch
-        does not exist.
+        branch can keep applying mutations. The restored branch becomes
+        the campaign's live owner (last_active_branch_id). When the
+        snapshot is inherited from an ancestor branch (a fresh child), the
+        ancestor's memory_events at or below state_version are copied to
+        the child with fresh ids, FTS parity, and participant links, so
+        the child's retrieval is not permanently empty. Returns the
+        restored state_version. Raises NotFoundError when the campaign or
+        branch does not exist.
         """
         with self.database.transaction() as connection:
             CampaignRepository().require(connection, campaign_id)
@@ -436,8 +437,9 @@ class SnapshotRestoreService:
                 ),
             )
             connection.execute(
-                "UPDATE campaigns SET state_version = ? WHERE id = ?",
-                (state_version, campaign_id),
+                "UPDATE campaigns SET state_version = ?,"
+                " last_active_branch_id = ? WHERE id = ?",
+                (state_version, branch_id, campaign_id),
             )
             latest_turn = connection.execute(
                 "SELECT id FROM turns WHERE campaign_id = ? AND branch_id = ?"

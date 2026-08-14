@@ -79,6 +79,17 @@ def test_migration_0007_adds_lineage_before_index(database):
     assert "lineage_hash_before" in cols
 
 
+def test_migration_0008_adds_last_active_branch_column(database):
+    with database.connect() as connection:
+        cols = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(campaigns)"
+            ).fetchall()
+        }
+    assert "last_active_branch_id" in cols
+
+
 def test_failing_migration_leaves_no_tables(tmp_path):
     database = Database(tmp_path / "atomic.sqlite3")
     runner = MigrationRunner(database)

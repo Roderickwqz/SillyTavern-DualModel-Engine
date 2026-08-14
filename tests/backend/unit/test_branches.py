@@ -54,3 +54,14 @@ def test_get_head_missing_branch_raises_not_found(database):
     _campaign(database)
     with pytest.raises(NotFoundError, match="branch"):
         BranchService(database).get_head("c1", "no-such-branch")
+
+
+def test_update_head_marks_branch_as_live_owner(database):
+    _campaign(database)
+    turn = _turn(database)
+    BranchService(database).update_head("c1", "main", 3, turn.id)
+    with database.connect() as connection:
+        owner = connection.execute(
+            "SELECT last_active_branch_id FROM campaigns WHERE id = 'c1'"
+        ).fetchone()["last_active_branch_id"]
+    assert owner == "main"
