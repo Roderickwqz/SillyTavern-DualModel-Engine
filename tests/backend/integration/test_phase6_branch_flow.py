@@ -5,6 +5,7 @@ import json
 from fastapi.testclient import TestClient
 
 from sillytavern_rpg_engine.config import ModelConfig, Settings
+from sillytavern_rpg_engine.domain.memory import MemoryEventType
 from sillytavern_rpg_engine.domain.models import (
     AttributeDefinition,
     AttributeType,
@@ -19,6 +20,8 @@ from sillytavern_rpg_engine.services.campaigns import CampaignService
 from sillytavern_rpg_engine.services.entities import (
     CreateEntityOperation, EntityAttributeService,
 )
+from sillytavern_rpg_engine.services.memory_events import MemoryEventService
+from sillytavern_rpg_engine.services.retrieval import RetrievalQuery, RetrievalService
 
 NARRATOR_CFG = ModelConfig("http://x/v1", "", "narrator-model", 0.8, 5.0, 512)
 
@@ -325,3 +328,227 @@ def test_delete_tail_detaches_and_stales_its_proposal(database):
         ).fetchone()
         assert turn5["branch_id"] == "main"
         assert turn5["parent_turn_id"] == turn4["id"]
+
+
+def test_switch_back_restores_branch_head_and_continues(database):
+    """Switching back to main after a swipe fork must restore main's head
+    snapshot; otherwise the next applied mutation on main collides with a
+    snapshot version the child branch already occupies (UNIQUE
+    state_snapshots -> 500)."""
+    _world(database)
+    narrator = ScriptedLLMClient([
+        json.dumps({"operations": [json.loads(_SET_OP % 40)]}),  # turn 1: 40
+        json.dumps({"operations": [json.loads(_SET_OP % 35)]}),  # turn 2: 35
+        json.dumps({"operations": [json.loads(_SET_OP % 60)]}),  # turn 3: 60
+        json.dumps({"operations": [json.loads(_SET_OP % 35)]}),  # swipe: 35
+        "叙述五",                                               # switch-back narrate
+        json.dumps({"operations": []}),                         # switch-back extract
+        json.dumps({"operations": [json.loads(_SET_OP % 50)]}),  # turn 6: 50
+    ])
+    client = _client(database, narrator)
+
+    main_history: list[dict] = []
+    for text in ("把艾琳的炼金术调整为40", "把艾琳的炼金术调整为35",
+                 "把艾琳的炼金术调整为60"):
+        content = _chat(client, main_history, text)
+        assert "已应用 1 项变更" in content
+
+    # Swipe turn 2 with alternate replies; the child applies its own change.
+    history = [
+        {"role": "user", "content": "把艾琳的炼金术调整为40"},
+        {"role": "assistant", "content": "艾琳没有抬头。"},
+        {"role": "user", "content": "把艾琳的炼金术调整为35"},
+        {"role": "assistant", "content": "艾琳把瓶子放回架上。"},
+    ]
+    content = _chat(client, history, "把艾琳的炼金术调整为35")
+    assert "已应用 1 项变更" in content
+    with database.connect() as connection:
+        child = connection.execute(
+            "SELECT id FROM branches WHERE id LIKE 'branch-swipe-%'"
+        ).fetchone()["id"]
+        value = connection.execute(
+            "SELECT value_json FROM attribute_values"
+            " WHERE entity_id = 'erin' AND attribute_key = 'alchemy'"
+        ).fetchone()["value_json"]
+    assert value == "35"
+
+    # Switch back to main by echoing main's exact history: the live state
+    # must be restored to main's head (alchemy back to 60) and the turn
+    # must land on main without another fork.
+    content = _chat(client, main_history, "我合上笔记。")
+    assert "叙述五" in content
+    with database.connect() as connection:
+        value = connection.execute(
+            "SELECT value_json FROM attribute_values"
+            " WHERE entity_id = 'erin' AND attribute_key = 'alchemy'"
+        ).fetchone()["value_json"]
+        turn5 = connection.execute(
+            "SELECT id, branch_id, parent_turn_id, state_before_version"
+            " FROM turns WHERE player_text = '我合上笔记。'"
+        ).fetchone()
+        turn3 = connection.execute(
+            "SELECT id FROM turns WHERE player_text = '把艾琳的炼金术调整为60'"
+        ).fetchone()
+        branches = connection.execute(
+            "SELECT COUNT(*) FROM branches"
+        ).fetchone()[0]
+        main_head = connection.execute(
+            "SELECT state_version, latest_turn_id FROM branch_heads"
+            " WHERE branch_id = 'main'"
+        ).fetchone()
+    assert value == "60"
+    assert branches == 2
+    assert turn5["branch_id"] == "main"
+    assert turn5["parent_turn_id"] == turn3["id"]
+    assert turn5["state_before_version"] == 5
+    assert main_head["state_version"] == 5
+    assert main_head["latest_turn_id"] == turn5["id"]
+
+    # The next applied mutation on main must succeed (no snapshot collision).
+    content = _chat(client, main_history, "把艾琳的炼金术调整为50")
+    assert "已应用 1 项变更" in content
+    with database.connect() as connection:
+        value = connection.execute(
+            "SELECT value_json FROM attribute_values"
+            " WHERE entity_id = 'erin' AND attribute_key = 'alchemy'"
+        ).fetchone()["value_json"]
+    assert value == "50"
+
+
+def test_query_then_action_does_not_fork(database):
+    """QUERY turns record no turn row, so an action after a query must not
+    misread the query exchange as a swipe: no fork, no state rollback, and
+    the new turn records on main with the query pairs baked into its
+    lineage hashes (consecutive queries included)."""
+    _world(database)
+    narrator = ScriptedLLMClient([
+        json.dumps({"operations": [json.loads(_SET_OP % 40)]}),  # turn 1 extract
+        "艾琳的炼金术是 40。",                                    # turn 2 answer
+        "叙述三",                                                # turn 3 narrate
+        json.dumps({"operations": []}),                          # turn 3 extract
+        "艾琳的炼金术是 40。",                                    # turn 4 answer
+        "叙述五",                                                # turn 5 narrate
+        json.dumps({"operations": []}),                          # turn 5 extract
+    ])
+    client = _client(database, narrator)
+
+    history: list[dict] = []
+    content = _chat(client, history, "把艾琳的炼金术调整为40")
+    assert "已应用 1 项变更" in content
+    content = _chat(client, history, "查询艾琳的炼金术")
+    assert "40" in content
+    content = _chat(client, history, "我记下配方。")
+    assert "叙述三" in content
+    content = _chat(client, history, "查询艾琳的炼金术")
+    assert "40" in content
+    content = _chat(client, history, "我把配方装订成册。")
+    assert "叙述五" in content
+
+    with database.connect() as connection:
+        branches = connection.execute(
+            "SELECT COUNT(*) FROM branches"
+        ).fetchone()[0]
+        turns = connection.execute(
+            "SELECT id, branch_id, parent_turn_id FROM turns"
+            " ORDER BY created_at, id"
+        ).fetchall()
+        value = connection.execute(
+            "SELECT value_json FROM attribute_values"
+            " WHERE entity_id = 'erin' AND attribute_key = 'alchemy'"
+        ).fetchone()["value_json"]
+    assert branches == 1
+    assert len(turns) == 3
+    assert [row["branch_id"] for row in turns] == ["main", "main", "main"]
+    assert turns[1]["parent_turn_id"] == turns[0]["id"]
+    assert turns[2]["parent_turn_id"] == turns[1]["id"]
+    assert value == "40"
+
+
+def test_swipe_child_inherits_parent_memory(database):
+    """A fresh swipe-fork child must inherit the parent branch's memory
+    events (with FTS parity and participants), or its recent/search/scene
+    retrieval stays permanently empty."""
+    campaigns = _world(database)
+    memory = MemoryEventService(
+        database, campaigns.mutation_engine, id_factory=lambda: "seed-mem-1",
+    )
+    memory.record(
+        "c1", "main", 2,
+        type=MemoryEventType.IDENTITY,
+        content="艾琳曾在银月城研习炼金术",
+        importance=5,
+        audiences=frozenset({Audience.NARRATOR, Audience.PLAYER_UI}),
+        participants=("erin",),
+    )
+    narrator = ScriptedLLMClient([
+        "叙述一",                                               # turn 1 narrate
+        json.dumps({"operations": []}),                         # turn 1 extract
+        "叙述三",                                               # swipe narrate
+        json.dumps({"operations": []}),                         # swipe extract
+    ])
+    client = _client(database, narrator)
+
+    history: list[dict] = []
+    content = _chat(client, history, "我走进炼金铺。")
+    assert "叙述一" in content
+
+    history = [
+        {"role": "user", "content": "我走进炼金铺。"},
+        {"role": "assistant", "content": "艾琳没有抬头。"},
+    ]
+    content = _chat(client, history, "我继续观察。")
+    assert "叙述三" in content
+
+    with database.connect() as connection:
+        child = connection.execute(
+            "SELECT id FROM branches WHERE id LIKE 'branch-swipe-%'"
+        ).fetchone()["id"]
+        events = connection.execute(
+            "SELECT id, turn_id, state_version, content FROM memory_events"
+            " WHERE campaign_id = 'c1' AND branch_id = ?"
+            " ORDER BY rowid",
+            (child,),
+        ).fetchall()
+        fts_parity = connection.execute(
+            "SELECT COUNT(*) FROM memory_events_fts"
+            " WHERE rowid IN (SELECT rowid FROM memory_events"
+            " WHERE campaign_id = 'c1' AND branch_id = ?)",
+            (child,),
+        ).fetchone()[0]
+        seed_copy = connection.execute(
+            "SELECT id FROM memory_events"
+            " WHERE campaign_id = 'c1' AND branch_id = ?"
+            " AND content = ?",
+            (child, "艾琳曾在银月城研习炼金术"),
+        ).fetchone()
+        seed_participants = connection.execute(
+            "SELECT entity_id FROM memory_event_participants"
+            " WHERE event_id = ? ORDER BY entity_id",
+            (seed_copy["id"],),
+        ).fetchall()
+        main_seed_still = connection.execute(
+            "SELECT 1 FROM memory_events"
+            " WHERE campaign_id = 'c1' AND branch_id = 'main'"
+            " AND id = 'seed-mem-1'"
+        ).fetchone()
+    assert len(events) == 5
+    assert all(row["state_version"] <= 3 for row in events)
+    assert fts_parity == 5
+    assert seed_copy is not None
+    assert seed_copy["id"] != "seed-mem-1"
+    assert [row["entity_id"] for row in seed_participants] == ["erin"]
+    assert main_seed_still is not None
+
+    assembled = RetrievalService(database).assemble(RetrievalQuery(
+        campaign_id="c1", branch_id=child,
+        audiences=frozenset({Audience.NARRATOR}),
+        text="艾琳曾在银月城研习炼金术",
+        scene_entity_ids=("erin",),
+        limit=5,
+    ))
+    recent_ids = {e["id"] for e in assembled["recent_events"]}
+    related_ids = {e["id"] for e in assembled["related_events"]}
+    scene_ids = {e["id"] for e in assembled["scene_events"]}
+    assert seed_copy["id"] in recent_ids
+    assert seed_copy["id"] in related_ids
+    assert seed_copy["id"] in scene_ids

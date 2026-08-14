@@ -214,6 +214,79 @@ def _insert_from_snapshot(
             )
 
 
+def _participant_rows(
+    connection: sqlite3.Connection,
+    campaign_id: str,
+    branch_id: str,
+    state_version: int,
+) -> list[sqlite3.Row]:
+    """Participant links of a branch's events at or below state_version.
+
+    Captured before the delete pass: entity rows are deleted and
+    re-inserted during restore, and memory_event_participants cascades on
+    entity_id, so the links would otherwise be lost.
+    """
+    return connection.execute(
+        "SELECT event_id, entity_id FROM memory_event_participants"
+        " JOIN memory_events"
+        " ON memory_events.id = memory_event_participants.event_id"
+        " WHERE memory_events.campaign_id = ? AND memory_events.branch_id = ?"
+        " AND memory_events.state_version <= ?",
+        (campaign_id, branch_id, state_version),
+    ).fetchall()
+
+
+def _copy_ancestor_memory_events(
+    connection: sqlite3.Connection,
+    campaign_id: str,
+    branch_id: str,
+    ancestor_branch_id: str,
+    state_version: int,
+    ancestor_participants: dict[str, list[str]],
+    id_factory: Callable[[], str],
+) -> None:
+    """Copy the ancestor's memory_events at or below state_version into a
+    fresh child branch.
+
+    Events are strictly branch-scoped, so without this the child's
+    recent/search/scene retrieval would stay permanently empty.
+    memory_events.id is the global primary key, so the copies get fresh
+    ids (events reference turns, never the other way round); FTS rows and
+    participant links are written per copy.
+    """
+    source_events = connection.execute(
+        "SELECT id, turn_id, event_type, content, importance,"
+        " audiences_json, location_entity_id, source,"
+        " state_version, created_at FROM memory_events"
+        " WHERE campaign_id = ? AND branch_id = ?"
+        " AND state_version <= ?",
+        (campaign_id, ancestor_branch_id, state_version),
+    ).fetchall()
+    for event in source_events:
+        event_id = id_factory()
+        connection.execute(
+            "INSERT INTO memory_events(id, campaign_id, branch_id,"
+            " turn_id, event_type, content, importance, audiences_json,"
+            " location_entity_id, source, state_version, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event_id, campaign_id, branch_id, event["turn_id"],
+             event["event_type"], event["content"], event["importance"],
+             event["audiences_json"], event["location_entity_id"],
+             event["source"], event["state_version"], event["created_at"]),
+        )
+        connection.execute(
+            "INSERT INTO memory_events_fts(rowid, content)"
+            " SELECT rowid, content FROM memory_events WHERE id = ?",
+            (event_id,),
+        )
+        for entity_id in ancestor_participants.get(event["id"], ()):
+            connection.execute(
+                "INSERT INTO memory_event_participants(campaign_id, event_id,"
+                " entity_id) VALUES (?, ?, ?)",
+                (campaign_id, event_id, entity_id),
+            )
+
+
 class SnapshotRestoreService:
     """Replaces live campaign state with the contents of a stored snapshot."""
 
@@ -258,9 +331,14 @@ class SnapshotRestoreService:
         Also prunes stale auto-stored snapshots newer than state_version,
         marks Pending proposals based on state newer than state_version
         as Stale, and resets the branch head pointer to the restored
-        version, so the branch can keep applying mutations. Returns the
-        restored state_version. Raises NotFoundError when the campaign or
-        branch does not exist.
+        version (pointing at the branch's newest active turn), so the
+        branch can keep applying mutations. When the snapshot is
+        inherited from an ancestor branch (a fresh child), the ancestor's
+        memory_events at or below state_version are copied to the child
+        with fresh ids, FTS parity, and participant links, so the child's
+        retrieval is not permanently empty. Returns the restored
+        state_version. Raises NotFoundError when the campaign or branch
+        does not exist.
         """
         with self.database.transaction() as connection:
             CampaignRepository().require(connection, campaign_id)
@@ -290,22 +368,32 @@ class SnapshotRestoreService:
                     (campaign_id, branch_id, state_version, snapshot_json,
                      self.clock()),
                 )
+                ancestor_branch_id = ancestor[1]
                 snapshot = json.loads(snapshot_json)
             else:
+                ancestor_branch_id = branch_id
                 snapshot = json.loads(row["snapshot_json"])
+            # Participant links must survive the delete pass below: entity
+            # rows are deleted and re-inserted, and memory_event_participants
+            # cascades on entity_id. Capture them for both the restored
+            # branch and (in the fork case) the ancestor whose events the
+            # child inherits.
+            surviving_participants = _participant_rows(
+                connection, campaign_id, branch_id, state_version
+            )
+            ancestor_participants: dict[str, list[str]] = {}
+            if ancestor_branch_id != branch_id:
+                for participant in _participant_rows(
+                    connection, campaign_id, ancestor_branch_id, state_version
+                ):
+                    ancestor_participants.setdefault(
+                        participant["event_id"], []
+                    ).append(participant["entity_id"])
             # Entity deletes cascade participant links and would violate the
             # NO ACTION location_entity_id reference of surviving events;
             # entities are re-inserted with identical ids, so defer FK
             # checks until commit.
             connection.execute("PRAGMA defer_foreign_keys = ON")
-            surviving_participants = connection.execute(
-                "SELECT event_id, entity_id FROM memory_event_participants"
-                " JOIN memory_events"
-                " ON memory_events.id = memory_event_participants.event_id"
-                " WHERE memory_events.campaign_id = ? AND memory_events.branch_id = ?"
-                " AND memory_events.state_version <= ?",
-                (campaign_id, branch_id, state_version),
-            ).fetchall()
             for sql, params in _DELETE_CAMPAIGN_STATE_SQL:
                 connection.execute(
                     sql, params(campaign_id, branch_id, state_version)
@@ -329,6 +417,16 @@ class SnapshotRestoreService:
                 self.id_factory,
                 self.clock(),
             )
+            if ancestor_branch_id != branch_id:
+                _copy_ancestor_memory_events(
+                    connection,
+                    campaign_id,
+                    branch_id,
+                    ancestor_branch_id,
+                    state_version,
+                    ancestor_participants,
+                    self.id_factory,
+                )
             connection.executemany(
                 "INSERT INTO memory_event_participants(campaign_id, event_id,"
                 " entity_id) VALUES (?, ?, ?)",
@@ -341,17 +439,32 @@ class SnapshotRestoreService:
                 "UPDATE campaigns SET state_version = ? WHERE id = ?",
                 (state_version, campaign_id),
             )
+            latest_turn = connection.execute(
+                "SELECT id FROM turns WHERE campaign_id = ? AND branch_id = ?"
+                " AND status = 'active'"
+                " ORDER BY created_at DESC, id DESC LIMIT 1",
+                (campaign_id, branch_id),
+            ).fetchone()
+            latest_turn_id = latest_turn["id"] if latest_turn else None
             connection.execute(
                 # The head must reflect the restored version, or later
                 # mutations and head tracking (forks, edits) lie about
                 # where the branch is. Upsert: fresh campaigns have no
                 # branch_heads row (migration 0006 only backfills rows that
                 # existed at migration time); mirrors BranchService.update_head.
+                # latest_turn_id points at the branch's newest active turn so
+                # diagnostics do not point at a now-detached turn; a branch
+                # with no active turns yet (fresh swipe child) keeps the
+                # existing pointer (the fork-point turn).
                 "INSERT INTO branch_heads(campaign_id, branch_id, state_version,"
-                " latest_turn_id, updated_at) VALUES (?, ?, ?, NULL, ?)"
+                " latest_turn_id, updated_at) VALUES (?, ?, ?, ?, ?)"
                 " ON CONFLICT(campaign_id, branch_id) DO UPDATE SET"
                 " state_version = excluded.state_version,"
+                " latest_turn_id = CASE WHEN excluded.latest_turn_id IS NULL"
+                " THEN branch_heads.latest_turn_id"
+                " ELSE excluded.latest_turn_id END,"
                 " updated_at = excluded.updated_at",
-                (campaign_id, branch_id, state_version, self.clock()),
+                (campaign_id, branch_id, state_version, latest_turn_id,
+                 self.clock()),
             )
         return state_version
