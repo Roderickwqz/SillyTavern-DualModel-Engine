@@ -1,12 +1,20 @@
 const STORE_KEY = 'rpg_compat_swipes';
 
-export function cacheCompatTracker(message, swipeId, compat) {
+function cloneSerializable(value) {
+    try {
+        return structuredClone(value);
+    } catch {
+        return JSON.parse(JSON.stringify(value));
+    }
+}
+
+export function cacheCompatTracker(message, compat, swipeId = message?.swipe_id ?? 0) {
     if (!message || compat == null) return;
     if (!message.extra || typeof message.extra !== 'object') message.extra = {};
     if (!message.extra[STORE_KEY] || typeof message.extra[STORE_KEY] !== 'object') {
         message.extra[STORE_KEY] = {};
     }
-    message.extra[STORE_KEY][String(swipeId)] = structuredClone(compat);
+    message.extra[STORE_KEY][String(swipeId)] = cloneSerializable(compat);
 }
 
 export function loadCompatTracker(message, swipeId = message?.swipe_id ?? 0) {

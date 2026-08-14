@@ -57,7 +57,8 @@ import { parseResponse, parseUserStats } from './src/systems/generation/parser.j
 import { updateRPGData, testExternalAPIConnection } from './src/systems/generation/apiClient.js';
 import { onGenerationStarted } from './src/systems/generation/injector.js';
 // COMPAT: LangGraph authoritative Tracker mode
-import { initCompatMode } from './src/compat/bootstrap.js';
+import { collectCompatContainers, initCompatMode } from './src/compat/bootstrap.js';
+import { bindSwipeDisplay } from './src/compat/swipeDisplay.js';
 
 // Rendering modules
 import { getSafeThumbnailUrl } from './src/utils/avatars.js';
@@ -1478,6 +1479,14 @@ jQuery(async () => {
                     queueThoughtBasedExpressionsUpdate({ immediate: true });
                 }
             });
+
+            // COMPAT: restore cached per-swipe Tracker display (display-only, no state writes)
+            bindSwipeDisplay(
+                eventSource,
+                event_types,
+                () => ({ chat }),
+                collectCompatContainers(),
+            );
 
             eventSource.on(event_types.CHAT_CHANGED, () => {
                 clearThoughtBasedExpressionsCache();

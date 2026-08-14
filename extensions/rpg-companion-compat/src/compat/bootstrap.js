@@ -10,14 +10,17 @@ import {
     extensionSettings, lastGeneratedData, setLastGeneratedData,
 } from '../core/state.js';
 
-export function applyCompatTracker(parseResult, containers, message = { swipe_id: 0 }) {
+export function applyCompatTracker(parseResult, containers, message = { swipe_id: 0 }, options = {}) {
     const compat = parseResult.compat ?? null;
-    setLastGeneratedData({ ...lastGeneratedData, compat });
-    if (compat != null) {
-        cacheCompatTracker(message, message.swipe_id ?? 0, compat);
+    const skipStateSync = !!options.skipStateSync;
+    if (!skipStateSync) {
+        setLastGeneratedData({ ...lastGeneratedData, compat });
+        if (compat != null) {
+            cacheCompatTracker(message, compat);
+        }
     }
 
-    if (containers.staleContainer) {
+    if (!skipStateSync && containers.staleContainer) {
         const stale = shouldShowStaleWarning({
             parsedCompat: compat,
             committedVersion: extensionSettings.compatStateVersion,
@@ -52,7 +55,9 @@ export function applyCompatTracker(parseResult, containers, message = { swipe_id
         { rules: compat.rules, combat: compat.combat },
         containers.rulesContainers ?? {},
     );
-    updateCompatStateVersion(extensionSettings, compat.state_version);
+    if (!skipStateSync) {
+        updateCompatStateVersion(extensionSettings, compat.state_version);
+    }
 }
 
 export function initCompatMode() {
