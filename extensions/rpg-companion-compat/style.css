@@ -11928,3 +11928,10 @@ body.documentstyle .rpg-inline-thoughts {
 .rpg-item-qty-edit:focus {
     outline: 1px solid var(--SmartThemeQuoteColor, #e94560);
 }
+
+/* COMPAT: dynamic read-only attributes (spec §12.2) */
+.rpg-attr-category { margin-bottom: 0.75rem; }
+.rpg-attr-label { font-size: 0.85rem; opacity: 0.85; }
+.rpg-attr-bar { background: rgba(255,255,255,0.08); height: 8px; border-radius: 4px; overflow: hidden; }
+.rpg-attr-bar > span { display: block; height: 100%; background: var(--rpg-highlight, #e94560); }
+.rpg-compat-stale { background: #5c2b2b; color: #fff; padding: 0.5rem; border-radius: 4px; margin-bottom: 0.5rem; }
