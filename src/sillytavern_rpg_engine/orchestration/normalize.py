@@ -24,6 +24,7 @@ class NormalizedRequest:
     player_text: str
     removed_instructions: tuple[str, ...]
     history_hash: str
+    lineage_hash_before: str
     raw: dict[str, Any]
 
 
@@ -77,6 +78,28 @@ def _history_hash(messages: tuple[ChatMessage, ...]) -> str:
     return digest.hexdigest()
 
 
+def lineage_hash_before(messages: tuple[ChatMessage, ...]) -> str:
+    """Hash the history preceding the trailing user message, tracker-free."""
+    if not messages or messages[-1].role != "user":
+        raise ValidationError("lineage requires trailing user message")
+    return _history_hash(messages[:-1])
+
+
+def lineage_hash_after(
+    prefix: tuple[ChatMessage, ...], assistant_text: str,
+) -> str:
+    """Hash the history plus the cleaned assistant reply."""
+    cleaned = strip_tracker_blocks(assistant_text)
+    return _history_hash(prefix + (ChatMessage("assistant", cleaned),))
+
+
+def response_hash(assistant_text: str) -> str:
+    """Hash a cleaned assistant reply on its own."""
+    return _history_hash(
+        (ChatMessage("assistant", strip_tracker_blocks(assistant_text)),)
+    )
+
+
 def normalize_request(payload: dict[str, Any]) -> NormalizedRequest:
     """Validate one chat-completions body and remove tracker instructions."""
     if not isinstance(payload, dict):
@@ -120,5 +143,6 @@ def normalize_request(payload: dict[str, Any]) -> NormalizedRequest:
         player_text=player_text.strip(),
         removed_instructions=tuple(removed),
         history_hash=_history_hash(tuple(messages)),
+        lineage_hash_before=lineage_hash_before(tuple(messages)),
         raw=payload,
     )
