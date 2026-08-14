@@ -16,6 +16,16 @@ from .entities import normalize_key
 # the snapshot must be gone before any entity is deleted.
 _DELETE_CAMPAIGN_STATE_SQL = [
     (
+        # Stale auto-stored snapshots would collide with the snapshot the
+        # next mutation stores at target + 1 (PK campaign_id, branch_id,
+        # state_version); prune everything newer than the restored version.
+        "DELETE FROM state_snapshots WHERE campaign_id = ? AND branch_id = ?"
+        " AND state_version > ?",
+        lambda campaign_id, branch_id, state_version: (
+            campaign_id, branch_id, state_version,
+        ),
+    ),
+    (
         "DELETE FROM memory_events_fts WHERE rowid IN (SELECT rowid FROM"
         " memory_events WHERE campaign_id = ? AND branch_id = ?"
         " AND state_version > ?)",
@@ -216,7 +226,10 @@ class SnapshotRestoreService:
     def restore(self, campaign_id: str, branch_id: str, state_version: int) -> int:
         """Reset campaign and branch state to the snapshot stored at
         state_version; raise NotFoundError when no such snapshot exists.
-        Returns the restored state_version."""
+        Also prunes stale auto-stored snapshots newer than state_version and
+        resets the branch head pointer to the restored version, so the
+        branch can keep applying mutations. Returns the restored
+        state_version."""
         with self.database.transaction() as connection:
             row = connection.execute(
                 "SELECT snapshot_json FROM state_snapshots"
@@ -266,5 +279,18 @@ class SnapshotRestoreService:
             connection.execute(
                 "UPDATE campaigns SET state_version = ? WHERE id = ?",
                 (state_version, campaign_id),
+            )
+            connection.execute(
+                # The head must reflect the restored version, or later
+                # mutations and head tracking (forks, edits) lie about
+                # where the branch is. Upsert: fresh campaigns have no
+                # branch_heads row (migration 0006 only backfills rows that
+                # existed at migration time); mirrors BranchService.update_head.
+                "INSERT INTO branch_heads(campaign_id, branch_id, state_version,"
+                " latest_turn_id, updated_at) VALUES (?, ?, ?, NULL, ?)"
+                " ON CONFLICT(campaign_id, branch_id) DO UPDATE SET"
+                " state_version = excluded.state_version,"
+                " updated_at = excluded.updated_at",
+                (campaign_id, branch_id, state_version, self.clock()),
             )
         return state_version

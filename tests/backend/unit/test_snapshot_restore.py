@@ -204,3 +204,67 @@ def test_restore_missing_snapshot_raises_not_found(database):
     campaigns.create_campaign("c1", "Test")
     with pytest.raises(NotFoundError, match="not found"):
         SnapshotRestoreService(database).restore("c1", "main", 7)
+
+
+def test_restore_prunes_stale_snapshots_and_allows_continue(database):
+    ids = iter(f"e-{i}" for i in range(30))
+    campaigns = CampaignService(
+        database,
+        id_factory=ids.__next__,
+        clock=lambda: "2026-08-14T00:00:00Z",
+    )
+    campaigns.create_campaign("c1", "Test")
+    attrs = EntityAttributeService(database, campaigns.mutation_engine)
+    attrs.apply_explicit("c1", "main", 0, CreateEntityOperation(
+        "erin", EntityKind.CHARACTER, "艾琳",
+    ))
+    attrs.apply_explicit("c1", "main", 1, DefineAttributeOperation(AttributeDefinition(
+        campaign_id="c1", key="alchemy", label="炼金", category="skill",
+        value_type=AttributeType.NUMBER, display=DisplayType.BAR,
+        audiences=frozenset({Audience.PLAYER_UI}), minimum=0, maximum=100,
+    )))
+    attrs.apply_explicit("c1", "main", 2, SetAttributeOperation(
+        "erin", "alchemy", 10, None,
+    ))
+    attrs.apply_explicit("c1", "main", 3, SetAttributeOperation(
+        "erin", "alchemy", 99, None,
+    ))
+    restored = SnapshotRestoreService(
+        database, clock=lambda: "2026-08-14T00:00:00Z",
+    ).restore("c1", "main", 3)
+    assert restored == 3
+    with database.connect() as connection:
+        stale = connection.execute(
+            "SELECT COUNT(*) FROM state_snapshots WHERE campaign_id = 'c1'"
+            " AND branch_id = 'main' AND state_version > 3"
+        ).fetchone()[0]
+        head = connection.execute(
+            "SELECT state_version, latest_turn_id FROM branch_heads"
+            " WHERE campaign_id = 'c1' AND branch_id = 'main'"
+        ).fetchone()
+        value = connection.execute(
+            "SELECT value_json FROM attribute_values"
+            " WHERE entity_id = 'erin' AND attribute_key = 'alchemy'"
+        ).fetchone()["value_json"]
+    assert stale == 0
+    assert head["state_version"] == 3
+    assert head["latest_turn_id"] is None
+    assert value == "10"
+    attrs.apply_explicit("c1", "main", 3, SetAttributeOperation(
+        "erin", "alchemy", 42, None,
+    ))
+    with database.connect() as connection:
+        value = connection.execute(
+            "SELECT value_json FROM attribute_values"
+            " WHERE entity_id = 'erin' AND attribute_key = 'alchemy'"
+        ).fetchone()["value_json"]
+        state_version = connection.execute(
+            "SELECT state_version FROM campaigns WHERE id = 'c1'"
+        ).fetchone()["state_version"]
+        snapshot_count = connection.execute(
+            "SELECT COUNT(*) FROM state_snapshots WHERE campaign_id = 'c1'"
+            " AND branch_id = 'main' AND state_version = 4"
+        ).fetchone()[0]
+    assert value == "42"
+    assert state_version == 4
+    assert snapshot_count == 1
