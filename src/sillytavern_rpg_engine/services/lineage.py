@@ -60,12 +60,15 @@ class LineageResolver:
         BranchResolutionError on ambiguity or when no prefix matches any
         active turn.
         """
-        if (
-            len(messages) == 1
-            and not self.turns.find_by_lineage_before(
+        if len(messages) == 1:
+            if self.turns.find_by_lineage_before(
                 campaign_id, _history_hash(())
-            )
-        ):
+            ):
+                raise BranchResolutionError(
+                    f"no visible history to resolve a parent turn for campaign"
+                    f" {campaign_id}; echo the chat's message array, or start a"
+                    f" new campaign"
+                )
             return BranchContext("main", None, restored=False)
         prefix_hash = lineage_hash_before(messages)
         rows = self.turns.find_by_lineage_after(campaign_id, prefix_hash)

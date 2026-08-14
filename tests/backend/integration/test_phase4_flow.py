@@ -62,14 +62,19 @@ def test_phase4_full_flow(database):
     )
     client = TestClient(create_app(settings, database, narrator))
 
+    history: list[dict] = []
+
     def chat(text, **extra):
         payload = {"campaign_id": "c1",
-                   "messages": [{"role": "system", "content": TRACKER_INSTRUCTION},
-                                {"role": "user", "content": text}]}
+                   "messages": [{"role": "system", "content": TRACKER_INSTRUCTION}]
+                               + history
+                               + [{"role": "user", "content": text}]}
         payload.update(extra)
         response = client.post("/v1/chat/completions", json=payload)
         assert response.status_code == 200
-        return response.json()["choices"][0]["message"]["content"]
+        content = response.json()["choices"][0]["message"]["content"]
+        history.append({"role": "assistant", "content": content})
+        return content
 
     # Turn 1: action -> narrative + one pending proposal + tracker block.
     content = chat("我走进炼金铺。")

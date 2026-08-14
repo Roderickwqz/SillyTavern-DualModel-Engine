@@ -156,11 +156,11 @@ def test_edit_drops_assistant_and_restores_to_prefix(database):
     assert state_version == first.state_after_version
 
 
-def test_single_message_on_existing_history_resets_via_detach(database):
+def test_single_message_on_existing_history_raises(database):
     """A 1-message request on a campaign with recorded turns (e.g. a new
-    SillyTavern chat session echoing no history) must reset to the first
-    turn: restore its state and detach every later turn, instead of
-    silently starting a duplicate empty-lineage turn on main."""
+    SillyTavern chat session echoing no history) cannot identify a parent
+    turn: raise BranchResolutionError and write nothing (no detach, no
+    restore, no new turn)."""
     _boot(database)
     first = _record_turn(database, player="a", response="A")
     second = _record_turn(
@@ -168,22 +168,24 @@ def test_single_message_on_existing_history_resets_via_detach(database):
         prefix=(ChatMessage("user", "a"), ChatMessage("assistant", "A")),
     )
     messages = (ChatMessage("user", "c"),)
-    ctx = LineageResolver(database).resolve("c1", messages)
-    assert ctx.branch_id == "main"
-    assert ctx.parent_turn_id == first.id
-    assert ctx.restored is True
     with database.connect() as connection:
-        statuses = {
-            row["id"]: row["status"]
-            for row in connection.execute(
-                "SELECT id, status FROM turns WHERE campaign_id = 'c1'"
-            ).fetchall()
-        }
+        state_version_before = connection.execute(
+            "SELECT state_version FROM campaigns WHERE id = 'c1'"
+        ).fetchone()["state_version"]
+    with pytest.raises(BranchResolutionError, match="no visible history"):
+        LineageResolver(database).resolve("c1", messages)
+    with database.connect() as connection:
+        rows = connection.execute(
+            "SELECT id, status FROM turns WHERE campaign_id = 'c1'"
+        ).fetchall()
         state_version = connection.execute(
             "SELECT state_version FROM campaigns WHERE id = 'c1'"
         ).fetchone()["state_version"]
-    assert statuses == {first.id: "active", second.id: "detached"}
-    assert state_version == first.state_after_version
+    assert len(rows) == 2
+    assert {row["id"]: row["status"] for row in rows} == {
+        first.id: "active", second.id: "active",
+    }
+    assert state_version == state_version_before
 
 
 def test_swipe_forks_child_branch(database):

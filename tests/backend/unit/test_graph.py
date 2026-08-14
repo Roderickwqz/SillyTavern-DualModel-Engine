@@ -129,9 +129,16 @@ def test_proposal_command_approves_pending(database):
     ])
     services = default_services(database, _settings(), narrator)
     runner = TurnRunner(services)
-    runner.run(_payload("艾琳练习了一整天炼金术。"))
+    first = runner.run(_payload("艾琳练习了一整天炼金术。"))
     proposal_id = services.proposals.pending("c1", "main")[0].id
-    content = _content(runner.run(_payload(f"确认提案 {proposal_id}")))
+    history = [
+        {"role": "user", "content": "艾琳练习了一整天炼金术。"},
+        {"role": "assistant", "content": _content(first)},
+    ]
+    content = _content(runner.run({
+        "campaign_id": "c1",
+        "messages": history + [{"role": "user", "content": f"确认提案 {proposal_id}"}],
+    }))
     assert "已确认并应用" in content
     with database.connect() as connection:
         assert connection.execute(
