@@ -444,7 +444,7 @@ class SnapshotRestoreService:
             latest_turn = connection.execute(
                 "SELECT id FROM turns WHERE campaign_id = ? AND branch_id = ?"
                 " AND status = 'active'"
-                " ORDER BY created_at DESC, id DESC LIMIT 1",
+                " ORDER BY rowid DESC LIMIT 1",
                 (campaign_id, branch_id),
             ).fetchone()
             latest_turn_id = latest_turn["id"] if latest_turn else None

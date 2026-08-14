@@ -450,7 +450,7 @@ def test_query_then_action_does_not_fork(database):
         ).fetchone()[0]
         turns = connection.execute(
             "SELECT id, branch_id, parent_turn_id FROM turns"
-            " ORDER BY created_at, id"
+            " ORDER BY rowid"
         ).fetchall()
         value = connection.execute(
             "SELECT value_json FROM attribute_values"

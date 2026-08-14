@@ -98,7 +98,7 @@ class TurnService:
                 parent = connection.execute(
                     "SELECT id FROM turns WHERE campaign_id = ? AND branch_id = ?"
                     " AND status = 'active'"
-                    " ORDER BY created_at DESC, id DESC LIMIT 1",
+                    " ORDER BY rowid DESC LIMIT 1",
                     (campaign_id, branch_id),
                 ).fetchone()
                 stored_parent = parent["id"] if parent else None
@@ -138,7 +138,7 @@ class TurnService:
         with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT * FROM turns WHERE campaign_id = ? AND branch_id = ?"
-                " ORDER BY created_at DESC, id DESC LIMIT 1",
+                " ORDER BY rowid DESC LIMIT 1",
                 (campaign_id, branch_id),
             ).fetchone()
         return _to_turn(row) if row else None
@@ -160,7 +160,7 @@ class TurnService:
         with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM turns WHERE campaign_id = ? AND lineage_hash_after = ?"
-                " AND status = 'active' ORDER BY created_at DESC, id DESC",
+                " AND status = 'active' ORDER BY rowid DESC",
                 (campaign_id, lineage_hash_after),
             ).fetchall()
         return [_to_turn(row) for row in rows]
@@ -173,7 +173,7 @@ class TurnService:
         with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM turns WHERE campaign_id = ? AND lineage_hash_before = ?"
-                " AND status = 'active' ORDER BY created_at DESC, id DESC",
+                " AND status = 'active' ORDER BY rowid DESC",
                 (campaign_id, lineage_hash_before),
             ).fetchall()
         return [_to_turn(row) for row in rows]
@@ -184,13 +184,14 @@ class TurnService:
         """Mark active turns recorded on the branch after the given turn as
         detached; return the number of turns updated. Later turns are the
         ones that sort after the turn in the branch's canonical order
-        (created_at, id). Turns are never physically deleted."""
+        (rowid, i.e. append order — created_at can step backward on NTP
+        correction, rowid cannot). Turns are never physically deleted."""
         with self.database.connect() as connection:
             cursor = connection.execute(
                 "UPDATE turns SET status = 'detached' WHERE campaign_id = ?"
                 " AND branch_id = ? AND status = 'active'"
-                " AND (created_at, id) >"
-                " (SELECT created_at, id FROM turns WHERE id = ?"
+                " AND rowid >"
+                " (SELECT rowid FROM turns WHERE id = ?"
                 " AND campaign_id = ? AND branch_id = ?)",
                 (campaign_id, branch_id, turn_id, campaign_id, branch_id),
             )
