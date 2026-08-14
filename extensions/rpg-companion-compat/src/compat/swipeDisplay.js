@@ -1,5 +1,6 @@
 import { loadCompatTracker } from './lineageCache.js';
 import { applyCompatTracker } from './bootstrap.js';
+import { extensionSettings } from '../core/state.js';
 
 export function restoreSwipeDisplay(message, containers) {
     const compat = loadCompatTracker(message);
@@ -10,6 +11,7 @@ export function restoreSwipeDisplay(message, containers) {
 
 export function bindSwipeDisplay(eventSource, eventTypes, getContext, containers) {
     const rerender = (messageIndex) => {
+        if (!extensionSettings.enabled) return;
         const message = getContext()?.chat?.[messageIndex];
         if (!message || message.is_user) return;
         restoreSwipeDisplay(message, containers);

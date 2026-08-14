@@ -117,3 +117,57 @@ Engine extension** — they are mutually exclusive state authorities. Disable
 DualModel Engine, then install the compat extension as described in
 [`extensions/rpg-companion-compat/README.md`](extensions/rpg-companion-compat/README.md),
 and point Chat Completion at the FastAPI backend (`http://127.0.0.1:8000/v1`).
+
+## Branching (Phase 6)
+
+Phase 6 makes every generation reproducible through history-hash lineage instead
+of SillyTavern chat IDs. Every turn stores `lineage_hash_before`,
+`lineage_hash_after`, and `response_hash`, all derived from the normalized
+(tracker-stripped) visible history. The resolver maps each incoming request to
+exactly one parent turn and branch; ambiguity raises `409 branch_resolution_error`
+without writes. A request with no visible history on a campaign that already has
+turns is rejected (409) — clients must echo the full chat — while a fresh
+campaign accepts its first message as a new narrative.
+
+Swipe and regenerate create isolated branches. A swiped assistant reply forks a
+`branch-swipe-*` child branch, and the child's live state is restored from the
+parent's snapshot at the swiped turn's `state_before_version`, all within one
+transaction. Switching swipes forks and restores again; contradictory branches
+are never auto-merged.
+
+Edit and delete shorten history, and the backend detaches tail turns. The
+longest known valid prefix of the visible history is matched; later active turns
+on that branch are marked `detached` (never physically deleted, so the audit
+trail stays intact), live state restores to the matched head, and pending
+proposals based on the removed turns' state become `stale`.
+
+RPG Companion Compat shows a per-swipe cached Tracker and follows the backend
+after the next generation. Per-swipe compat JSON is cached in
+`message.extra.rpg_compat_swipes` (display-only, spec §12.3);
+`MESSAGE_SWIPED`/`MESSAGE_UPDATED` re-render the panels from the cache without
+any authoritative writes. Manual chat edits do not re-parse, so the display
+lags until the next generation; an uncached swipe leaves the previous swipe's
+panel content.
+
+Branch diagnostics:
+
+```bash
+curl http://127.0.0.1:8000/admin/campaigns/{campaign_id}/branches
+```
+
+returns the branch list, heads, and detached turn count (a missing head reports
+`state_version` 0 with no turn).
+
+Long-run simulation:
+
+```bash
+LONG_RUN_TURNS=10000 python -m pytest tests/backend/integration/test_phase6_longrun.py -m slow -v
+```
+
+(~35 minutes) is a 10k-turn proof of bounded prompts and durable early-memory
+retrieval.
+
+Known limitation: snapshot restore re-inserts combatants with the columns
+captured by `SnapshotBuilder` (~11 of 21). Tactical columns that are not
+captured — e.g. `debuffs_json`, `readied_action_json`, `recharge_json` — reset
+to defaults when a branch is restored mid-combat.
