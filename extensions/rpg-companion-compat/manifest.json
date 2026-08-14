@@ -1,0 +1,11 @@
+{
+  "display_name": "RPG Companion Compat (LangGraph)",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Marinara",
+  "version": "3.7.4-compat.1",
+  "homePage": "https://github.com/SpicyMarinara/rpg-companion-sillytavern"
+}

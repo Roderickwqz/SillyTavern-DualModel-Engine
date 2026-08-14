@@ -1,0 +1,2492 @@
+/**
+ * Character Thoughts Rendering Module
+ * Handles rendering of character thoughts panel and floating thought bubbles in chat
+ */
+
+import { getContext } from '../../../../../../extensions.js';
+import {
+    extensionSettings,
+    lastGeneratedData,
+    committedTrackerData,
+    $thoughtsContainer,
+    addDebugLog
+} from '../../core/state.js';
+import { i18n } from '../../core/i18n.js';
+import { saveChatData, saveSettings, getCurrentMessageSwipeTrackerData, setMessageSwipeTrackerField } from '../../core/persistence.js';
+import {
+    stripBrackets,
+    extractFieldValue,
+    toSnakeCase,
+    getPresentCharactersTrackerData,
+    resolvePresentCharacterPortrait
+} from '../../utils/presentCharacters.js';
+import { isItemLocked, setItemLock } from '../generation/lockManager.js';
+import { renderAlternatePresentCharacters } from '../ui/alternatePresentCharacters.js';
+import { queueThoughtBasedExpressionsUpdate } from '../integration/thoughtBasedExpressions.js';
+
+/**
+ * Helper to generate lock icon HTML if setting is enabled
+ * @param {string} tracker - Tracker name
+ * @param {string} path - Item path
+ * @returns {string} Lock icon HTML or empty string
+ */
+function getLockIconHtml(tracker, path) {
+    const showLockIcons = extensionSettings.showLockIcons ?? true;
+    if (!showLockIcons) return '';
+
+    const isLocked = isItemLocked(tracker, path);
+    const lockIcon = isLocked ? '🔒' : '🔓';
+    const lockTitle = isLocked ? i18n.getTranslation('thoughts.locked') || 'Locked' : i18n.getTranslation('thoughts.unlocked') || 'Unlocked';
+    const lockedClass = isLocked ? ' locked' : '';
+    return `<span class="rpg-section-lock-icon${lockedClass}" data-tracker="${tracker}" data-path="${path}" title="${lockTitle}">${lockIcon}</span>`;
+}
+
+/**
+ * Helper to log to both console and debug logs array
+ */
+function debugLog(message, data = null) {
+    // console.log(message, data || '');
+    if (extensionSettings.debugMode) {
+        addDebugLog(message, data);
+    }
+}
+
+/**
+ * Interpolates color based on percentage value between low and high colors
+ * @param {number} percentage - Value from 0-100
+ * @param {string} lowColor - Hex color for low values (e.g., '#ff0000')
+ * @param {string} highColor - Hex color for high values (e.g., '#00ff00')
+ * @param {number} lowOpacity - Opacity for low values (0-100)
+ * @param {number} highOpacity - Opacity for high values (0-100)
+ * @returns {string} Interpolated rgba color
+ */
+function getStatColor(percentage, lowColor, highColor, lowOpacity = 100, highOpacity = 100) {
+    // Clamp percentage to 0-100
+    const percent = Math.max(0, Math.min(100, percentage)) / 100;
+
+    // Parse hex colors
+    const parsehex = (hex) => {
+        const clean = hex.replace('#', '');
+        return {
+            r: parseInt(clean.substring(0, 2), 16),
+            g: parseInt(clean.substring(2, 4), 16),
+            b: parseInt(clean.substring(4, 6), 16)
+        };
+    };
+
+    const low = parsehex(lowColor);
+    const high = parsehex(highColor);
+
+    // Interpolate each channel
+    const r = Math.round(low.r + (high.r - low.r) * percent);
+    const g = Math.round(low.g + (high.g - low.g) * percent);
+    const b = Math.round(low.b + (high.b - low.b) * percent);
+    const a = (lowOpacity + (highOpacity - lowOpacity) * percent) / 100;
+
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+/**
+ * Renders character thoughts (Present Characters) panel.
+ * Displays character cards with avatars, relationship badges, and traits.
+ * Includes event listeners for editable character fields.
+ */
+export function renderThoughts({ preserveScroll = false, useCommittedFallback = true } = {}) {
+    renderAlternatePresentCharacters({ useCommittedFallback });
+    queueThoughtBasedExpressionsUpdate();
+
+    if (!extensionSettings.showCharacterThoughts || !$thoughtsContainer) {
+        return;
+    }
+
+    // Save scroll position before re-render if requested
+    let savedContentScroll = 0;
+    if (preserveScroll) {
+        const $content = $thoughtsContainer.find('.rpg-thoughts-content');
+        if ($content.length) {
+            savedContentScroll = $content[0].scrollTop;
+        }
+    }
+
+    // Don't render if no data exists (e.g., after cache clear)
+    const thoughtsData = getPresentCharactersTrackerData({ useCommittedFallback });
+    if (!thoughtsData) {
+        $thoughtsContainer.html('<div class="rpg-inventory-empty">' + (i18n.getTranslation('thoughts.empty') || 'No character data generated yet') + '</div>');
+        return;
+    }
+
+    debugLog('[RPG Thoughts] ==================== RENDERING PRESENT CHARACTERS ====================');
+    debugLog('[RPG Thoughts] showCharacterThoughts setting:', extensionSettings.showCharacterThoughts);
+    debugLog('[RPG Thoughts] Container exists:', !!$thoughtsContainer);
+
+    // Add updating class for animation
+    if (extensionSettings.enableAnimations) {
+        $thoughtsContainer.addClass('rpg-content-updating');
+    }
+
+    // Get tracker configuration
+    const config = extensionSettings.trackerConfig?.presentCharacters;
+    const enabledFields = config?.customFields?.filter(f => f && f.enabled && f.name) || [];
+    const characterStatsConfig = config?.characterStats;
+    const enabledCharStats = characterStatsConfig?.enabled && characterStatsConfig?.customStats?.filter(s => s && s.enabled && s.name) || [];
+    const relationshipFields = config?.relationshipFields || [];
+    const hasRelationshipEnabled = relationshipFields.length > 0;
+
+    // Use committedTrackerData as fallback if lastGeneratedData is empty (e.g., after page refresh)
+    const characterThoughtsData = getPresentCharactersTrackerData({ useCommittedFallback });
+
+    // console.log('[RPG Companion] renderThoughts - Reading from lastGeneratedData:', JSON.stringify(lastGeneratedData.characterThoughts));
+    // console.log('[RPG Companion] renderThoughts - Reading from committedTrackerData:', JSON.stringify(committedTrackerData.characterThoughts));
+
+    debugLog('[RPG Thoughts] Raw characterThoughts data:', characterThoughtsData);
+    debugLog('[RPG Thoughts] Data length:', characterThoughtsData.length + ' chars');
+    debugLog('[RPG Thoughts] Enabled custom fields:', enabledFields.map(f => f.name));
+    debugLog('[RPG Thoughts] Enabled character stats:', enabledCharStats.map(s => s.name));
+
+    let presentCharacters = [];
+
+    // Try parsing as JSON first (new format)
+    try {
+        const parsed = typeof characterThoughtsData === 'string'
+            ? JSON.parse(characterThoughtsData)
+            : characterThoughtsData;
+
+        // Handle both {characters: [...]} and direct array formats
+        const charactersArray = Array.isArray(parsed) ? parsed : (parsed.characters || []);
+
+        if (charactersArray.length > 0) {
+            // JSON format: array of character objects
+            presentCharacters = charactersArray.map(char => {
+                const character = {
+                    name: char.name,
+                    emoji: char.emoji || '👤'
+                };
+
+                // Extract details (appearance, demeanor, etc.)
+                if (char.details) {
+                    // Map details object to custom fields
+                    for (const field of enabledFields) {
+                        // First try exact field name (for manually edited values)
+                        if (char.details[field.name] !== undefined) {
+                            character[field.name] = stripBrackets(char.details[field.name]);
+                        } else {
+                            // Fall back to snake_case for AI-generated values
+                            const fieldKey = toSnakeCase(field.name);
+                            if (char.details[fieldKey] !== undefined) {
+                                character[field.name] = stripBrackets(char.details[fieldKey]);
+                            }
+                        }
+                    }
+                }
+
+                // Also check for fields at root level (for backward compatibility)
+                // Only use if not already set from details
+                for (const field of enabledFields) {
+                    if (character[field.name] === undefined) {
+                        const fieldKey = toSnakeCase(field.name);
+                        if (char[fieldKey] !== undefined) {
+                            character[field.name] = stripBrackets(char[fieldKey]);
+                        }
+                    }
+                }
+
+                // Extract relationship
+                // Prefer the new flat format (char.Relationship) over the old nested format (char.relationship.status)
+                if (char.Relationship) {
+                    character.Relationship = stripBrackets(char.Relationship);
+                } else if (char.relationship) {
+                    character.Relationship = stripBrackets(char.relationship.status || char.relationship);
+                }
+
+                // Extract thoughts content for bubble display
+                if (char.thoughts) {
+                    character.ThoughtsContent = stripBrackets(char.thoughts.content || char.thoughts);
+                }
+
+                // Extract character stats if present
+                if (char.stats && enabledCharStats.length > 0) {
+                    // Handle both object format {Health: 100, Energy: 95} and array format [{name: "Health", value: 100}]
+                    if (Array.isArray(char.stats)) {
+                        // Array format: [{name: "Health", value: 100}, {name: "Energy", value: 95}]
+                        for (const statObj of char.stats) {
+                            if (statObj.name && statObj.value !== undefined) {
+                                const matchingStat = enabledCharStats.find(s => s.name === statObj.name);
+                                if (matchingStat) {
+                                    character[statObj.name] = statObj.value;
+                                }
+                            }
+                        }
+                    } else {
+                        // Object format: {Health: 100, Energy: 95}
+                        for (const stat of enabledCharStats) {
+                            if (char.stats[stat.name] !== undefined) {
+                                character[stat.name] = char.stats[stat.name];
+                            }
+                        }
+                    }
+                }
+
+                return character;
+            });
+
+            debugLog('[RPG Thoughts] ✓ Parsed JSON format, characters:', presentCharacters.length);
+        }
+    } catch (e) {
+        debugLog('[RPG Thoughts] Not JSON format, falling back to text parsing');
+    }
+
+    // If JSON parsing failed or returned empty, try text format
+    if (presentCharacters.length === 0) {
+        const lines = characterThoughtsData.split('\n');
+        debugLog('[RPG Thoughts] Split into lines count:', lines.length);
+        debugLog('[RPG Thoughts] Lines:', lines);
+
+        // Parse new multi-line format:
+        // - [Name]
+        // Details: [Emoji] | [Field1] | [Field2] | ...
+        // Relationship: [Relationship]
+        // Stats: Stat1: X% | Stat2: X% | ...
+        // Thoughts: [Description]
+        let lineNumber = 0;
+        let currentCharacter = null;
+
+        for (const line of lines) {
+            lineNumber++;
+
+            // Skip empty lines, headers, dividers, and code fences
+            if (!line.trim() ||
+                line.includes('Present Characters') ||
+                line.includes('---') ||
+                line.trim().startsWith('```') ||
+                line.trim() === '- …' ||
+                line.includes('(Repeat the format')) {
+                continue;
+            }
+
+            debugLog(`[RPG Thoughts] Processing line ${lineNumber}:`, line);
+
+            // Check if this is a character name line (starts with "- ")
+            if (line.trim().startsWith('- ')) {
+                const name = line.trim().substring(2).trim();
+
+                if (name && name.toLowerCase() !== 'unavailable') {
+                    currentCharacter = { name };
+                    presentCharacters.push(currentCharacter);
+                    debugLog(`[RPG Thoughts] ✓ Started new character: ${name}`);
+                } else {
+                    currentCharacter = null;
+                    debugLog(`[RPG Thoughts] ✗ Rejected character - name: "${name}" (unavailable or empty)`);
+                }
+            }
+            // Check if this is a Details line
+            else if (line.trim().startsWith('Details:') && currentCharacter) {
+                const detailsContent = line.substring(line.indexOf(':') + 1).trim();
+                const parts = detailsContent.split('|').map(p => p.trim());
+
+                // First part is the emoji
+                if (parts.length > 0) {
+                    currentCharacter.emoji = parts[0];
+                    debugLog(`[RPG Thoughts] Parsed emoji: ${parts[0]}`);
+                }
+
+                // Remaining parts are custom fields
+                for (let i = 0; i < enabledFields.length && i + 1 < parts.length; i++) {
+                    const fieldName = enabledFields[i].name;
+                    currentCharacter[fieldName] = parts[i + 1];
+                    debugLog(`[RPG Thoughts] Parsed field ${fieldName}: ${parts[i + 1]}`);
+                }
+            }
+            // Check if this is a Relationship line
+            else if (line.trim().startsWith('Relationship:') && currentCharacter) {
+                const relationship = line.substring(line.indexOf(':') + 1).trim();
+                currentCharacter.Relationship = relationship;
+                debugLog(`[RPG Thoughts] Parsed relationship: ${relationship}`);
+            }
+            // Check if this is a Stats line
+            else if (line.trim().startsWith('Stats:') && currentCharacter && enabledCharStats.length > 0) {
+                const statsContent = line.substring(line.indexOf(':') + 1).trim();
+                const statParts = statsContent.split('|').map(p => p.trim());
+
+                for (const statPart of statParts) {
+                    const statMatch = statPart.match(/^(.+?):\s*(\d+)%$/);
+                    if (statMatch) {
+                        const statName = statMatch[1].trim();
+                        const statValue = parseInt(statMatch[2]);
+                        currentCharacter[statName] = statValue;
+                        debugLog(`[RPG Thoughts] Parsed stat: ${statName} = ${statValue}%`);
+                    }
+                }
+            }
+            // Check if this is a Thoughts line (handled separately for thought bubbles)
+            else if (line.trim().match(/^[A-Z][a-z]+:/) && currentCharacter) {
+                // This could be Thoughts, Feelings, etc. - skip for now, handled in thought bubble rendering
+                debugLog(`[RPG Thoughts] Skipping thoughts/feelings line (handled in bubble rendering)`);
+            }
+        }
+    } // End of text format parsing
+
+    // Get relationship emojis from config (with fallback defaults)
+    const relationshipEmojis = config?.relationshipEmojis || {
+        'Enemy': '⚔️',
+        'Neutral': '⚖️',
+        'Friend': '⭐',
+        'Lover': '❤️'
+    };
+    debugLog('[RPG Thoughts] ==================== PARSING COMPLETE ====================');
+    debugLog('[RPG Thoughts] Total characters parsed:', presentCharacters.length);
+    debugLog('[RPG Thoughts] Characters array:', presentCharacters);
+
+    // Build HTML
+    let html = '';
+
+    debugLog('[RPG Thoughts] ==================== BUILDING HTML ====================');
+    debugLog('[RPG Thoughts] Starting HTML generation for', presentCharacters.length + ' characters');
+
+    // If no characters parsed, show empty state (no placeholder)
+    if (presentCharacters.length === 0) {
+        debugLog('[RPG Thoughts] ⚠ No characters parsed - showing empty state');
+        html += '<div class="rpg-thoughts-content"></div>';
+    } else {
+        html += '<div class="rpg-thoughts-content">';
+
+        let characterIndex = 0;
+        for (const char of presentCharacters) {
+            characterIndex++;
+
+            try {
+                debugLog(`[RPG Thoughts] Building HTML for character ${characterIndex}/${presentCharacters.length}:`, char.name);
+
+                debugLog(`[RPG Thoughts] Looking up avatar for: ${char.name}`);
+                const characterPortrait = resolvePresentCharacterPortrait(char.name);
+
+                debugLog(`[RPG Thoughts] Final avatar for ${char.name}:`, characterPortrait.substring(0, 50) + '...');
+
+                // Get relationship badge - only if relationships are enabled in config
+                let relationshipBadge = '⚖️'; // Default
+                let relationshipFieldName = 'Relationship';
+
+                if (hasRelationshipEnabled) {
+                    // In the new format, relationship is always stored in char.Relationship
+                    if (char.Relationship) {
+                        // console.log(`[RPG Companion] Rendering ${char.name} - char.Relationship:`, char.Relationship);
+                        // console.log('[RPG Companion] relationshipEmojis mapping:', relationshipEmojis);
+                        // Try to map text to emoji
+                        relationshipBadge = relationshipEmojis[char.Relationship] || char.Relationship;
+                        // console.log('[RPG Companion] Final relationshipBadge:', relationshipBadge);
+                    }
+                }
+
+                debugLog(`[RPG Thoughts] Building HTML card for ${char.name}...`);
+
+                html += `
+                    <div class="rpg-character-card" data-character-name="${char.name}">
+                        <div class="rpg-character-header-row">
+                            <div class="rpg-character-avatar rpg-avatar-upload" data-character="${char.name}" title="${i18n.getTranslation('thoughts.clickToUpload') || 'Click to upload avatar'}">
+                                <img src="${characterPortrait}" alt="${char.name}" onerror="this.style.opacity='0.5';this.onerror=null;" />
+                                ${hasRelationshipEnabled ? `<div class="rpg-relationship-badge rpg-editable" contenteditable="true" data-character="${char.name}" data-field="${relationshipFieldName}" title="${i18n.getTranslation('thoughts.clickToEdit') || 'Click to edit'} (emoji: ⚔️ ⚖️ ⭐ ❤️)">${relationshipBadge}</div>` : ''}
+                            </div>
+                            <div class="rpg-character-header">
+                                <span class="rpg-character-emoji rpg-editable" contenteditable="true" data-character="${char.name}" data-field="emoji" title="${i18n.getTranslation('thoughts.clickToEdit') || 'Click to edit'}">${char.emoji}</span>
+                                <span class="rpg-character-name rpg-editable" contenteditable="true" data-character="${char.name}" data-field="name" title="${i18n.getTranslation('thoughts.clickToEdit') || 'Click to edit'}">${char.name}</span>
+                                <button class="rpg-character-remove" data-character="${char.name}" title="${i18n.getTranslation('thoughts.removeCharacter') || 'Remove character'}">×</button>
+                            </div>
+                        </div>
+                        <div class="rpg-character-content">
+                            <div class="rpg-character-info">
+                `;
+
+                // Render custom fields dynamically
+                for (const field of enabledFields) {
+                    const rawValue = char[field.name];
+                    const fieldValue = extractFieldValue(rawValue);
+                    const fieldId = field.name.toLowerCase().replace(/\s+/g, '-');
+                    const fieldNameLower = field.name.toLowerCase();
+                    // Skip lock icons for thoughts field
+                    const showLock = !fieldNameLower.includes('thought');
+                    // Add placeholder for empty fields
+                    const placeholder = fieldValue ? '' : `data-placeholder="${field.name}"`;
+                    const emptyClass = fieldValue ? '' : ' rpg-empty-field';
+                    if (showLock) {
+                        const lockIconHtml = getLockIconHtml('characters', `${char.name}.${field.name}`);
+                        html += `
+                                <div class="rpg-character-field rpg-character-${fieldId}" style="position: relative;">
+                                    ${lockIconHtml}
+                                    <span class="rpg-editable${emptyClass}" contenteditable="true" data-character="${char.name}" data-field="${field.name}" title="${i18n.getTranslation('thoughts.clickToEdit') || 'Click to edit'}" ${placeholder}>${fieldValue}</span>
+                                </div>
+                        `;
+                    } else {
+                        html += `
+                                <div class="rpg-character-field rpg-character-${fieldId} rpg-editable${emptyClass}" contenteditable="true" data-character="${char.name}" data-field="${field.name}" title="${i18n.getTranslation('thoughts.clickToEdit') || 'Click to edit'}" ${placeholder}>${fieldValue}</div>
+                        `;
+                    }
+                }
+
+                html += `
+                            </div>
+                `;
+
+                // Render character stats if enabled (outside rpg-character-info)
+                if (enabledCharStats.length > 0) {
+                    const lockIconHtml = getLockIconHtml('characters', `${char.name}.stats`);
+                    html += `<div class="rpg-character-stats" style="position: relative;">
+                        <span class="rpg-section-lock-icon" style="position: absolute; top: 4px; right: 4px; font-size: 1rem; z-index: 10; opacity: 0.7; pointer-events: auto;">${lockIconHtml}</span>
+                        <div class="rpg-character-stats-inner">`;
+                    for (const stat of enabledCharStats) {
+                        const statValue = char[stat.name] || 0;
+                        const statColor = getStatColor(
+                            statValue,
+                            extensionSettings.statBarColorLow,
+                            extensionSettings.statBarColorHigh,
+                            extensionSettings.statBarColorLowOpacity ?? 100,
+                            extensionSettings.statBarColorHighOpacity ?? 100
+                        );
+                        html += `
+                                <div class="rpg-character-stat">
+                                    <span class="rpg-stat-name">${stat.name}: </span><span class="rpg-editable" contenteditable="true" data-character="${char.name}" data-field="${stat.name}" style="color: ${statColor}" title="${i18n.getTranslation('thoughts.clickToEdit') || 'Click to edit'}">${statValue}%</span>
+                                </div>
+                        `;
+                    }
+                    html += `</div></div>`;
+                }
+
+                html += `
+                        </div>
+                    </div>
+                `;
+
+                debugLog(`[RPG Thoughts] ✓ Successfully built HTML for ${char.name}`);
+
+            } catch (charError) {
+                debugLog(`[RPG Thoughts] ✗ ERROR building HTML for ${char.name}:`, charError.message);
+                debugLog('[RPG Thoughts] Error stack:', charError.stack);
+                // Continue with next character instead of crashing
+            }
+        }
+
+        debugLog('[RPG Thoughts] Finished building all character cards');
+
+        // Add "Add Character" button if data exists (inside rpg-thoughts-content)
+        if (presentCharacters.length > 0) {
+            html += `
+                <button class="rpg-add-character-btn" title="${i18n.getTranslation('thoughts.addCharacter') || 'Add character'}">
+                    <i class="fa-solid fa-plus"></i> ${i18n.getTranslation('thoughts.addCharacter') || 'Add character'}
+                </button>
+            `;
+        }
+
+        html += '</div>';
+    }
+
+    $thoughtsContainer.html(html);
+
+    debugLog('[RPG Thoughts] ✓ HTML rendered to container');
+    debugLog('[RPG Thoughts] =======================================================');
+
+    // Add event handlers for editable character fields
+    $thoughtsContainer.find('.rpg-editable').on('blur', function () {
+        const character = $(this).data('character');
+        const field = $(this).data('field');
+        const value = $(this).text().trim();
+        // console.log('[RPG Companion] Character stat edit:', { character, field, value });
+        updateCharacterField(character, field, value);
+    });
+
+    // Prevent click events on editable elements from bubbling to avatar upload handler
+    $thoughtsContainer.find('.rpg-editable').on('click mousedown', function (e) {
+        e.stopPropagation();
+    });
+
+    // Add event listener for section lock icon clicks (support both click and touch)
+    $thoughtsContainer.find('.rpg-section-lock-icon').on('click touchend', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const $icon = $(this);
+        const trackerType = $icon.data('tracker');
+        const itemPath = $icon.data('path');
+        const currentlyLocked = isItemLocked(trackerType, itemPath);
+
+        // Toggle lock state
+        setItemLock(trackerType, itemPath, !currentlyLocked);
+
+        // Update icon
+        const newIcon = !currentlyLocked ? '🔒' : '🔓';
+        const newTitle = !currentlyLocked
+            ? (i18n.getTranslation('thoughts.locked') || 'Locked')
+            : (i18n.getTranslation('thoughts.unlocked') || 'Unlocked');
+        $icon.text(newIcon);
+        $icon.attr('title', newTitle);
+
+        // Toggle 'locked' class for persistent visibility
+        $icon.toggleClass('locked', !currentlyLocked);
+
+        // Save settings
+        saveSettings();
+    });
+
+    // Add event listener for character remove button
+    $thoughtsContainer.find('.rpg-character-remove').on('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const characterName = $(this).data('character');
+        removeCharacter(characterName);
+    });
+
+    // Add event listener for avatar upload clicks
+    $thoughtsContainer.find('.rpg-avatar-upload').on('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const characterName = $(this).data('character');
+
+        // Create hidden file input
+        const fileInput = $('<input type="file" accept="image/*" style="display: none;">');
+
+        fileInput.on('change', function () {
+            const file = this.files[0];
+            if (!file) return;
+
+            // Read file as data URL
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                const imageUrl = e.target.result;
+
+                // Store in npcAvatars
+                if (!extensionSettings.npcAvatars) {
+                    extensionSettings.npcAvatars = {};
+                }
+                extensionSettings.npcAvatars[characterName] = imageUrl;
+
+                // Save settings
+                saveSettings();
+
+                // Update the avatar image immediately
+                const $avatar = $thoughtsContainer.find(`.rpg-avatar-upload[data-character="${characterName}"] img`);
+                $avatar.attr('src', imageUrl);
+
+                console.log(`[RPG Companion] Avatar uploaded for ${characterName}`);
+            };
+
+            reader.readAsDataURL(file);
+        });
+
+        // Trigger file selection
+        fileInput.trigger('click');
+    });
+
+    // Add event listener for "Add Character" button (support both click and touch for mobile)
+    $thoughtsContainer.find('.rpg-add-character-btn').on('click touchend', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        addNewCharacter();
+    });
+
+    // Handle empty field focus - remove placeholder styling on focus
+    $thoughtsContainer.find('.rpg-editable.rpg-empty-field').on('focus', function () {
+        $(this).removeClass('rpg-empty-field');
+        $(this).removeAttr('data-placeholder');
+    });
+
+    // Restore placeholder if field becomes empty on blur (after the main blur handler)
+    $thoughtsContainer.find('.rpg-editable').on('blur', function () {
+        const $this = $(this);
+        if (!$this.text().trim()) {
+            const field = $this.data('field');
+            if (field) {
+                $this.addClass('rpg-empty-field');
+                $this.attr('data-placeholder', field);
+            }
+        }
+    });
+
+    // Remove updating class after animation
+    if (extensionSettings.enableAnimations) {
+        setTimeout(() => $thoughtsContainer.removeClass('rpg-content-updating'), 600);
+    }
+
+    // Restore scroll position after re-render
+    if (preserveScroll) {
+        const $content = $thoughtsContainer.find('.rpg-thoughts-content');
+        if ($content.length) {
+            $content[0].scrollTop = savedContentScroll;
+        }
+    }
+
+    // Update chat overlay if enabled
+    if (extensionSettings.showThoughtsInChat) {
+        updateChatThoughts();
+    }
+}
+
+/**
+ * Removes a character from Present Characters data and re-renders.
+ *
+ * @param {string} characterName - Name of the character to remove
+ */
+export function removeCharacter(characterName) {
+    if (!lastGeneratedData.characterThoughts) {
+        return;
+    }
+
+    // Check if data is in JSON format
+    let isJSON = false;
+    let parsedData = null;
+
+    try {
+        parsedData = typeof lastGeneratedData.characterThoughts === 'string'
+            ? JSON.parse(lastGeneratedData.characterThoughts)
+            : lastGeneratedData.characterThoughts;
+
+        if (Array.isArray(parsedData) || (parsedData && parsedData.characters)) {
+            isJSON = true;
+        }
+    } catch (e) {
+        // Not JSON, treat as text format
+    }
+
+    if (isJSON) {
+        // JSON format - remove character from array
+        let characters = Array.isArray(parsedData) ? parsedData : parsedData.characters;
+        characters = characters.filter(char => char.name !== characterName);
+
+        if (Array.isArray(parsedData)) {
+            parsedData = characters;
+        } else {
+            parsedData.characters = characters;
+        }
+
+        const updatedJSON = JSON.stringify(parsedData, null, 2);
+        lastGeneratedData.characterThoughts = updatedJSON;
+        committedTrackerData.characterThoughts = updatedJSON;
+    } else {
+        // Text format - remove character block
+        const lines = lastGeneratedData.characterThoughts.split('\n');
+        const dividerIndex = lines.findIndex(line => line.includes('---'));
+
+        if (dividerIndex === -1) return;
+
+        // Find the character block to remove
+        let startLineIndex = -1;
+        let endLineIndex = -1;
+
+        for (let i = dividerIndex + 1; i < lines.length; i++) {
+            const line = lines[i].trim();
+
+            // Check if this is the start of the character block
+            if (line.startsWith('Name:')) {
+                const nameMatch = line.match(/^Name:\s*(.+)/);
+                if (nameMatch && nameMatch[1].trim() === characterName) {
+                    startLineIndex = i;
+                }
+            }
+
+            // If we found the start, look for the end
+            if (startLineIndex !== -1 && i > startLineIndex) {
+                // End of block is either another "Name:" line or end of content
+                if (line.startsWith('Name:') || i === lines.length - 1) {
+                    endLineIndex = line.startsWith('Name:') ? i - 1 : i;
+
+                    // Remove empty lines at the end of the block
+                    while (endLineIndex > startLineIndex && !lines[endLineIndex].trim()) {
+                        endLineIndex--;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Remove the character block
+        if (startLineIndex !== -1 && endLineIndex !== -1) {
+            lines.splice(startLineIndex, endLineIndex - startLineIndex + 1);
+
+            // Remove empty lines after removal to keep formatting clean
+            let i = startLineIndex;
+            while (i < lines.length && !lines[i].trim()) {
+                lines.splice(i, 1);
+            }
+        }
+
+        lastGeneratedData.characterThoughts = lines.join('\n');
+        committedTrackerData.characterThoughts = lines.join('\n');
+    }
+
+    // Update message swipe data
+    const chat = getContext().chat;
+    if (chat && chat.length > 0) {
+        for (let i = chat.length - 1; i >= 0; i--) {
+            const message = chat[i];
+            if (!message.is_user) {
+                if (message.extra && message.extra.rpg_companion_swipes) {
+                    const swipeId = message.swipe_id || 0;
+                    if (message.extra.rpg_companion_swipes[swipeId]) {
+                        setMessageSwipeTrackerField(message, swipeId, 'characterThoughts', lastGeneratedData.characterThoughts);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    saveChatData();
+
+    // Re-render to show updated character list
+    renderThoughts();
+}
+
+/**
+ * Adds a new blank character to Present Characters data.
+ * Creates a character with empty fields based on the tracker template.
+ */
+export function addNewCharacter() {
+    const presentCharsConfig = extensionSettings.trackerConfig?.presentCharacters;
+    const enabledFields = presentCharsConfig?.customFields?.filter(f => f && f.enabled && f.name) || [];
+    const characterStats = presentCharsConfig?.characterStats;
+    const enabledCharStats = characterStats?.enabled && characterStats?.customStats?.filter(s => s && s.enabled && s.name) || [];
+    const hasRelationship = presentCharsConfig?.relationshipFields?.length > 0;
+
+    // Check if data is in JSON format
+    let isJSON = false;
+    let parsedData = null;
+
+    try {
+        parsedData = typeof lastGeneratedData.characterThoughts === 'string'
+            ? JSON.parse(lastGeneratedData.characterThoughts)
+            : lastGeneratedData.characterThoughts;
+
+        if (Array.isArray(parsedData) || (parsedData && parsedData.characters)) {
+            isJSON = true;
+        }
+    } catch (e) {
+        // Not JSON, treat as text format
+    }
+
+    if (isJSON) {
+        // JSON format - add new character object
+        const charactersArray = Array.isArray(parsedData) ? parsedData : (parsedData.characters || []);
+
+        const newCharacter = {
+            name: 'New Character',
+            emoji: '👤',
+            details: {}
+        };
+
+        // Add all enabled custom fields as empty
+        for (const field of enabledFields) {
+            newCharacter.details[field.name] = '';
+        }
+
+        // Add relationship if enabled
+        if (hasRelationship) {
+            newCharacter.relationship = 'Neutral';
+        }
+
+        // Add stats if enabled
+        if (enabledCharStats.length > 0) {
+            newCharacter.stats = {};
+            for (const stat of enabledCharStats) {
+                newCharacter.stats[stat.name] = 100;
+            }
+        }
+
+        charactersArray.push(newCharacter);
+
+        // Save back as JSON string
+        lastGeneratedData.characterThoughts = JSON.stringify(
+            Array.isArray(parsedData) ? charactersArray : { ...parsedData, characters: charactersArray },
+            null,
+            2
+        );
+        committedTrackerData.characterThoughts = lastGeneratedData.characterThoughts;
+    } else {
+        // Text format - add new character block
+        const lines = lastGeneratedData.characterThoughts.split('\n');
+        const dividerIndex = lines.findIndex(line => line.includes('---'));
+
+        if (dividerIndex >= 0) {
+            const newCharacterLines = ['- New Character'];
+
+            // Add custom detail fields as standalone lines
+            for (const customField of enabledFields) {
+                newCharacterLines.push(`  ${customField.name}: `);
+            }
+
+            // Add Relationship field if enabled
+            if (hasRelationship) {
+                newCharacterLines.push(`  Relationship: Neutral`);
+            }
+
+            // Add Stats if enabled
+            if (enabledCharStats.length > 0) {
+                const statsParts = enabledCharStats.map(s => `${s.name}: 100%`);
+                newCharacterLines.push(`  Stats: ${statsParts.join(' | ')}`);
+            }
+
+            // Find the last character and add after it, or after divider if no characters
+            let insertIndex = dividerIndex + 1;
+            for (let i = lines.length - 1; i > dividerIndex; i--) {
+                if (lines[i].trim().startsWith('- ')) {
+                    // Find the end of this character block
+                    insertIndex = i + 1;
+                    while (insertIndex < lines.length && lines[insertIndex].trim() && !lines[insertIndex].trim().startsWith('- ')) {
+                        insertIndex++;
+                    }
+                    break;
+                }
+            }
+
+            lines.splice(insertIndex, 0, ...newCharacterLines);
+            lastGeneratedData.characterThoughts = lines.join('\n');
+            committedTrackerData.characterThoughts = lines.join('\n');
+        }
+    }
+
+    // Update message swipe data
+    const chat = getContext().chat;
+    if (chat && chat.length > 0) {
+        for (let i = chat.length - 1; i >= 0; i--) {
+            const message = chat[i];
+            if (!message.is_user) {
+                if (message.extra && message.extra.rpg_companion_swipes) {
+                    const swipeId = message.swipe_id || 0;
+                    if (message.extra.rpg_companion_swipes[swipeId]) {
+                        setMessageSwipeTrackerField(message, swipeId, 'characterThoughts', lastGeneratedData.characterThoughts);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    saveChatData();
+
+    // Re-render to show new character
+    renderThoughts();
+}
+
+/**
+ * Updates a specific character field in Present Characters data and re-renders.
+ * Works with the new multi-line format.
+ *
+ * @param {string} characterName - Name of the character to update
+ * @param {string} field - Field to update (emoji, name, custom field name, Relationship, stat name)
+ * @param {string} value - New value for the field
+ */
+export function updateCharacterField(characterName, field, value) {
+    // Initialize if it doesn't exist
+    if (!lastGeneratedData.characterThoughts) {
+        lastGeneratedData.characterThoughts = 'Present Characters\n---\n';
+    }
+
+    const presentCharsConfig = extensionSettings.trackerConfig?.presentCharacters;
+    const enabledFields = presentCharsConfig?.customFields?.filter(f => f && f.enabled && f.name) || [];
+    const characterStats = presentCharsConfig?.characterStats;
+    const enabledCharStats = characterStats?.enabled && characterStats?.customStats?.filter(s => s && s.enabled && s.name) || [];
+
+    // Get relationship emoji mappings from config
+    const relationshipEmojis = presentCharsConfig?.relationshipEmojis || {
+        'Enemy': '⚔️',
+        'Neutral': '⚖️',
+        'Friend': '⭐',
+        'Lover': '❤️'
+    };
+    // Create reverse mapping (emoji → name)
+    const emojiToRelationship = {};
+    for (const [name, emoji] of Object.entries(relationshipEmojis)) {
+        emojiToRelationship[emoji] = name;
+    }
+
+    // Check if data is in JSON format
+    let isJSON = false;
+    let parsedData = null;
+
+    try {
+        parsedData = typeof lastGeneratedData.characterThoughts === 'string'
+            ? JSON.parse(lastGeneratedData.characterThoughts)
+            : lastGeneratedData.characterThoughts;
+
+        if (Array.isArray(parsedData) || (parsedData && parsedData.characters)) {
+            isJSON = true;
+        }
+    } catch (e) {
+        // Not JSON, continue with text format
+    }
+
+    // Handle JSON format
+    if (isJSON) {
+        const charactersArray = Array.isArray(parsedData) ? parsedData : (parsedData.characters || []);
+        const charIndex = charactersArray.findIndex(c =>
+            c.name && c.name.toLowerCase() === characterName.toLowerCase()
+        );
+
+        if (charIndex !== -1) {
+            const char = charactersArray[charIndex];
+
+            // console.log('[RPG Companion] Updating character:', characterName, 'field:', field, 'value:', value);
+            // console.log('[RPG Companion] Before update - char.Relationship:', char.Relationship);
+
+            // Update the appropriate field
+            if (field === 'name') {
+                char.name = value;
+            } else if (field === 'emoji') {
+                char.emoji = value;
+            } else if (field === 'Relationship') {
+                // Store relationship in the correct nested format
+                // Remove old flat format if it exists
+                if (char.Relationship) {
+                    delete char.Relationship;
+                }
+
+                // First check if it's an emoji → convert to text
+                let relationshipValue;
+                if (emojiToRelationship[value]) {
+                    relationshipValue = emojiToRelationship[value];
+                } else {
+                    // It's text - find matching relationship name (case-insensitive)
+                    const matchingRelationship = Object.keys(relationshipEmojis).find(
+                        name => name.toLowerCase() === value.toLowerCase()
+                    );
+                    relationshipValue = matchingRelationship || value;
+                }
+
+                // Store in the correct nested format
+                char.relationship = { status: relationshipValue };
+                // console.log('[RPG Companion] After update - char.relationship:', char.relationship);
+                // console.log('[RPG Companion] relationshipEmojis:', relationshipEmojis);
+                // console.log('[RPG Companion] emojiToRelationship:', emojiToRelationship);
+            } else if (field.toLowerCase() === 'thoughts' || field === (presentCharsConfig?.thoughts?.name || 'Thoughts')) {
+                if (!char.thoughts) char.thoughts = {};
+                char.thoughts.content = value;
+            } else {
+                // Check if it's a character stat
+                const isStatField = enabledCharStats.findIndex(s => s.name === field) !== -1;
+                if (isStatField) {
+                    let numValue = parseInt(value.replace('%', '').trim());
+                    if (isNaN(numValue)) numValue = 0;
+                    numValue = Math.max(0, Math.min(100, numValue));
+
+                    // Handle both array format (from LLM) and object format
+                    if (Array.isArray(char.stats)) {
+                        // Array format: [{name: "Health", value: 80}]
+                        const statIndex = char.stats.findIndex(s => s.name === field);
+                        if (statIndex !== -1) {
+                            char.stats[statIndex].value = numValue;
+                        } else {
+                            // Stat not found in array - add it
+                            char.stats.push({ name: field, value: numValue });
+                        }
+                    } else {
+                        // Object format: {Health: 80} or undefined
+                        if (!char.stats) char.stats = {};
+                        char.stats[field] = numValue;
+                    }
+                } else {
+                    // It's a custom detail field - store in details object
+                    if (!char.details) char.details = {};
+                    char.details[field] = value;
+
+                    // Clean up snake_case version if it exists (from AI generation)
+                    const fieldKey = toSnakeCase(field);
+                    if (fieldKey !== field && char.details[fieldKey] !== undefined) {
+                        delete char.details[fieldKey];
+                    }
+
+                    // Clean up old root-level field if it exists (from v2 format)
+                    if (char[field] !== undefined && field !== 'name' && field !== 'emoji') {
+                        delete char[field];
+                    }
+                    if (char[fieldKey] !== undefined && fieldKey !== 'name' && fieldKey !== 'emoji') {
+                        delete char[fieldKey];
+                    }
+                }
+            }
+
+            // Clean up ALL duplicate snake_case fields in details (not just the edited field)
+            // This prevents duplicates from AI-generated data
+            if (char.details) {
+                for (const customField of enabledFields) {
+                    const fieldName = customField.name;
+                    const snakeCaseKey = toSnakeCase(fieldName);
+                    // If both versions exist, keep the properly-cased one and remove snake_case
+                    if (snakeCaseKey !== fieldName &&
+                        char.details[fieldName] !== undefined &&
+                        char.details[snakeCaseKey] !== undefined) {
+                        delete char.details[snakeCaseKey];
+                    }
+                }
+            }
+        }
+
+        // Save back to lastGeneratedData as JSON string (consistent with infoBox and userStats)
+        lastGeneratedData.characterThoughts = JSON.stringify(Array.isArray(parsedData) ? charactersArray : { ...parsedData, characters: charactersArray }, null, 2);
+        committedTrackerData.characterThoughts = lastGeneratedData.characterThoughts;
+
+        // console.log('[RPG Companion] Saved to lastGeneratedData.characterThoughts:', JSON.stringify(lastGeneratedData.characterThoughts));
+        // console.log('[RPG Companion] Saved to committedTrackerData.characterThoughts:', JSON.stringify(committedTrackerData.characterThoughts));
+
+        // Update in chat metadata
+        const chat = getContext().chat;
+        if (chat && chat.length > 0) {
+            for (let i = chat.length - 1; i >= 0; i--) {
+                const message = chat[i];
+                if (!message.is_user) {
+                    if (message.extra && message.extra.rpg_companion_swipes) {
+                        const swipeId = message.swipe_id || 0;
+                        if (message.extra.rpg_companion_swipes[swipeId]) {
+                            setMessageSwipeTrackerField(message, swipeId, 'characterThoughts', lastGeneratedData.characterThoughts);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        saveChatData();
+
+        // console.log('[RPG Companion] JSON format updated successfully');
+        // console.log('[RPG Companion] Updated data:', lastGeneratedData.characterThoughts);
+
+        // Re-render the thoughts panel to show updated value (preserve scroll position)
+        renderThoughts({ preserveScroll: true });
+
+        // Update chat thought overlays if editing thoughts
+        const thoughtsFieldName = presentCharsConfig?.thoughts?.name || 'Thoughts';
+        const isEditingThoughts = field === thoughtsFieldName || field === 'thoughts';
+
+        if (isEditingThoughts && extensionSettings.showThoughtsInChat) {
+            updateChatThoughts();
+        }
+
+        return; // Exit early for JSON format
+    }
+
+    // Continue with text format handling below
+    const lines = lastGeneratedData.characterThoughts.split('\n');
+
+    let characterFound = false;
+    let inTargetCharacter = false;
+    let characterStartIndex = -1;
+    let characterEndIndex = -1;
+
+    // Find the character block
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+
+        if (line.startsWith('- ')) {
+            const name = line.substring(2).trim();
+            if (name.toLowerCase() === characterName.toLowerCase()) {
+                characterFound = true;
+                inTargetCharacter = true;
+                characterStartIndex = i;
+            } else if (inTargetCharacter) {
+                characterEndIndex = i;
+                break;
+            }
+        }
+    }
+
+    if (characterFound && characterEndIndex === -1) {
+        characterEndIndex = lines.length;
+    }
+
+    if (characterFound) {
+        // Check if we're updating a character stat
+        const isStatField = enabledCharStats.findIndex(s => s.name === field) !== -1;
+        let statsLineExists = false;
+        let statsLineIndex = -1;
+
+        // Get the configured thoughts field name
+        const thoughtsFieldName = presentCharsConfig?.thoughts?.name || 'Thoughts';
+        const isThoughtsField = field.toLowerCase() === 'thoughts' || field === thoughtsFieldName;
+
+        // Track if field was found and updated
+        let fieldUpdated = false;
+
+        // First pass: check if Stats line exists and update other fields
+        for (let i = characterStartIndex; i < characterEndIndex; i++) {
+            const line = lines[i].trim();
+
+            if (line.startsWith('Stats:')) {
+                statsLineExists = true;
+                statsLineIndex = i;
+                continue; // Skip to next line
+            }
+
+            // Check for name update
+            if (field === 'name' && line.startsWith('- ')) {
+                lines[i] = `- ${value}`;
+                fieldUpdated = true;
+                continue;
+            }
+
+            // Check for Relationship field
+            if (field === 'Relationship' && line.startsWith('Relationship:')) {
+                const emojiToRelationship = { '⚔️': 'Enemy', '⚖️': 'Neutral', '⭐': 'Friend', '❤️': 'Lover' };
+                const relationshipValue = emojiToRelationship[value] || value;
+                lines[i] = `Relationship: ${relationshipValue}`;
+                fieldUpdated = true;
+                continue;
+            }
+
+            // Check for Thoughts field
+            if (isThoughtsField && line.startsWith(thoughtsFieldName + ':')) {
+                lines[i] = `  ${thoughtsFieldName}: ${value}`;
+                fieldUpdated = true;
+                continue;
+            }
+
+            // Check for v3 text format standalone field lines (e.g., "Appearance: ...", "Demeanor: ...")
+            if (line.startsWith(field + ':')) {
+                lines[i] = `  ${field}: ${value}`;
+                fieldUpdated = true;
+                // Don't break - update ALL instances of this field (in case of duplicates from previous bugs)
+            }
+        }
+
+        // Handle stat updates
+        if (isStatField) {
+            // Clean the value: remove % if present, parse as integer, clamp 0-100
+            let cleanValue = value.replace('%', '').trim();
+            let numValue = parseInt(cleanValue);
+            if (isNaN(numValue)) {
+                numValue = 0;
+            }
+            numValue = Math.max(0, Math.min(100, numValue));
+
+            // console.log('[RPG Companion] Updating stat:', { field, rawValue: value, cleanValue, numValue });
+
+            if (statsLineExists) {
+                // Update existing Stats line
+                const line = lines[statsLineIndex];
+                const statsContent = line.substring(line.indexOf(':') + 1).trim();
+                const statParts = statsContent.split('|').map(p => p.trim());
+
+                let statFound = false;
+                for (let j = 0; j < statParts.length; j++) {
+                    if (statParts[j].startsWith(field + ':')) {
+                        statParts[j] = `${field}: ${numValue}%`;
+                        statFound = true;
+                        // console.log('[RPG Companion] Updated stat part:', statParts[j]);
+                        break;
+                    }
+                }
+
+                // If stat wasn't found in existing parts, add it
+                if (!statFound) {
+                    statParts.push(`${field}: ${numValue}%`);
+                    // console.log('[RPG Companion] Added new stat to existing line:', `${field}: ${numValue}%`);
+                }
+
+                lines[statsLineIndex] = `Stats: ${statParts.join(' | ')}`;
+                // console.log('[RPG Companion] Updated stats line:', lines[statsLineIndex]);
+            } else {
+                // Create new Stats line with all enabled stats (defaulting to 0% except the one being edited)
+                const statsParts = enabledCharStats.map(s => {
+                    if (s.name === field) {
+                        return `${s.name}: ${numValue}%`;
+                    }
+                    return `${s.name}: 0%`;
+                });
+                const newStatsLine = `Stats: ${statsParts.join(' | ')}`;
+
+                // Insert before Thoughts line or at end of character block
+                let insertIndex = characterEndIndex;
+                for (let i = characterStartIndex; i < characterEndIndex; i++) {
+                    const line = lines[i].trim();
+                    const thoughtsFieldName = presentCharsConfig?.thoughts?.name || 'Thoughts';
+                    if (line.startsWith(thoughtsFieldName + ':')) {
+                        insertIndex = i;
+                        break;
+                    }
+                }
+
+                lines.splice(insertIndex, 0, newStatsLine);
+                // console.log('[RPG Companion] Created new stats line:', newStatsLine);
+                characterEndIndex++; // Adjust end index since we inserted a line
+            }
+        }
+    } else {
+        // Create new character block (v3 text format only)
+        const dividerIndex = lines.findIndex(line => line.includes('---'));
+        if (dividerIndex >= 0) {
+            const newCharacterLines = [`- ${characterName}`];
+
+            // Add custom detail fields as standalone lines
+            for (const customField of enabledFields) {
+                if (field === customField.name) {
+                    newCharacterLines.push(`  ${customField.name}: ${value}`);
+                } else {
+                    newCharacterLines.push(`  ${customField.name}: `);
+                }
+            }
+
+            // Add Relationship field if enabled
+            if (presentCharsConfig?.relationshipFields?.length > 0) {
+                const emojiToRelationship = { '⚔️': 'Enemy', '⚖️': 'Neutral', '⭐': 'Friend', '❤️': 'Lover' };
+                const relationshipValue = field === 'Relationship' ? (emojiToRelationship[value] || value) : 'Neutral';
+                newCharacterLines.push(`  Relationship: ${relationshipValue}`);
+            }
+
+            // Add Stats if enabled
+            if (enabledCharStats.length > 0) {
+                const statsParts = enabledCharStats.map(s => {
+                    if (field === s.name) {
+                        // Clean the value: remove % if present, parse as integer, clamp 0-100
+                        let cleanValue = value.replace('%', '').trim();
+                        let numValue = parseInt(cleanValue);
+                        if (isNaN(numValue)) {
+                            numValue = 0;
+                        }
+                        numValue = Math.max(0, Math.min(100, numValue));
+                        return `${s.name}: ${numValue}%`;
+                    }
+                    return `${s.name}: 0%`;
+                });
+                newCharacterLines.push(`  Stats: ${statsParts.join(' | ')}`);
+            }
+
+            lines.splice(dividerIndex + 1, 0, ...newCharacterLines);
+        }
+    }
+
+    lastGeneratedData.characterThoughts = lines.join('\n');
+    committedTrackerData.characterThoughts = lines.join('\n');
+
+    // console.log('[RPG Companion] Updated characterThoughts data:', lastGeneratedData.characterThoughts);
+
+    const chat = getContext().chat;
+    if (chat && chat.length > 0) {
+        for (let i = chat.length - 1; i >= 0; i--) {
+            const message = chat[i];
+            if (!message.is_user) {
+                if (message.extra && message.extra.rpg_companion_swipes) {
+                    const swipeId = message.swipe_id || 0;
+                    if (message.extra.rpg_companion_swipes[swipeId]) {
+                        setMessageSwipeTrackerField(message, swipeId, 'characterThoughts', lines.join('\n'));
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    saveChatData();
+
+    // Don't re-render to avoid overwriting user edits while they're still editing
+    // The changes are already saved to lastGeneratedData and committedTrackerData
+    // Re-rendering would cause the display to reset and lose focus
+
+    // console.log('[RPG Companion] updateCharacterField called:', { characterName, field, value });
+    // console.log('[RPG Companion] Before update - lastGeneratedData.characterThoughts:', lastGeneratedData.characterThoughts);
+
+    // Only update chat thought overlays if editing thoughts field
+    const thoughtsFieldName = presentCharsConfig?.thoughts?.name || 'Thoughts';
+    const isEditingThoughts = field === thoughtsFieldName || field === 'thoughts';
+
+    // console.log('[RPG Companion] Is editing thoughts?', isEditingThoughts, 'Field:', field, 'Thoughts field name:', thoughtsFieldName);
+    // console.log('[RPG Companion] After update - lastGeneratedData.characterThoughts:', lastGeneratedData.characterThoughts);
+
+    if (field === 'name' || isEditingThoughts) {
+        queueThoughtBasedExpressionsUpdate({ immediate: true, force: true });
+    }
+
+    if (isEditingThoughts && extensionSettings.showThoughtsInChat) {
+        // console.log('[RPG Companion] Updating chat thought bubbles');
+        // Update chat thought bubbles when thoughts are edited
+        updateChatThoughts();
+    }
+    // Note: Don't call renderThoughts() here - it would overwrite the user's edits
+}
+
+/**
+ * Renders only the sidebar thoughts panel without updating chat bubbles
+ */
+function renderThoughtsSidebarOnly() {
+    if (!extensionSettings.showCharacterThoughts || !$thoughtsContainer) {
+        return;
+    }
+
+    // This is a simplified version that only updates the sidebar
+    // Copy the rendering logic from renderThoughts but skip the updateChatThoughts call
+    const thoughtsData = lastGeneratedData.characterThoughts || committedTrackerData.characterThoughts;
+    if (!thoughtsData) {
+        $thoughtsContainer.html('<div class="rpg-inventory-empty">' + (i18n.getTranslation('thoughts.empty') || 'No character data generated yet') + '</div>');
+        return;
+    }
+
+    // Re-render sidebar content (this would be the full logic from renderThoughts)
+    // For now, just call renderThoughts but set a flag
+    const originalShowInChat = extensionSettings.showThoughtsInChat;
+    extensionSettings.showThoughtsInChat = false;
+    renderThoughts();
+    extensionSettings.showThoughtsInChat = originalShowInChat;
+}
+
+/**
+ * Updates or removes thoughts shown in chat.
+ * Renders either the original corner bubbles or inline dropdown cards.
+ */
+
+let inlineThoughtsObserver = null;
+let inlineThoughtsRefreshTimeout = null;
+let isRefreshingInlineThoughts = false;
+
+export function updateChatThoughts(attempt = 0) {
+    const thoughtsStyle = extensionSettings.thoughtsInChatStyle || 'corner';
+    const openInlineThoughts = getOpenInlineThoughts();
+
+    // Remove old floating thought panel/icon (legacy cleanup)
+    $('#rpg-thought-panel').remove();
+    $('#rpg-thought-icon').remove();
+    $('#chat').off('scroll.thoughtPanel');
+    $(window).off('resize.thoughtPanel');
+    $(document).off('click.thoughtPanel');
+
+    // Remove any existing inline thought dropdowns from previous renders
+    $('.rpg-inline-thoughts, .rpg-inline-thought').remove();
+
+    const canRenderThoughts = extensionSettings.enabled
+        && extensionSettings.showThoughtsInChat
+        && !!lastGeneratedData.characterThoughts;
+
+    if (!canRenderThoughts) {
+        teardownInlineThoughtsObserver();
+        return;
+    }
+
+    const thoughtsArray = parseThoughtsArray();
+
+    if (thoughtsArray.length === 0) {
+        teardownInlineThoughtsObserver();
+        return;
+    }
+
+    const targetInfo = findThoughtTargetMessage();
+    let $targetMessage = targetInfo.$message;
+
+    if ((!$targetMessage || !$targetMessage.length || !$targetMessage.find('.mes_text').length) && attempt < 10) {
+        setTimeout(() => updateChatThoughts(attempt + 1), 120);
+        return;
+    }
+
+    if (!$targetMessage || !$targetMessage.length) {
+        teardownInlineThoughtsObserver();
+        return;
+    }
+
+    if (thoughtsStyle === 'inline') {
+        insertInlineThoughts($targetMessage, thoughtsArray, openInlineThoughts);
+        ensureInlineThoughtsObserver();
+    } else {
+        teardownInlineThoughtsObserver();
+        createThoughtPanel($targetMessage, thoughtsArray);
+    }
+}
+
+function findThoughtTargetMessage() {
+    const context = getContext();
+    const chat = context?.chat || [];
+    const currentThoughts = normalizeThoughtPayload(lastGeneratedData.characterThoughts);
+
+    let fallbackIndex = -1;
+
+    // Match the currently displayed thoughts against stored swipe payloads so the
+    // UI stays attached to the visible assistant reply after swipes, deletes, and reloads.
+    for (let i = chat.length - 1; i >= 0; i--) {
+        const message = chat[i];
+        if (message?.is_user) continue;
+
+        if (fallbackIndex === -1) {
+            fallbackIndex = i;
+        }
+
+        const messageThoughts = getMessageThoughtPayload(message);
+        if (!currentThoughts || !messageThoughts) continue;
+
+        if (messageThoughts === currentThoughts) {
+            const $message = $(`#chat .mes[mesid="${i}"]`);
+            return { index: i, $message };
+        }
+    }
+
+    if (fallbackIndex !== -1) {
+        return {
+            index: fallbackIndex,
+            $message: $(`#chat .mes[mesid="${fallbackIndex}"]`)
+        };
+    }
+
+    return { index: -1, $message: $() };
+}
+
+function getMessageThoughtPayload(message) {
+    if (!message || message.is_user) {
+        return null;
+    }
+
+    const swipeData = getCurrentMessageSwipeTrackerData(message);
+    return normalizeThoughtPayload(swipeData?.characterThoughts ?? null);
+}
+
+function normalizeThoughtPayload(payload) {
+    if (!payload) {
+        return null;
+    }
+
+    if (typeof payload === 'object') {
+        return stableStringify(payload);
+    }
+
+    if (typeof payload !== 'string') {
+        return String(payload);
+    }
+
+    const trimmed = payload.trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    try {
+        return stableStringify(JSON.parse(trimmed));
+    } catch {
+        return trimmed.replace(/\r\n/g, '\n');
+    }
+}
+
+function stableStringify(value) {
+    if (Array.isArray(value)) {
+        return `[${value.map(item => stableStringify(item)).join(',')}]`;
+    }
+
+    if (value && typeof value === 'object') {
+        return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+    }
+
+    return JSON.stringify(value);
+}
+
+function getOpenInlineThoughts() {
+    const openThoughts = new Set();
+
+    $('.rpg-inline-thought[open]').each(function () {
+        const characterName = ($(this).attr('data-character') || '').trim();
+        if (characterName) {
+            openThoughts.add(characterName);
+        }
+    });
+
+    return openThoughts;
+}
+
+function ensureInlineThoughtsObserver() {
+    if (inlineThoughtsObserver) {
+        return;
+    }
+
+    const chatElement = document.getElementById('chat');
+    if (!chatElement) {
+        return;
+    }
+
+    inlineThoughtsObserver = new MutationObserver((mutations) => {
+        if (isRefreshingInlineThoughts) {
+            return;
+        }
+
+        // SillyTavern rerenders message DOM after swipes, deletes, and message cleanup.
+        // Watch for those chat-level mutations and reattach inline thoughts once the
+        // target message body exists again, while ignoring our own refresh churn.
+        const shouldRefresh = mutations.some((mutation) => {
+            if (mutation.type !== 'childList') {
+                return false;
+            }
+
+            const touchedThoughtNode = [...mutation.addedNodes, ...mutation.removedNodes].some((node) => {
+                if (!(node instanceof HTMLElement)) {
+                    return false;
+                }
+
+                return node.classList?.contains('mes')
+                    || node.classList?.contains('mes_text')
+                    || node.querySelector?.('.mes, .mes_text');
+            });
+
+            return touchedThoughtNode;
+        });
+
+        if (!shouldRefresh) {
+            return;
+        }
+
+        clearTimeout(inlineThoughtsRefreshTimeout);
+        inlineThoughtsRefreshTimeout = setTimeout(() => {
+            if (!extensionSettings.enabled
+                || !extensionSettings.showThoughtsInChat
+                || (extensionSettings.thoughtsInChatStyle || 'corner') !== 'inline') {
+                teardownInlineThoughtsObserver();
+                return;
+            }
+
+            isRefreshingInlineThoughts = true;
+            try {
+                updateChatThoughts();
+            } finally {
+                isRefreshingInlineThoughts = false;
+            }
+        }, 50);
+    });
+
+    inlineThoughtsObserver.observe(chatElement, {
+        childList: true,
+        subtree: true
+    });
+}
+
+function teardownInlineThoughtsObserver() {
+    if (inlineThoughtsRefreshTimeout) {
+        clearTimeout(inlineThoughtsRefreshTimeout);
+        inlineThoughtsRefreshTimeout = null;
+    }
+
+    if (inlineThoughtsObserver) {
+        inlineThoughtsObserver.disconnect();
+        inlineThoughtsObserver = null;
+    }
+}
+
+function parseThoughtsArray() {
+    let thoughtsArray = [];
+    const thoughtsConfig = extensionSettings.trackerConfig?.presentCharacters?.thoughts;
+    const thoughtsLabel = thoughtsConfig?.name || 'Thoughts';
+
+    try {
+        const parsed = typeof lastGeneratedData.characterThoughts === 'string'
+            ? JSON.parse(lastGeneratedData.characterThoughts)
+            : lastGeneratedData.characterThoughts;
+
+        const charactersArray = Array.isArray(parsed) ? parsed : (parsed.characters || []);
+
+        if (charactersArray.length > 0) {
+            const offScene = /\b(not\s+(currently\s+)?(in|at|present|in\s+the)\s+(the\s+)?(scene|area|room|location|vicinity))\b|\b(off[\s-]?scene)\b|\b(not\s+present)\b|\b(absent)\b|\b(away\s+from\s+(the\s+)?scene)\b/i;
+            thoughtsArray = charactersArray
+                .filter(char => char.thoughts && char.thoughts.content && !offScene.test(char.thoughts.content))
+                .map(char => ({
+                    name: (char.name || ''),
+                    emoji: char.emoji || '👤',
+                    thought: char.thoughts.content
+                }));
+        }
+    } catch (e) {
+        debugLog('[RPG Thoughts Bubble] Not JSON format, falling back to text parsing');
+    }
+
+    if (thoughtsArray.length === 0 && lastGeneratedData.characterThoughts) {
+        const lines = lastGeneratedData.characterThoughts.split('\n');
+        let currentCharName = null;
+        let currentCharEmoji = null;
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+
+            if (!line ||
+                line.includes('Present Characters') ||
+                line.includes('---') ||
+                line.startsWith('```') ||
+                line.trim() === '- …' ||
+                line.includes('(Repeat the format')) {
+                continue;
+            }
+
+            if (line.startsWith('- ')) {
+                const name = line.substring(2).trim();
+                if (name && name.toLowerCase() !== 'unavailable') {
+                    currentCharName = name;
+                    currentCharEmoji = null;
+                } else {
+                    currentCharName = null;
+                    currentCharEmoji = null;
+                }
+            } else if (line.startsWith('Details:') && currentCharName) {
+                const detailsContent = line.substring(line.indexOf(':') + 1).trim();
+                const parts = detailsContent.split('|').map(p => p.trim());
+                if (parts.length > 0) {
+                    currentCharEmoji = parts[0];
+                }
+            } else if (line.startsWith(thoughtsLabel + ':') && currentCharName && currentCharEmoji) {
+                const thoughtContent = line.substring(thoughtsLabel.length + 1).trim();
+                if (thoughtContent) {
+                    thoughtsArray.push({
+                        name: currentCharName,
+                        emoji: currentCharEmoji,
+                        thought: thoughtContent
+                    });
+                }
+            }
+        }
+    }
+
+    return thoughtsArray;
+}
+
+function escapeInlineThoughtHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function insertInlineThoughts($message, thoughtsArray, openThoughts = new Set()) {
+    const $mesText = $message.find('.mes_text');
+    if (!$mesText.length) {
+        return;
+    }
+
+    const thoughtsMap = {};
+    for (const thoughtData of thoughtsArray) {
+        thoughtsMap[(thoughtData.name || '').toLowerCase()] = thoughtData;
+    }
+
+    const $container = $('<div class="rpg-inline-thoughts"></div>');
+    bindInlineThoughtEvents($container);
+
+    for (const [, thoughtData] of Object.entries(thoughtsMap)) {
+        const $dropdown = createInlineThoughtDropdown(thoughtData, openThoughts);
+        $container.append($dropdown);
+    }
+
+    if (!$container.children().length) {
+        return;
+    }
+
+    // Mount outside .mes_text so SillyTavern's click-to-edit handlers do not
+    // intercept summary clicks before the details element can toggle.
+    const $mediaWrapper = $message.find('.mes_media_wrapper').first();
+    if ($mediaWrapper.length) {
+        $container.insertBefore($mediaWrapper);
+    } else {
+        $container.insertAfter($mesText.last());
+    }
+}
+
+function bindInlineThoughtEvents($container) {
+    $container.on('click mousedown touchstart', '.rpg-inline-thought, .rpg-inline-thought-summary, .rpg-inline-thought-content', function (e) {
+        e.stopPropagation();
+    });
+}
+
+function createInlineThoughtDropdown(thoughtData, openThoughts = new Set()) {
+    const characterName = thoughtData.name || '';
+    const characterEmoji = thoughtData.emoji || '👤';
+    const thoughtText = thoughtData.thought || '';
+    const normalizedCharacterName = characterName.toLowerCase();
+    const openAttribute = openThoughts.has(normalizedCharacterName) ? ' open' : '';
+
+    return $(`
+        <details class="rpg-inline-thought" data-character="${escapeInlineThoughtHtml(normalizedCharacterName)}"${openAttribute}>
+            <summary class="rpg-inline-thought-summary">
+                <span class="rpg-inline-thought-icon">${escapeInlineThoughtHtml(characterEmoji)}</span>
+                <span class="rpg-inline-thought-name">${escapeInlineThoughtHtml(characterName)}'s thoughts</span>
+            </summary>
+            <div class="rpg-inline-thought-content">
+                <div class="rpg-inline-thought-text">${escapeInlineThoughtHtml(thoughtText)}</div>
+            </div>
+        </details>
+    `);
+}
+
+// ===== GLOBAL DRAGGING SETUP FOR THOUGHT ICON (MOBILE ONLY) =====
+// These variables and handlers are set up once, outside createThoughtPanel
+let isDragging = false;
+let touchMoved = false;
+let dragStartTime = 0;
+let dragStartX = 0;
+let dragStartY = 0;
+let iconStartX = 0;
+let iconStartY = 0;
+const DRAG_THRESHOLD = 10;
+const LONG_PRESS_DURATION = 200;
+let rafId = null;
+let pendingX = null;
+let pendingY = null;
+let thoughtIconDragHandlersInitialized = false;
+let justFinishedDragging = false; // Flag to block clicks immediately after drag
+
+function updateIconDragPosition() {
+    if (pendingX !== null && pendingY !== null) {
+        $('#rpg-thought-icon').css({
+            left: pendingX + 'px',
+            top: pendingY + 'px',
+            right: 'auto',
+            bottom: 'auto'
+        });
+        pendingX = null;
+        pendingY = null;
+    }
+    rafId = null;
+}
+
+function initThoughtIconDragHandlers() {
+    if (thoughtIconDragHandlersInitialized) return;
+    thoughtIconDragHandlersInitialized = true;
+
+    // console.log('[Thought Icon] Initializing drag handlers ONCE - will attach to icon when created');
+}
+
+// Function to attach drag handlers to a specific icon element
+function attachDragHandlersToIcon($icon) {
+    // console.log('[Thought Icon] Attaching handlers to icon element');
+
+    // Remove any existing handlers
+    $icon.off('.thoughtIconDrag');
+
+    // Test: add a simple click handler to verify events work
+    $icon.on('click.thoughtIconDrag', function (e) {
+        // Check global flag set immediately after drag completes
+        if (justFinishedDragging) {
+            // console.log('[Thought Icon] CLICK blocked - just finished dragging');
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            return false;
+        }
+        // console.log('[Thought Icon] CLICK detected on icon!');
+    });
+
+    // Touch drag support - mobile only
+    $icon.on('touchstart.thoughtIconDrag', function (e) {
+        if (window.innerWidth > 1000) return;
+
+        // console.log('[Thought Icon] touchstart');
+        touchMoved = false;
+        dragStartTime = Date.now();
+        const touch = e.originalEvent.touches[0];
+        dragStartX = touch.clientX;
+        dragStartY = touch.clientY;
+
+        const offset = $(this).offset();
+        iconStartX = offset.left;
+        iconStartY = offset.top;
+
+        isDragging = false;
+    });
+
+    $icon.on('touchmove.thoughtIconDrag', function (e) {
+        if (window.innerWidth > 1000) return;
+
+        if (!touchMoved) {
+            // console.log('[Thought Icon] touchmove - first movement');
+        }
+        touchMoved = true;
+        const touch = e.originalEvent.touches[0];
+        const deltaX = touch.clientX - dragStartX;
+        const deltaY = touch.clientY - dragStartY;
+        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        const timeSinceStart = Date.now() - dragStartTime;
+
+        if (!isDragging && (timeSinceStart > LONG_PRESS_DURATION || distance > DRAG_THRESHOLD)) {
+            isDragging = true;
+            $(this).addClass('dragging');
+        }
+
+        if (isDragging) {
+            e.preventDefault();
+
+            let newX = iconStartX + deltaX;
+            let newY = iconStartY + deltaY;
+
+            const iconWidth = $(this).outerWidth();
+            const iconHeight = $(this).outerHeight();
+
+            const minX = 10;
+            const maxX = window.innerWidth - iconWidth - 10;
+            const minY = 10;
+            const maxY = window.innerHeight - iconHeight - 10;
+
+            newX = Math.max(minX, Math.min(maxX, newX));
+            newY = Math.max(minY, Math.min(maxY, newY));
+
+            pendingX = newX;
+            pendingY = newY;
+            if (!rafId) {
+                rafId = requestAnimationFrame(updateIconDragPosition);
+            }
+        }
+    });
+
+    $icon.on('touchend.thoughtIconDrag', function (e) {
+        // console.log('[Thought Icon] touchend - isDragging:', isDragging, 'touchMoved:', touchMoved);
+
+        if (isDragging) {
+            const offset = $(this).offset();
+            const newPosition = {
+                left: offset.left + 'px',
+                top: offset.top + 'px'
+            };
+
+            extensionSettings.thoughtIconPosition = newPosition;
+            saveSettings();
+
+            setTimeout(() => {
+                const $currentIcon = $('#rpg-thought-icon');
+                if ($currentIcon.length) {
+                    constrainIconToViewport($currentIcon);
+                }
+            }, 10);
+
+            setTimeout(() => {
+                $(this).removeClass('dragging');
+            }, 50);
+
+            isDragging = false;
+
+            $(this).data('just-dragged', true);
+            setTimeout(() => {
+                $(this).data('just-dragged', false);
+            }, 300);
+
+            e.preventDefault();
+            e.stopPropagation();
+        } else if (!touchMoved) {
+            // console.log('[Thought Icon] Opening panel - was a tap');
+            const $panel = $('#rpg-thought-panel');
+            const iconOffset = $(this).offset();
+            if (iconOffset) {
+                $panel.css({
+                    top: iconOffset.top + 'px',
+                    left: iconOffset.left + 'px',
+                    display: 'none'
+                });
+            }
+
+            $(this).addClass('rpg-hidden');
+            $panel.fadeIn(200);
+        } else {
+            // console.log('[Thought Icon] Did nothing - touchMoved but not isDragging');
+        }
+    });
+
+    // Mouse drag support - mobile only
+    let mouseDown = false;
+
+    $icon.on('mousedown.thoughtIconDrag', function (e) {
+        if (window.innerWidth > 1000) return;
+
+        // console.log('[Thought Icon] mousedown');
+        e.preventDefault();
+
+        mouseDown = true;
+        touchMoved = false;
+        dragStartTime = Date.now();
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+
+        const offset = $(this).offset();
+        iconStartX = offset.left;
+        iconStartY = offset.top;
+
+        isDragging = false;
+    });
+
+    $(document).on('mousemove.thoughtIconDrag', function (e) {
+        if (!mouseDown || window.innerWidth > 1000) return;
+
+        if (!touchMoved) {
+            // console.log('[Thought Icon] mousemove - first movement');
+        }
+        touchMoved = true;
+
+        const deltaX = e.clientX - dragStartX;
+        const deltaY = e.clientY - dragStartY;
+        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        const timeSinceStart = Date.now() - dragStartTime;
+
+        if (!isDragging && (timeSinceStart > LONG_PRESS_DURATION || distance > DRAG_THRESHOLD)) {
+            isDragging = true;
+            $('#rpg-thought-icon').addClass('dragging');
+        }
+
+        if (isDragging) {
+            e.preventDefault();
+
+            let newX = iconStartX + deltaX;
+            let newY = iconStartY + deltaY;
+
+            const $currentIcon = $('#rpg-thought-icon');
+            const iconWidth = $currentIcon.outerWidth();
+            const iconHeight = $currentIcon.outerHeight();
+
+            const minX = 10;
+            const maxX = window.innerWidth - iconWidth - 10;
+            const minY = 10;
+            const maxY = window.innerHeight - iconHeight - 10;
+
+            newX = Math.max(minX, Math.min(maxX, newX));
+            newY = Math.max(minY, Math.min(maxY, newY));
+
+            pendingX = newX;
+            pendingY = newY;
+            if (!rafId) {
+                rafId = requestAnimationFrame(updateIconDragPosition);
+            }
+        }
+    });
+
+    $(document).on('mouseup.thoughtIconDrag', function (e) {
+        if (!mouseDown) return;
+
+        // console.log('[Thought Icon] mouseup - isDragging:', isDragging, 'touchMoved:', touchMoved);
+
+        mouseDown = false;
+
+        if (isDragging) {
+            // Set global flag IMMEDIATELY to block click event
+            justFinishedDragging = true;
+            setTimeout(() => {
+                justFinishedDragging = false;
+            }, 300);
+
+            const $currentIcon = $('#rpg-thought-icon');
+
+            // Remove dragging class immediately to restore transitions and cursor
+            $currentIcon.removeClass('dragging');
+
+            const offset = $currentIcon.offset();
+            const newPosition = {
+                left: offset.left + 'px',
+                top: offset.top + 'px'
+            };
+
+            extensionSettings.thoughtIconPosition = newPosition;
+            saveSettings();
+
+            setTimeout(() => {
+                if ($currentIcon.length) {
+                    constrainIconToViewport($currentIcon);
+                }
+            }, 10);
+
+            isDragging = false;
+
+            // Prevent default and stop all propagation
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            return false;
+        }
+        // If not dragging but touchMoved, do nothing (small drag below threshold)
+    });
+}
+
+function constrainIconToViewport($icon) {
+    if (!extensionSettings.thoughtIconPosition) return;
+
+    const offset = $icon.offset();
+    if (!offset) return;
+
+    let currentX = offset.left;
+    let currentY = offset.top;
+
+    const iconWidth = $icon.outerWidth();
+    const iconHeight = $icon.outerHeight();
+
+    const minX = 10;
+    const maxX = window.innerWidth - iconWidth - 10;
+    const minY = 10;
+    const maxY = window.innerHeight - iconHeight - 10;
+
+    let newX = Math.max(minX, Math.min(maxX, currentX));
+    let newY = Math.max(minY, Math.min(maxY, currentY));
+
+    if (newX !== currentX || newY !== currentY) {
+        $icon.css({
+            left: newX + 'px',
+            top: newY + 'px',
+            right: 'auto',
+            bottom: 'auto'
+        });
+
+        extensionSettings.thoughtIconPosition = {
+            left: newX + 'px',
+            top: newY + 'px'
+        };
+        saveSettings();
+    }
+}
+
+/**
+ * Creates or updates the floating thought panel positioned next to the character's avatar.
+ * Handles responsive positioning for left/right panel modes and mobile viewports.
+ *
+ * @param {jQuery} $message - Message element to position the panel relative to
+ * @param {Array} thoughtsArray - Array of thought objects {name, emoji, thought}
+ */
+export function createThoughtPanel($message, thoughtsArray) {
+    // Initialize drag handlers once
+    initThoughtIconDragHandlers();
+    // Remove existing thought panel
+    $('#rpg-thought-panel').remove();
+    $('#rpg-thought-icon').remove();
+
+    // Get the avatar position from the message
+    const $avatar = $message.find('.avatar img');
+    if (!$avatar.length) {
+        // console.log('[RPG Companion] No avatar found in message');
+        return;
+    }
+
+    const avatarRect = $avatar[0].getBoundingClientRect();
+    const panelPosition = extensionSettings.panelPosition;
+    const theme = extensionSettings.theme;
+
+    // Build thought bubbles HTML
+    let thoughtsHtml = '';
+    thoughtsArray.forEach((thought, index) => {
+        thoughtsHtml += `
+            <div class="rpg-thought-item">
+                <div class="rpg-thought-emoji-box">
+                    ${thought.emoji}
+                </div>
+                <div class="rpg-thought-content rpg-editable" contenteditable="true" data-character="${thought.name}" data-field="thoughts" title="Click to edit thoughts">
+                    ${thought.thought}
+                </div>
+            </div>
+        `;
+        // Add divider between thoughts (except for last one)
+        if (index < thoughtsArray.length - 1) {
+            thoughtsHtml += '<div class="rpg-thought-divider"></div>';
+        }
+    });
+
+    // Create the floating thought panel with theme
+    const $thoughtPanel = $(`
+        <div id="rpg-thought-panel" class="rpg-thought-panel" data-theme="${theme}">
+            <button class="rpg-thought-close" title="Hide thoughts">×</button>
+            <div class="rpg-thought-circles">
+                <div class="rpg-thought-circle rpg-circle-1"></div>
+                <div class="rpg-thought-circle rpg-circle-2"></div>
+                <div class="rpg-thought-circle rpg-circle-3"></div>
+            </div>
+            <div class="rpg-thought-bubble">
+                ${thoughtsHtml}
+            </div>
+        </div>
+    `);
+
+    // Create the collapsed thought icon
+    const $thoughtIcon = $(`
+        <div id="rpg-thought-icon" class="rpg-thought-icon" data-theme="${theme}" title="Show thoughts">
+            💭
+        </div>
+    `);
+
+    // Apply custom theme colors if custom theme
+    if (theme === 'custom') {
+        const customStyles = {
+            '--rpg-bg': extensionSettings.customColors.bg,
+            '--rpg-accent': extensionSettings.customColors.accent,
+            '--rpg-text': extensionSettings.customColors.text,
+            '--rpg-highlight': extensionSettings.customColors.highlight
+        };
+        $thoughtPanel.css(customStyles);
+        $thoughtIcon.css(customStyles);
+    }
+
+    // Append to body so it's not clipped by chat container
+    $('body').append($thoughtPanel);
+    $('body').append($thoughtIcon);
+
+    // Attach drag handlers to the icon
+    attachDragHandlersToIcon($thoughtIcon);
+
+    // Simple viewport-based positioning - always top-left corner
+    const margin = 20;
+    const topMargin = 10; // Space between ST's top bar and thought panel
+
+    // Function to calculate top position based on ST's top bar
+    const getTopPosition = () => {
+        const topBar = $('#top-settings-holder');
+        if (topBar.length) {
+            return (topBar.outerHeight() || 140) + topMargin;
+        }
+        return 140 + topMargin; // Fallback
+    };
+
+    // Function to update bubble position and width
+    const updateBubblePosition = () => {
+        const topPosition = getTopPosition();
+        const sheld = $('#sheld')[0];
+        const isRightPanel = extensionSettings.panelPosition === 'right';
+
+        // Update top position for panel (always in desktop)
+        $thoughtPanel.css('top', `${topPosition}px`);
+
+        // Update horizontal position based on panel position
+        // If panel is on right, thoughts on left (default)
+        // If panel is on left, thoughts on right (mirrored)
+        if (isRightPanel) {
+            $thoughtPanel.css({
+                left: `${margin}px`,
+                right: 'auto'
+            }).removeClass('rpg-thought-panel-right').addClass('rpg-thought-panel-left');
+        } else {
+            // Panel on left, so thoughts on right
+            $thoughtPanel.css({
+                left: 'auto',
+                right: `${margin}px`
+            }).removeClass('rpg-thought-panel-left').addClass('rpg-thought-panel-right');
+        }
+
+        // Only update icon position if in desktop mode or if no saved position in mobile
+        if (window.innerWidth > 1000) {
+            // Desktop: update icon to match panel position (though it's hidden)
+            if (isRightPanel) {
+                $thoughtIcon.css({
+                    left: `${margin}px`,
+                    right: 'auto'
+                });
+            } else {
+                $thoughtIcon.css({
+                    left: 'auto',
+                    right: `${margin}px`
+                });
+            }
+        } else {
+            // Mobile: only set default if no saved position exists
+            const iconPos = extensionSettings.thoughtIconPosition;
+            if (!iconPos || (!iconPos.top && !iconPos.left)) {
+                // Position icon in the center of the viewport
+                const defaultTop = window.innerHeight / 2;
+                const defaultLeft = window.innerWidth / 2;
+                $thoughtIcon.css({
+                    'top': `${defaultTop}px`,
+                    'left': `${defaultLeft}px`
+                });
+            }
+        }
+
+        // Update width based on available space
+        if (sheld) {
+            const sheldRect = sheld.getBoundingClientRect();
+            let availableWidth;
+            if (isRightPanel) {
+                availableWidth = sheldRect.left - (margin * 2);
+            } else {
+                // Panel on left, calculate space on right
+                availableWidth = window.innerWidth - sheldRect.right - (margin * 2);
+            }
+            const maxWidth = Math.min(350, Math.max(200, availableWidth));
+            $thoughtPanel.css('max-width', `${maxWidth}px`);
+        } else {
+            $thoughtPanel.css('max-width', '350px');
+        }
+    };
+
+    // Set initial position and width (will be updated by updateBubblePosition)
+    const isRightPanel = extensionSettings.panelPosition === 'right';
+    if (isRightPanel) {
+        $thoughtPanel.css({
+            left: `${margin}px`,
+            right: 'auto'
+        }).addClass('rpg-thought-panel-left');
+
+        $thoughtIcon.css({
+            left: `${margin}px`,
+            right: 'auto'
+        });
+    } else {
+        $thoughtPanel.css({
+            left: 'auto',
+            right: `${margin}px`
+        }).addClass('rpg-thought-panel-right');
+
+        $thoughtIcon.css({
+            left: 'auto',
+            right: `${margin}px`
+        });
+    }
+
+    updateBubblePosition();
+
+    // Update on window resize and when ST's layout changes
+    $(window).on('resize.rpgThoughtBubble', updateBubblePosition);
+
+    // Desktop: always show panel, hide icon
+    // Mobile: show icon, hide panel initially
+    const isMobileView = window.innerWidth <= 1000;
+
+    if (isMobileView) {
+        $thoughtPanel.hide();
+        // Remove force-hide class to let CSS media query show icon
+        $thoughtIcon.removeClass('rpg-force-hide');
+
+        // Load saved icon position in mobile, or default to center of viewport
+        if (extensionSettings.thoughtIconPosition && extensionSettings.thoughtIconPosition.top && extensionSettings.thoughtIconPosition.left) {
+            const pos = extensionSettings.thoughtIconPosition;
+
+            // Validate saved position - check if it's not at the very top (likely invalid)
+            const savedTop = parseInt(pos.top);
+            const topBar = $('#top-settings-holder');
+            const topBarHeight = topBar.length ? topBar.outerHeight() : 60;
+
+            // If saved position is above or too close to top bar, recalculate default
+            if (savedTop < topBarHeight + 50) {
+                // console.log('[Thought Icon] Saved position invalid (too close to top), recalculating default');
+                // Clear invalid saved position
+                delete extensionSettings.thoughtIconPosition;
+                saveSettings();
+
+                // Calculate new default position
+                setTimeout(() => {
+                    const viewportHeight = window.innerHeight;
+                    const viewportWidth = window.innerWidth;
+
+                    const defaultTop = topBarHeight + ((viewportHeight - topBarHeight) / 2) - 22;
+                    const defaultLeft = (viewportWidth * 0.75) - 22;
+
+                    // console.log('[Thought Icon] Setting new default position:', {
+                    //     topBarHeight,
+                    //     viewportHeight,
+                    //     viewportWidth,
+                    //     calculatedTop: defaultTop,
+                    //     calculatedLeft: defaultLeft
+                    // });
+
+                    $thoughtIcon.css({
+                        top: `${defaultTop}px`,
+                        left: `${defaultLeft}px`,
+                        transform: 'none',
+                        right: 'auto',
+                        bottom: 'auto'
+                    });
+                }, 100);
+            } else {
+                // Position is valid, use it
+                $thoughtIcon.css({
+                    top: pos.top,
+                    left: pos.left,
+                    transform: 'none',
+                    right: 'auto',
+                    bottom: 'auto'
+                });
+            }
+        } else {
+            // Default position: center-right of viewport, accounting for top bar
+            // Use setTimeout to ensure DOM is fully rendered before calculating positions
+            setTimeout(() => {
+                const topBar = $('#top-settings-holder');
+                const topBarHeight = topBar.length ? topBar.outerHeight() : 60;
+                const viewportHeight = window.innerHeight;
+                const viewportWidth = window.innerWidth;
+
+                // Position in the center vertically (accounting for top bar) and slightly right
+                const defaultTop = topBarHeight + ((viewportHeight - topBarHeight) / 2) - 22; // 22 = half of icon height
+                const defaultLeft = (viewportWidth * 0.75) - 22; // 75% from left, minus half icon width
+
+                // console.log('[Thought Icon] Setting default position:', {
+                //     topBarHeight,
+                //     viewportHeight,
+                //     viewportWidth,
+                //     calculatedTop: defaultTop,
+                //     calculatedLeft: defaultLeft
+                // });
+
+                $thoughtIcon.css({
+                    top: `${defaultTop}px`,
+                    left: `${defaultLeft}px`,
+                    transform: 'none',
+                    right: 'auto',
+                    bottom: 'auto'
+                });
+            }, 100);
+        }
+    } else {
+        // Desktop: always start with panel expanded on page load/refresh
+        $thoughtPanel.css('display', 'block');
+        $thoughtIcon.addClass('rpg-force-hide').removeClass('rpg-collapsed-desktop');
+    }
+
+    // Handle viewport changes between mobile and desktop
+    let wasMobileView = window.innerWidth <= 1000;
+    $(window).on('resize.thoughtIconDrag', () => {
+        const isMobileNow = window.innerWidth <= 1000;
+
+        if (!wasMobileView && isMobileNow) {
+            // Switched to mobile - apply saved position if exists
+            const $currentIcon = $('#rpg-thought-icon');
+            if (extensionSettings.thoughtIconPosition) {
+                const pos = extensionSettings.thoughtIconPosition;
+                if (pos.top) $currentIcon.css('top', pos.top);
+                if (pos.left) $currentIcon.css('left', pos.left);
+            }
+        }
+
+        // Constrain icon if in mobile view
+        if (isMobileNow) {
+            setTimeout(() => {
+                const $currentIcon = $('#rpg-thought-icon');
+                if ($currentIcon.length) {
+                    constrainIconToViewport($currentIcon);
+                }
+            }, 10);
+        }
+
+        wasMobileView = isMobileNow;
+    });
+
+    // Close button functionality - support both click and touch
+    $thoughtPanel.find('.rpg-thought-close').on('click touchend', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const isMobileView = window.innerWidth <= 1000;
+
+        if (isMobileView) {
+            // Mobile: hide panel and show icon
+            $thoughtPanel.fadeOut(200, function () {
+                // Make sure icon is visible and clean state when panel closes (use selector, not variable)
+                const $icon = $('#rpg-thought-icon');
+                $icon.removeClass('rpg-hidden dragging');
+                $icon.data('just-dragged', false);
+            });
+        } else {
+            // Desktop: collapse to icon at panel position
+            const panelRect = $thoughtPanel[0].getBoundingClientRect();
+            const $icon = $('#rpg-thought-icon');
+
+            // Position icon where the panel is
+            $icon.css({
+                top: `${panelRect.top}px`,
+                left: isRightPanel ? `${panelRect.left}px` : 'auto',
+                right: isRightPanel ? 'auto' : `${window.innerWidth - panelRect.right}px`
+            });
+
+            // Mark as collapsed desktop state (session only, not persisted)
+            $icon.addClass('rpg-collapsed-desktop');
+
+            // Hide panel and show icon
+            $thoughtPanel.fadeOut(200, function () {
+                $icon.removeClass('rpg-hidden rpg-force-hide');
+            });
+        }
+    });
+
+    // Icon click/tap to show panel
+    const handleThoughtIconTap = function (e) {
+        const isMobileView = window.innerWidth <= 1000;
+        const $icon = $('#rpg-thought-icon');
+
+        // Desktop collapsed state: expand panel and hide icon
+        if (!isMobileView && $icon.hasClass('rpg-collapsed-desktop')) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            // Remove collapsed state (no need to save, state is session-only)
+            $icon.addClass('rpg-force-hide').removeClass('rpg-collapsed-desktop');
+
+            // Show panel
+            $('#rpg-thought-panel').fadeIn(200);
+            return;
+        }
+
+        // Skip if we just finished dragging (mobile only)
+        if ($thoughtIcon.data('just-dragged')) {
+            return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+
+        // In mobile view, position panel below ST's top bar and fit full screen
+        if (window.innerWidth <= 1000) {
+            const topBar = $('#top-settings-holder');
+            const topBarHeight = topBar.length ? topBar.outerHeight() : 60;
+            const topPosition = topBarHeight + 10; // 10px margin below top bar
+
+            $thoughtPanel.css({
+                top: topPosition + 'px',
+                display: 'none' // Keep hidden while setting position
+            });
+        }
+
+        $thoughtIcon.addClass('rpg-hidden');
+        $thoughtPanel.fadeIn(200);
+    };
+
+    // Support both click and touch events for mobile
+    $thoughtIcon.on('click touchend', handleThoughtIconTap);
+
+    // Add event handlers for editable thoughts in the bubble
+    $thoughtPanel.find('.rpg-editable').on('blur', function () {
+        const character = $(this).data('character');
+        const field = $(this).data('field');
+        const value = $(this).text().trim();
+        // console.log('[RPG Companion] 💭 Thought bubble blur event - character:', character, 'field:', field, 'value:', value);
+        updateCharacterField(character, field, value);
+    });
+
+    // Add event listener for section lock icon clicks (support both click and touch)
+    $thoughtPanel.find('.rpg-section-lock-icon').on('click touchend', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const $icon = $(this);
+        const trackerType = $icon.data('tracker');
+        const itemPath = $icon.data('path');
+        const currentlyLocked = isItemLocked(trackerType, itemPath);
+
+        // Toggle lock state
+        setItemLock(trackerType, itemPath, !currentlyLocked);
+
+        // Update icon
+        const newIcon = !currentlyLocked ? '🔒' : '🔓';
+        const newTitle = !currentlyLocked
+            ? (i18n.getTranslation('thoughts.locked') || 'Locked')
+            : (i18n.getTranslation('thoughts.unlocked') || 'Unlocked');
+        $icon.text(newIcon);
+        $icon.attr('title', newTitle);
+
+        // Toggle 'locked' class for persistent visibility
+        $icon.toggleClass('locked', !currentlyLocked);
+
+        // Save settings
+        saveSettings();
+    });
+
+    // RAF throttling for smooth position updates
+    let positionUpdateRaf = null;
+
+    // Update position on scroll with RAF throttling - DISABLED for fixed top-left positioning
+    const updatePanelPosition = () => {
+        // Bubble is now fixed at top-left, no need to update position on scroll
+        // Just check visibility
+        if (!$message.is(':visible')) {
+            $thoughtPanel.hide();
+            $thoughtIcon.hide();
+        } else {
+            if ($thoughtPanel.is(':visible')) {
+                $thoughtPanel.show();
+            }
+            if ($thoughtIcon.is(':visible')) {
+                $thoughtIcon.show();
+            }
+        }
+    };
+
+    // Update visibility on scroll (but not position)
+    $('#chat').on('scroll.thoughtPanel', updatePanelPosition);
+
+    // Don't listen to window resize for position - we handle width separately
+    // Position stays fixed at top-left
+
+    // Remove panel when clicking outside (mobile only)
+    $(document).on('click.thoughtPanel', function (e) {
+        // Only hide on click outside in mobile view
+        if (window.innerWidth <= 1000) {
+            if (!$(e.target).closest('#rpg-thought-panel, #rpg-thought-icon').length) {
+                // Hide the panel and show the icon instead of removing (use selectors, not variables)
+                $('#rpg-thought-panel').fadeOut(200);
+                $('#rpg-thought-icon').removeClass('rpg-hidden').fadeIn(200);
+            }
+        }
+    });
+}
+

@@ -5,6 +5,9 @@ export default defineConfig({
         environment: 'jsdom',
         restoreMocks: true,
         clearMocks: true,
-        include: ['tests/{unit,integration}/**/*.test.js'],
+        include: [
+            'tests/{unit,integration}/**/*.test.js',
+            'tests/rpg-companion-compat/**/*.test.js',
+        ],
     },
 });

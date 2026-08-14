@@ -1,0 +1,566 @@
+/**
+ * Core State Management Module
+ * Centralizes all extension state variables
+ */
+
+// Type imports
+/** @typedef {import('../types/inventory.js').InventoryV2} InventoryV2 */
+
+/**
+ * Extension settings - persisted to SillyTavern settings
+ */
+export let extensionSettings = {
+    settingsVersion: 5, // Version number for settings migrations
+    enabled: true,
+    autoUpdate: false,
+    updateDepth: 4, // How many messages to include in the context
+    generationMode: 'together', // 'separate' or 'together' - whether to generate with main response or separately
+    showUserStats: true,
+    showInfoBox: true,
+    showCharacterThoughts: true,
+    showAlternatePresentCharactersPanel: false,
+    enableThoughtBasedExpressions: false,
+    hideDefaultExpressionDisplay: false,
+    showInventory: true, // Show inventory section (v2 system)
+    showQuests: true, // Show quests section
+    showThoughtsInChat: true, // Show thoughts overlay in chat
+    thoughtsInChatStyle: 'corner', // 'corner' or 'inline'
+    narratorMode: false, // Use character card as narrator instead of fixed character references
+    customNarratorPrompt: '', // Custom narrator mode prompt text (empty = use default)
+    customContextInstructionsPrompt: '', // Custom context instructions prompt text (empty = use default)
+    enableHtmlPrompt: false, // Enable immersive HTML prompt injection
+    customHtmlPrompt: '', // Custom HTML prompt text (empty = use default)
+    enableDialogueColoring: false, // Enable dialogue coloring prompt injection
+    customDialogueColoringPrompt: '', // Custom dialogue coloring prompt text (empty = use default)
+    enableDeceptionSystem: false, // Enable deception tracking with <lie> tags
+    customDeceptionPrompt: '', // Custom deception prompt text (empty = use default)
+    enableOmniscienceFilter: false, // Enable omniscience filter with <ofilter> tags
+    customOmnisciencePrompt: '', // Custom omniscience filter prompt text (empty = use default)
+    enableCYOA: false, // Enable "Choose Your Own Adventure" formatting with action choices
+    customCYOAPrompt: '', // Custom CYOA prompt text (empty = use default)
+    enableSpotifyMusic: false, // Enable Spotify music integration (asks AI for Spotify URLs)
+    customSpotifyPrompt: '', // Custom Spotify prompt text (empty = use default)
+
+    enableDynamicWeather: true, // Enable dynamic weather effects based on Info Box weather field (v2: enabled by default)
+    weatherBackground: true, // Show weather effects in background (behind chat)
+    weatherForeground: false, // Show weather effects in foreground (on top of chat)
+    dismissedHolidayPromo: false, // User dismissed the holiday promotion banner
+    showHtmlToggle: true, // Show Immersive HTML toggle in main panel
+    showDialogueColoringToggle: true, // Show Dialogue Coloring toggle in main panel (enabled by default)
+    showDeceptionToggle: true, // Show Deception System toggle in main panel
+    showOmniscienceToggle: true, // Show Omniscience Filter toggle in main panel
+    showCYOAToggle: true, // Show CYOA toggle in main panel
+    showSpotifyToggle: true, // Show Spotify Music toggle in main panel
+
+    showDynamicWeatherToggle: true, // Show Dynamic Weather Effects toggle in main panel
+    showNarratorMode: true, // Show Narrator Mode toggle in main panel
+    showAutoAvatars: true, // Show Auto-generate Avatars toggle in main panel
+    skipInjectionsForGuided: 'none', // skip injections for instruct injections and quiet prompts (GuidedGenerations compatibility)
+    enableRandomizedPlot: true, // Show randomized plot progression button above chat input
+    enableNaturalPlot: true, // Show natural plot progression button above chat input
+    // History persistence settings - inject selected tracker data into historical messages
+    historyPersistence: {
+        enabled: false, // Master toggle for history persistence feature
+        messageCount: 5, // Number of messages to include (0 = all available)
+        injectionPosition: 'assistant_message_end', // 'user_message_end', 'assistant_message_end', 'extra_user_message', 'extra_assistant_message'
+        contextPreamble: '', // Optional custom preamble text (empty = use default short one)
+        sendAllEnabledOnRefresh: false // If true, sends all enabled stats from preset instead of only persistInHistory-enabled stats on Refresh RPG Info
+    },
+    panelPosition: 'right', // 'left', 'right', or 'top'
+    theme: 'default', // Theme: default, sci-fi, fantasy, cyberpunk, custom
+    customColors: {
+        bg: '#1a1a2e',
+        bgOpacity: 100,
+        accent: '#16213e',
+        accentOpacity: 100,
+        text: '#eaeaea',
+        textOpacity: 100,
+        highlight: '#e94560',
+        highlightOpacity: 100
+    },
+    statBarColorLow: '#cc3333', // Color for low stat values (red)
+    statBarColorLowOpacity: 100,
+    statBarColorHigh: '#33cc66', // Color for high stat values (green)
+    statBarColorHighOpacity: 100,
+    enableAnimations: true, // Enable smooth animations for stats and content updates
+    mobileFabPosition: {
+        top: 'calc(var(--topBarBlockSize) + 60px)',
+        right: '12px'
+    }, // Saved position for mobile FAB button
+    // Mobile FAB widget display options (8-position system around the button)
+    mobileFabWidgets: {
+        enabled: true, // Master toggle for FAB widgets
+        weatherIcon: { enabled: true, position: 0 },      // Weather emoji (☀️, 🌧️, etc.)
+        weatherDesc: { enabled: true, position: 1 },      // Weather description text
+        clock: { enabled: true, position: 2 },            // Current time display
+        date: { enabled: true, position: 3 },             // Date display
+        location: { enabled: true, position: 4 },         // Location name
+        stats: { enabled: true, position: 5 },            // All stats as compact numbers
+        attributes: { enabled: true, position: 6 }        // Compact RPG attributes display
+    },
+    // Desktop strip widget display options (shown in collapsed panel strip)
+    desktopStripWidgets: {
+        enabled: true, // Master toggle for strip widgets (enabled by default)
+        weatherIcon: { enabled: true },      // Weather emoji (☀️, 🌧️, etc.)
+        clock: { enabled: true },            // Current time display
+        date: { enabled: true },             // Date display
+        location: { enabled: true },         // Location name
+        stats: { enabled: true },            // All stats as compact numbers
+        attributes: { enabled: true }        // Compact RPG attributes display
+    },
+    userStats: {
+        health: 100,
+        satiety: 100,
+        energy: 100,
+        hygiene: 100,
+        arousal: 0,
+        mood: '😐',
+        conditions: 'None',
+        skills: [],
+        inventory: {
+            version: 2,
+            onPerson: "None",
+            clothing: "None",
+            stored: {},
+            assets: "None"
+        }
+    },
+    statNames: {
+        health: 'Health',
+        satiety: 'Satiety',
+        energy: 'Energy',
+        hygiene: 'Hygiene',
+        arousal: 'Arousal'
+    },
+    // Tracker customization configuration
+    trackerConfig: {
+        userStats: {
+            // Stats display mode: 'percentage' or 'number'
+            statsDisplayMode: 'percentage',
+            // Array of custom stats (allows add/remove/rename)
+            customStats: [
+                { id: 'health', name: 'Health', enabled: true, persistInHistory: false, maxValue: 100 },
+                { id: 'satiety', name: 'Satiety', enabled: true, persistInHistory: false, maxValue: 100 },
+                { id: 'energy', name: 'Energy', enabled: true, persistInHistory: false, maxValue: 100 },
+                { id: 'hygiene', name: 'Hygiene', enabled: true, persistInHistory: false, maxValue: 100 },
+                { id: 'arousal', name: 'Arousal', enabled: true, persistInHistory: false, maxValue: 100 }
+            ],
+            // RPG Attributes (customizable D&D-style attributes)
+            showRPGAttributes: true,
+            showLevel: true, // Show/hide level in UI and prompts
+            alwaysSendAttributes: false, // If true, always send attributes; if false, only send with dice rolls
+            rpgAttributes: [
+                { id: 'str', name: 'STR', enabled: true, persistInHistory: false },
+                { id: 'dex', name: 'DEX', enabled: true, persistInHistory: false },
+                { id: 'con', name: 'CON', enabled: true, persistInHistory: false },
+                { id: 'int', name: 'INT', enabled: true, persistInHistory: false },
+                { id: 'wis', name: 'WIS', enabled: true, persistInHistory: false },
+                { id: 'cha', name: 'CHA', enabled: true, persistInHistory: false }
+            ],
+            // Status section config
+            statusSection: {
+                enabled: true,
+                showMoodEmoji: true,
+                customFields: ['Conditions'], // User can edit what to track
+                persistInHistory: false // Persist status in historical messages
+            },
+            // Optional skills field
+            skillsSection: {
+                enabled: false,
+                label: 'Skills', // User-editable
+                customFields: [], // Array of skill names
+                persistInHistory: false // Persist skills in historical messages
+            },
+            // Inventory persistence
+            inventoryPersistInHistory: false, // Persist inventory in historical messages
+            // Quests persistence
+            questsPersistInHistory: false // Persist quests in historical messages
+        },
+        infoBox: {
+            widgets: {
+                date: { enabled: true, format: 'Weekday, Month, Year', persistInHistory: true }, // Date enabled by default for history
+                weather: { enabled: true, persistInHistory: true }, // Weather enabled by default for history
+                temperature: { enabled: true, unit: 'C', persistInHistory: false }, // 'C' or 'F'
+                time: { enabled: true, persistInHistory: true }, // Time enabled by default for history
+                location: { enabled: true, persistInHistory: true }, // Location enabled by default for history
+                recentEvents: { enabled: true, persistInHistory: false }
+            }
+        },
+        presentCharacters: {
+            // Fixed fields (always shown)
+            showEmoji: true,
+            showName: true,
+            // Relationship fields configuration
+            relationships: {
+                enabled: true,
+                // Relationship to emoji mapping (shown on character portraits)
+                relationshipEmojis: {
+                    'Lover': '❤️',
+                    'Friend': '⭐',
+                    'Ally': '🤝',
+                    'Enemy': '⚔️',
+                    'Neutral': '⚖️'
+                }
+            },
+            // Legacy fields kept for backward compatibility
+            relationshipFields: ['Lover', 'Friend', 'Ally', 'Enemy', 'Neutral'],
+            relationshipEmojis: {
+                'Lover': '❤️',
+                'Friend': '⭐',
+                'Ally': '🤝',
+                'Enemy': '⚔️',
+                'Neutral': '⚖️'
+            },
+            // Custom fields (appearance, demeanor, etc. - shown after relationship, separated by |)
+            customFields: [
+                { id: 'appearance', name: 'Appearance', enabled: true, description: 'Visible physical appearance (clothing, hair, notable features)', persistInHistory: false },
+                { id: 'demeanor', name: 'Demeanor', enabled: true, description: 'Observable demeanor or emotional state', persistInHistory: false }
+            ],
+            // Thoughts configuration (separate line)
+            thoughts: {
+                enabled: true,
+                name: 'Thoughts',
+                description: 'Internal Monologue (in first person from character\'s POV, up to three sentences long)',
+                persistInHistory: false
+            },
+            // Character stats toggle (optional feature)
+            characterStats: {
+                enabled: false,
+                customStats: [
+                    { id: 'health', name: 'Health', enabled: true },
+                    { id: 'arousal', name: 'Arousal', enabled: true }
+                ]
+            }
+        }
+    },
+    quests: {
+        main: "None",        // Current main quest title
+        optional: []         // Array of optional quest titles
+    },
+    infoBox: JSON.stringify({
+        date: { value: new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) },
+        weather: { emoji: '☀️', forecast: 'Clear skies' },
+        temperature: { value: 20, unit: 'C' },
+        time: { start: '00:00', end: '00:00' },
+        location: { value: 'Unknown Location' }
+    }, null, 2),
+    characterThoughts: JSON.stringify({
+        characters: []
+    }, null, 2),
+    level: 1, // User's character level
+    classicStats: {
+        str: 10,
+        dex: 10,
+        con: 10,
+        int: 10,
+        wis: 10,
+        cha: 10
+    },
+    lastDiceRoll: null, // Store last dice roll result
+    showDiceDisplay: true, // Show the "Last Roll" display in the panel
+    collapsedInventoryLocations: [], // Array of collapsed storage location names
+    inventoryViewModes: {
+        onPerson: 'list', // 'list' or 'grid' view mode for On Person section
+        stored: 'list',   // 'list' or 'grid' view mode for Stored section
+        assets: 'list'    // 'list' or 'grid' view mode for Assets section
+    },
+    npcAvatars: {}, // Store custom avatar images for NPCs (key: character name, value: base64 data URI)
+    // Combat encounter settings
+    encounterSettings: {
+        enabled: true, // Show Start Encounter button above chat input
+        historyDepth: 8, // Number of recent messages to include in combat initialization
+        autoSaveLogs: false // Save detailed combat logs to file
+    },
+    // Auto avatar generation settings
+    autoGenerateAvatars: true, // Master toggle for auto-generating avatars
+    avatarLLMCustomInstruction: '', // Custom instruction for LLM prompt generation
+    // External API settings for 'external' generation mode
+    externalApiSettings: {
+        baseUrl: '',           // OpenAI-compatible API base URL (e.g., "https://api.openai.com/v1")
+        // apiKey is NOT stored here for security. It is stored in localStorage('rpg_companion_api_key')
+        model: '',             // Model identifier (e.g., "gpt-4o-mini")
+        maxTokens: 8192,       // Maximum tokens for generation
+        temperature: 0.7       // Temperature setting for generation
+    },
+    // Lock state for tracker items (v3 JSON format feature)
+    lockedItems: {
+        stats: [],              // Array of locked stat IDs (e.g., ["health", "satiety"])
+        skills: [],             // Array of locked skill names (e.g., ["Cooking", "Swordsmanship"])
+        inventory: {
+            onPerson: [],       // Array of locked item indices (e.g., [0, 2])
+            clothing: [],       // Array of locked item indices
+            stored: {},         // Object with location keys, each containing array of locked indices (e.g., {"Home": [0, 1]})
+            assets: []          // Array of locked asset indices
+        },
+        quests: {
+            main: false,        // Boolean for main quest lock
+            optional: []        // Array of locked optional quest indices (e.g., [0, 2])
+        },
+        infoBox: {
+            date: false,        // Boolean for date widget lock
+            weather: false,     // Boolean for weather widget lock
+            temperature: false, // Boolean for temperature widget lock
+            time: false,        // Boolean for time widget lock
+            location: false,    // Boolean for location widget lock
+            recentEvents: false // Boolean for recent events widget lock
+        },
+        characters: {}          // Object mapping character names to their locked fields (e.g., {"Sarah": {relationship: true, thoughts: false}})
+    },
+    // Preset management for tracker configurations
+    presetManager: {
+        // Map of preset ID to preset data (contains name and trackerConfig)
+        presets: {},
+        // Map of character/group entity to preset ID (e.g., "char_0": "preset_123", "group_abc": "preset_456")
+        // Note: This is stored separately and NOT exported with presets
+        characterAssociations: {},
+        // Currently active preset ID
+        activePresetId: null,
+        // Default preset ID (used when no character association exists)
+        defaultPresetId: null
+    }
+};
+
+/**
+ * Last generated data from AI response
+ */
+export let lastGeneratedData = {
+    userStats: null,
+    infoBox: null,
+    characterThoughts: null,
+    html: null
+};
+
+/**
+ * Tracks the "committed" tracker data that should be used as source for next generation
+ * This gets updated when user sends a new message or first time generation
+ */
+export let committedTrackerData = {
+    userStats: null,
+    infoBox: null,
+    characterThoughts: null
+};
+
+/**
+ * Session-only storage for LLM-generated avatar prompts
+ * Maps character names to their generated prompts
+ * Resets on new chat (not persisted to extensionSettings)
+ */
+export let sessionAvatarPrompts = {};
+
+export function setSessionAvatarPrompt(characterName, prompt) {
+    sessionAvatarPrompts[characterName] = prompt;
+}
+
+export function getSessionAvatarPrompt(characterName) {
+    return sessionAvatarPrompts[characterName] || null;
+}
+
+export function clearSessionAvatarPrompts() {
+    sessionAvatarPrompts = {};
+}
+
+/**
+ * Per-chat storage for thought-based Character Expressions portraits.
+ * Maps normalized character names to the current below-chat portrait URL.
+ */
+export let thoughtBasedExpressionPortraits = {};
+
+export function setThoughtBasedExpressionPortraits(portraits) {
+    thoughtBasedExpressionPortraits = portraits && typeof portraits === 'object' ? { ...portraits } : {};
+}
+
+export function getThoughtBasedExpressionPortrait(characterName) {
+    return thoughtBasedExpressionPortraits[characterName] || null;
+}
+
+export function clearThoughtBasedExpressionPortraits() {
+    thoughtBasedExpressionPortraits = {};
+}
+
+/**
+ * Tracks whether the last action was a swipe (for separate mode)
+ * Used to determine whether to commit lastGeneratedData to committedTrackerData
+ */
+export let lastActionWasSwipe = false;
+
+/**
+ * Flag indicating if generation is in progress
+ */
+export let isGenerating = false;
+
+/**
+ * Tracks if we're currently doing a plot progression
+ */
+export let isPlotProgression = false;
+
+/**
+ * Flag indicating if we're actively expecting a new message from generation
+ * (as opposed to loading chat history)
+ */
+export let isAwaitingNewMessage = false;
+
+/**
+ * Monotonically-increasing counter used to detect stale separate-mode tracker
+ * generation results. Incremented each time a new automated generation is
+ * triggered or a message deletion occurs so any in-flight (or pending) call
+ * from a previous generation can recognise that its result is no longer valid.
+ */
+let separateGenerationId = 0;
+
+/**
+ * Returns the current separate generation ID.
+ * @returns {number}
+ */
+export function getSeparateGenerationId() {
+    return separateGenerationId;
+}
+
+/**
+ * Increments and returns the new separate generation ID.
+ * Call this when starting a new generation or when a deletion
+ * invalidates any pending/in-flight generation.
+ * @returns {number} The new ID
+ */
+export function incrementSeparateGenerationId() {
+    return ++separateGenerationId;
+}
+
+/**
+ * Temporary storage for pending dice roll (not saved until user clicks "Save Roll")
+ */
+export let pendingDiceRoll = null;
+
+/**
+ * Debug logs array for troubleshooting
+ */
+export let debugLogs = [];
+
+/**
+ * Add a debug log entry
+ * @param {string} message - The log message
+ * @param {any} data - Optional data to log
+ */
+export function addDebugLog(message, data = null) {
+    const timestamp = new Date().toISOString();
+    debugLogs.push({ timestamp, message, data });
+    // Keep only last 100 logs
+    if (debugLogs.length > 100) {
+        debugLogs.shift();
+    }
+}
+
+/**
+ * Feature flags for gradual rollout of new features
+ */
+export const FEATURE_FLAGS = {
+    useNewInventory: true // Enable v2 inventory system with categorized storage
+};
+
+/**
+ * Fallback avatar image (base64-encoded SVG with "?" icon)
+ * Using base64 to avoid quote-encoding issues in HTML attributes
+ */
+export const FALLBACK_AVATAR_DATA_URI = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIGhlaWdodD0iMTAwIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iI2NjY2NjYyIgb3BhY2l0eT0iMC4zIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIiBmaWxsPSIjNjY2IiBmb250LXNpemU9IjQwIj4/PC90ZXh0Pjwvc3ZnPg==';
+
+/**
+ * UI Element References (jQuery objects)
+ */
+export let $panelContainer = null;
+export let $userStatsContainer = null;
+export let $infoBoxContainer = null;
+export let $thoughtsContainer = null;
+export let $inventoryContainer = null;
+export let $questsContainer = null;
+export let $musicPlayerContainer = null;
+
+/**
+ * State setters - provide controlled mutation of state variables
+ */
+export function setExtensionSettings(newSettings) {
+    extensionSettings = newSettings;
+}
+
+export function updateExtensionSettings(updates) {
+    Object.assign(extensionSettings, updates);
+}
+
+export function setLastGeneratedData(data) {
+    lastGeneratedData = data;
+}
+
+export function updateLastGeneratedData(updates) {
+    Object.assign(lastGeneratedData, updates);
+}
+
+export function setCommittedTrackerData(data) {
+    // console.log('[RPG State] setCommittedTrackerData called with:', data);
+    // console.log('[RPG State] Type check on input:', {
+    //     userStatsType: typeof data.userStats,
+    //     infoBoxType: typeof data.infoBox,
+    //     characterThoughtsType: typeof data.characterThoughts,
+    //     userStatsValue: data.userStats,
+    //     infoBoxValue: data.infoBox,
+    //     characterThoughtsValue: data.characterThoughts
+    // });
+    committedTrackerData = data;
+    // console.log('[RPG State] committedTrackerData after assignment:', committedTrackerData);
+}
+
+export function updateCommittedTrackerData(updates) {
+    // console.log('[RPG State] updateCommittedTrackerData called with:', updates);
+    // console.log('[RPG State] committedTrackerData before update:', committedTrackerData);
+    Object.assign(committedTrackerData, updates);
+    // console.log('[RPG State] committedTrackerData after update:', committedTrackerData);
+}
+
+export function setLastActionWasSwipe(value) {
+    lastActionWasSwipe = value;
+}
+
+export function setIsGenerating(value) {
+    isGenerating = value;
+}
+
+export function setIsPlotProgression(value) {
+    isPlotProgression = value;
+}
+
+export function setIsAwaitingNewMessage(value) {
+    isAwaitingNewMessage = value;
+}
+
+export function setPendingDiceRoll(roll) {
+    pendingDiceRoll = roll;
+}
+
+export function getPendingDiceRoll() {
+    return pendingDiceRoll;
+}
+
+export function setPanelContainer($element) {
+    $panelContainer = $element;
+}
+
+export function setUserStatsContainer($element) {
+    $userStatsContainer = $element;
+}
+
+export function setInfoBoxContainer($element) {
+    $infoBoxContainer = $element;
+}
+
+export function setThoughtsContainer($element) {
+    $thoughtsContainer = $element;
+}
+
+export function setInventoryContainer($element) {
+    $inventoryContainer = $element;
+}
+
+export function setQuestsContainer($element) {
+    $questsContainer = $element;
+}
+
+export function setMusicPlayerContainer($element) {
+    $musicPlayerContainer = $element;
+}
