@@ -18,6 +18,7 @@ from sillytavern_rpg_engine.services.entities import (
     EntityAttributeService,
 )
 from sillytavern_rpg_engine.services.proposals import ProposalService
+from sillytavern_rpg_engine.services.relationships import SetRelationshipOperation
 
 
 def _world(database):
@@ -30,6 +31,9 @@ def _world(database):
         entity_id="erin", kind=EntityKind.CHARACTER, name="艾琳",
     ))
     attributes.apply_explicit("c1", "main", 1, CreateEntityOperation(
+        entity_id="player", kind=EntityKind.CHARACTER, name="旅人",
+    ))
+    attributes.apply_explicit("c1", "main", 2, CreateEntityOperation(
         entity_id="silvermoon", kind=EntityKind.LOCATION, name="银月城",
     ))
     return campaigns, attributes
@@ -45,15 +49,16 @@ def _define(key, audiences):
 
 def test_build_contains_rules_characters_and_visible_attributes_only(database):
     campaigns, attributes = _world(database)
-    attributes.apply_explicit("c1", "main", 2, _define(
+    attributes.apply_explicit("c1", "main", 3, _define(
         "alchemy", {Audience.ENGINE, Audience.NARRATOR, Audience.PLAYER_UI},
     ))
-    attributes.apply_explicit("c1", "main", 3, _define(
+    attributes.apply_explicit("c1", "main", 4, _define(
         "secret", {Audience.ENGINE},
     ))
     tracker = TrackerPresenter(database).build("c1", "main")
     assert tracker["rules"] == {"mode": "narrative", "enabled": False,
                                 "version": None}
+    assert tracker["state_version"] == 5
     assert tracker["userStats"]["attributes"] == []
     assert [c["name"] for c in tracker["characters"]] == ["艾琳"]
     keys = [a["key"] for a in tracker["characters"][0]["attributes"]]
@@ -63,16 +68,16 @@ def test_build_contains_rules_characters_and_visible_attributes_only(database):
 
 def test_values_rendered_and_hidden_keys_never_leak(database):
     campaigns, attributes = _world(database)
-    attributes.apply_explicit("c1", "main", 2, _define(
+    attributes.apply_explicit("c1", "main", 3, _define(
         "alchemy", {Audience.PLAYER_UI},
     ))
-    attributes.apply_explicit("c1", "main", 3, _define(
+    attributes.apply_explicit("c1", "main", 4, _define(
         "secret", {Audience.ENGINE},
     ))
-    attributes.apply_explicit("c1", "main", 4, SetAttributeOperation(
+    attributes.apply_explicit("c1", "main", 5, SetAttributeOperation(
         "erin", "alchemy", 35, None,
     ))
-    attributes.apply_explicit("c1", "main", 5, SetAttributeOperation(
+    attributes.apply_explicit("c1", "main", 6, SetAttributeOperation(
         "erin", "secret", 99, None,
     ))
     tracker = TrackerPresenter(database).build("c1", "main")
@@ -98,3 +103,49 @@ def test_pending_proposals_listed_and_render_wraps_json(database):
     rendered = presenter.render("c1", "main")
     assert rendered.startswith("```json\n") and rendered.endswith("\n```")
     json.loads(rendered.removeprefix("```json\n").removesuffix("\n```"))
+
+
+def test_scene_attributes_map_to_info_box(database):
+    campaigns, attributes = _world(database)
+    attributes.apply_explicit("c1", "main", 3, CreateEntityOperation(
+        entity_id="_scene", kind=EntityKind.LOCATION, name="场景",
+    ))
+    attributes.apply_explicit("c1", "main", 4, DefineAttributeOperation(AttributeDefinition(
+        campaign_id="c1", key="location", label="地点", category="scene",
+        value_type=AttributeType.TEXT, display=DisplayType.TEXT,
+        audiences=frozenset({Audience.PLAYER_UI}),
+    )))
+    attributes.apply_explicit("c1", "main", 5, SetAttributeOperation(
+        "_scene", "location", "银月城", None,
+    ))
+    tracker = TrackerPresenter(database).build("c1", "main")
+    assert tracker["infoBox"]["location"] == "银月城"
+    assert tracker["state_version"] == 6
+
+
+def test_player_attributes_render_under_user_stats(database):
+    campaigns, attributes = _world(database)
+    attributes.apply_explicit("c1", "main", 3, DefineAttributeOperation(AttributeDefinition(
+        campaign_id="c1", key="health", label="生命", category="resource",
+        value_type=AttributeType.NUMBER, display=DisplayType.BAR,
+        audiences=frozenset({Audience.PLAYER_UI}), minimum=0, maximum=100,
+    )))
+    attributes.apply_explicit("c1", "main", 4, SetAttributeOperation(
+        "player", "health", 80, None,
+    ))
+    tracker = TrackerPresenter(database).build("c1", "main")
+    keys = [a["key"] for a in tracker["userStats"]["attributes"]]
+    assert keys == ["health"]
+    assert tracker["userStats"]["attributes"][0]["value"] == 80
+
+
+def test_relationship_badge_on_characters(database):
+    campaigns, attributes = _world(database)
+    attributes.apply_explicit("c1", "main", 3, SetRelationshipOperation(
+        from_entity_id="erin", to_entity_id="player",
+        dimension="status", value="Ally",
+        audiences=frozenset({Audience.PLAYER_UI}),
+    ))
+    tracker = TrackerPresenter(database).build("c1", "main")
+    erin = next(c for c in tracker["characters"] if c["name"] == "艾琳")
+    assert erin["relationship"] == {"status": "Ally"}
