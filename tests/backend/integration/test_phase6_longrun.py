@@ -1,5 +1,10 @@
 """Phase 6 §17.3 long-run simulation: 10,000-turn engine endurance test.
 
+This test is marked ``slow``: plain ``pytest <file>`` deselects it silently.
+Run it explicitly:
+
+    LONG_RUN_TURNS=10000 python -m pytest tests/backend/integration/test_phase6_longrun.py -m slow -v
+
 Proves three claims:
 (a) an early high-importance memory stays retrievable after 10k turns
     (importance-ordered search must keep the seed event findable);
@@ -43,10 +48,8 @@ import pytest
 from sillytavern_rpg_engine.config import load_settings
 from sillytavern_rpg_engine.domain.memory import MemoryEventType
 from sillytavern_rpg_engine.domain.models import Audience
-from sillytavern_rpg_engine.llm.client import ChatMessage
 from sillytavern_rpg_engine.llm.scripted import ScriptedLLMClient
 from sillytavern_rpg_engine.orchestration.graph import TurnRunner, default_services
-from sillytavern_rpg_engine.orchestration.narrative import build_messages
 from sillytavern_rpg_engine.orchestration.normalize import strip_tracker_blocks
 from sillytavern_rpg_engine.services.campaigns import CampaignService
 from sillytavern_rpg_engine.services.memory_events import MemoryEventService
@@ -114,16 +117,11 @@ def test_ten_thousand_turns_retains_seed_memory_and_bounded_prompt(database):
                 f"seed memory {SEED_ID} lost from search at turn {i}"
             # (b) the actual narrate prompt stays bounded: 2 base system
             # messages + dialogue capped at max_history_messages. Call i*2
-            # is turn i's narrate request (extract is the fixed 4-msg call).
+            # is turn i's narrate request (extract is the fixed 3-msg call:
+            # 2 system + 1 user; 5 on retry).
             assert len(narrator.requests[i * 2]) \
                 <= settings.max_history_messages + 2, \
                 f"narrator prompt grew past the cap at turn {i}"
-            msgs = build_messages(
-                context={"current_state": {}},
-                history=[ChatMessage("user", f"行动 {j}") for j in range(i + 1)],
-                max_history=settings.max_history_messages,
-            )
-            assert len(msgs) <= settings.max_history_messages + 2
 
     with database.connect() as connection:
         turns = connection.execute(
@@ -138,20 +136,27 @@ def test_ten_thousand_turns_retains_seed_memory_and_bounded_prompt(database):
         snapshots = connection.execute(
             "SELECT COUNT(*) FROM state_snapshots"
         ).fetchone()[0]
+        detached = connection.execute(
+            "SELECT COUNT(*) FROM turns WHERE status = 'detached'"
+        ).fetchone()[0]
         duplicate_rows = connection.execute(
             "SELECT COUNT(*) - COUNT(DISTINCT content) FROM memory_events"
         ).fetchone()[0]
     # (c) exactly one turn row per turn; 2 transcripts per turn + 1 seed;
     # FTS stays in parity; snapshots only on version bumps (campaign v0 +
-    # seed bump), never per turn; every transcript carries the unique turn
-    # index so content never repeats.
+    # seed bump v1, verified as exactly 2 at 200 turns), never per turn;
+    # every transcript carries the unique turn index so content never
+    # repeats; no turn was silently detached (exact-match resolution held
+    # for all turns).
     assert turns == turn_count
-    assert events <= 2 * turn_count + 50, \
-        f"memory_events exploded: {events} > 2*{turn_count}+50"
+    assert events == 2 * turn_count + 1, \
+        f"memory_events: {events} != 2*{turn_count}+1 (1 seed + 2 per turn)"
     assert fts == events, "memory_events_fts lost parity with memory_events"
-    assert snapshots <= 3, \
-        f"per-turn snapshot growth detected: {snapshots} snapshots for" \
-        f" {turn_count} turns"
+    assert snapshots == 2, \
+        f"expected 2 snapshots (campaign v0 + seed bump v1), got {snapshots}"
+    assert detached == 0, \
+        f"{detached} detached turns: exact-match resolution must hold for" \
+        f" all {turn_count} turns"
     assert duplicate_rows == 0, \
         f"{duplicate_rows} duplicate memory event contents after" \
         f" {turn_count} turns"
