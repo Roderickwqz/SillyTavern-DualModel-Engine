@@ -475,7 +475,7 @@ export async function onMessageReceived(data) {
             const parsedData = parseResponse(responseText, { suppressNoDataError: true });
 
             // COMPAT: render the backend-authoritative Tracker read-only
-            applyCompatTracker(parsedData, collectCompatContainers());
+            applyCompatTracker(parsedData, collectCompatContainers(), lastMessage);
 
             // Note: Don't show parsing error here - this event fires when loading chat history too
             // Error notification is handled in apiClient.js for fresh generations only

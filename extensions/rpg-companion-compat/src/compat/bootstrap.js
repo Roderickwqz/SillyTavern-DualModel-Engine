@@ -5,13 +5,17 @@ import {
     renderStaleWarning, shouldShowStaleWarning, updateCompatStateVersion,
 } from './staleWarning.js';
 import { guardReadOnly } from './readOnly.js';
+import { cacheCompatTracker } from './lineageCache.js';
 import {
     extensionSettings, lastGeneratedData, setLastGeneratedData,
 } from '../core/state.js';
 
-export function applyCompatTracker(parseResult, containers) {
+export function applyCompatTracker(parseResult, containers, message = { swipe_id: 0 }) {
     const compat = parseResult.compat ?? null;
     setLastGeneratedData({ ...lastGeneratedData, compat });
+    if (compat != null) {
+        cacheCompatTracker(message, message.swipe_id ?? 0, compat);
+    }
 
     if (containers.staleContainer) {
         const stale = shouldShowStaleWarning({
