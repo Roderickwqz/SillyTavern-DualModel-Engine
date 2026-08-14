@@ -52,6 +52,19 @@ def test_transaction_rolls_back_all_writes(tmp_path):
     assert count == 0
 
 
+def test_migration_0006_adds_lineage_columns(database):
+    with database.connect() as connection:
+        cols = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(turns)").fetchall()
+        }
+    assert {"lineage_hash_before", "lineage_hash_after", "response_hash", "status"} <= cols
+    with database.connect() as connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='branch_heads'"
+        ).fetchone() is not None
+
+
 def test_failing_migration_leaves_no_tables(tmp_path):
     database = Database(tmp_path / "atomic.sqlite3")
     runner = MigrationRunner(database)
