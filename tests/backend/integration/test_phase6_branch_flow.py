@@ -244,3 +244,84 @@ def test_parallel_branches_keep_independent_pending_proposals(database):
             "SELECT COUNT(*) FROM pending_proposals"
             " WHERE branch_id = 'main' AND status = 'pending'"
         ).fetchone()[0] == 1
+
+
+def test_delete_tail_detaches_and_stales_its_proposal(database):
+    """Deleting the tail (turn 2's applied change + turn 3's proposal) must
+    detach both turns, roll state back to turn 1, and mark the deleted
+    turn's Pending proposal Stale so the resumed state stays clean."""
+    _world(database)
+    narrator = ScriptedLLMClient([
+        "叙述一", json.dumps({"operations": []}),                      # turn 1: no-op action
+        json.dumps({"operations": [json.loads(_SET_OP % 40)]}),       # turn 2: applied change
+        "叙述三", json.dumps({"operations": [json.loads(_SET_OP % 50)]}),  # turn 3: proposal
+        "叙述四", json.dumps({"operations": []}),                      # turn 4: continuation
+        "叙述五", json.dumps({"operations": []}),                      # turn 5: exact-match
+    ])
+    client = _client(database, narrator)
+
+    history: list[dict] = []
+    content = _chat(client, history, "我走进炼金铺。")
+    assert "叙述一" in content
+    content = _chat(client, history, "把艾琳的炼金术调整为40")
+    assert "已应用 1 项变更" in content
+    content = _chat(client, history, "我让艾琳教我炼金术。")
+    assert "记录 1 项待确认提案" in content
+
+    with database.connect() as connection:
+        turn1 = connection.execute(
+            "SELECT id FROM turns WHERE player_text = '我走进炼金铺。'"
+        ).fetchone()
+        pending = connection.execute(
+            "SELECT status, base_state_version FROM pending_proposals"
+            " WHERE branch_id = 'main' AND status = 'pending'"
+        ).fetchall()
+        assert len(pending) == 1
+        assert pending[0]["base_state_version"] == 3
+
+    # Delete turns 2 and 3: visible history ends at turn 1.
+    history = [{"role": "user", "content": "我走进炼金铺。"}]
+    content = _chat(client, history, "我环顾四周。")
+    assert "叙述四" in content
+
+    with database.connect() as connection:
+        detached = connection.execute(
+            "SELECT COUNT(*) FROM turns WHERE status = 'detached'"
+        ).fetchone()[0]
+        assert detached == 2
+        turn4 = connection.execute(
+            "SELECT id, status, parent_turn_id FROM turns"
+            " WHERE player_text = '我环顾四周。'"
+        ).fetchone()
+        assert turn4["status"] == "active"
+        assert turn4["parent_turn_id"] == turn1["id"]
+        stale = connection.execute(
+            "SELECT status, resolved_at FROM pending_proposals"
+            " WHERE branch_id = 'main' AND base_state_version = 3"
+        ).fetchone()
+        assert stale["status"] == "stale"
+        assert stale["resolved_at"] is not None
+        assert connection.execute(
+            "SELECT COUNT(*) FROM pending_proposals"
+            " WHERE branch_id = 'main' AND status = 'pending'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM attribute_values"
+            " WHERE entity_id = 'erin' AND attribute_key = 'alchemy'"
+        ).fetchone()[0] == 0
+
+    # Continuation with the new full history matches exactly; no new detaches.
+    history.append({"role": "assistant", "content": content})
+    content = _chat(client, history, "我看向窗外。")
+    assert "叙述五" in content
+
+    with database.connect() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM turns WHERE status = 'detached'"
+        ).fetchone()[0] == 2
+        turn5 = connection.execute(
+            "SELECT branch_id, parent_turn_id FROM turns"
+            " WHERE player_text = '我看向窗外。'"
+        ).fetchone()
+        assert turn5["branch_id"] == "main"
+        assert turn5["parent_turn_id"] == turn4["id"]

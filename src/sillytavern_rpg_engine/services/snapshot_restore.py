@@ -255,11 +255,12 @@ class SnapshotRestoreService:
     def restore(self, campaign_id: str, branch_id: str, state_version: int) -> int:
         """Reset campaign and branch state to the snapshot stored at
         state_version; raise NotFoundError when no such snapshot exists.
-        Also prunes stale auto-stored snapshots newer than state_version and
-        resets the branch head pointer to the restored version, so the
-        branch can keep applying mutations. Returns the restored
-        state_version. Raises NotFoundError when the campaign or branch
-        does not exist.
+        Also prunes stale auto-stored snapshots newer than state_version,
+        marks Pending proposals based on state newer than state_version
+        as Stale, and resets the branch head pointer to the restored
+        version, so the branch can keep applying mutations. Returns the
+        restored state_version. Raises NotFoundError when the campaign or
+        branch does not exist.
         """
         with self.database.transaction() as connection:
             CampaignRepository().require(connection, campaign_id)
@@ -309,6 +310,16 @@ class SnapshotRestoreService:
                 connection.execute(
                     sql, params(campaign_id, branch_id, state_version)
                 )
+            # Proposals based on state newer than the restored version can
+            # no longer be valid: their base state was just rolled back.
+            # Mark them Stale (never physically delete), mirroring the
+            # snapshot pruning above.
+            connection.execute(
+                "UPDATE pending_proposals SET status = 'stale', resolved_at = ?"
+                " WHERE campaign_id = ? AND branch_id = ? AND status = 'pending'"
+                " AND base_state_version > ?",
+                (self.clock(), campaign_id, branch_id, state_version),
+            )
             _insert_from_snapshot(
                 connection,
                 snapshot,
