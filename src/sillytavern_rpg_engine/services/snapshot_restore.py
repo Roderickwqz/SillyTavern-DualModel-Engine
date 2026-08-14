@@ -223,6 +223,31 @@ class SnapshotRestoreService:
         self.id_factory = id_factory
         self.clock = clock
 
+    def _find_ancestor_snapshot(
+        self, connection: sqlite3.Connection,
+        campaign_id: str, branch_id: str, state_version: int,
+    ) -> tuple[str, str] | None:
+        """Return (snapshot_json, ancestor_branch_id) of the nearest branch
+        in the parent_branch_id chain that holds a snapshot at
+        state_version, or None when no ancestor has one."""
+        current = branch_id
+        while True:
+            row = connection.execute(
+                "SELECT parent_branch_id FROM branches WHERE campaign_id = ? AND id = ?",
+                (campaign_id, current),
+            ).fetchone()
+            if row is None or row["parent_branch_id"] is None:
+                return None
+            ancestor = row["parent_branch_id"]
+            snapshot = connection.execute(
+                "SELECT snapshot_json FROM state_snapshots"
+                " WHERE campaign_id = ? AND branch_id = ? AND state_version = ?",
+                (campaign_id, ancestor, state_version),
+            ).fetchone()
+            if snapshot is not None:
+                return snapshot["snapshot_json"], ancestor
+            current = ancestor
+
     def restore(self, campaign_id: str, branch_id: str, state_version: int) -> int:
         """Reset campaign and branch state to the snapshot stored at
         state_version; raise NotFoundError when no such snapshot exists.
@@ -237,11 +262,28 @@ class SnapshotRestoreService:
                 (campaign_id, branch_id, state_version),
             ).fetchone()
             if row is None:
-                raise NotFoundError(
-                    f"snapshot {state_version} not found for campaign {campaign_id}"
-                    f" branch {branch_id}"
+                ancestor = self._find_ancestor_snapshot(
+                    connection, campaign_id, branch_id, state_version
                 )
-            snapshot = json.loads(row["snapshot_json"])
+                if ancestor is None:
+                    raise NotFoundError(
+                        f"snapshot {state_version} not found for campaign"
+                        f" {campaign_id} branch {branch_id}"
+                    )
+                # A fresh child branch has no snapshots of its own; inherit
+                # the nearest ancestor's snapshot and copy it under the
+                # child so the child owns its state going forward.
+                snapshot_json, _ancestor = ancestor
+                connection.execute(
+                    "INSERT INTO state_snapshots(campaign_id, branch_id,"
+                    " state_version, snapshot_json, created_at)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (campaign_id, branch_id, state_version, snapshot_json,
+                     self.clock()),
+                )
+                snapshot = json.loads(snapshot_json)
+            else:
+                snapshot = json.loads(row["snapshot_json"])
             # Entity deletes cascade participant links and would violate the
             # NO ACTION location_entity_id reference of surviving events;
             # entities are re-inserted with identical ids, so defer FK

@@ -18,6 +18,7 @@ from sillytavern_rpg_engine.services.attributes import (
     DefineAttributeOperation,
     SetAttributeOperation,
 )
+from sillytavern_rpg_engine.services.branches import BranchService
 from sillytavern_rpg_engine.services.campaigns import CampaignService
 from sillytavern_rpg_engine.services.combat import CombatService, CombatantEntry
 from sillytavern_rpg_engine.services.dnd_pack import DndRulesService
@@ -28,6 +29,7 @@ from sillytavern_rpg_engine.services.entities import (
 from sillytavern_rpg_engine.services.memory_events import MemoryEventService
 from sillytavern_rpg_engine.services.snapshot_restore import SnapshotRestoreService
 from sillytavern_rpg_engine.services.snapshots import SnapshotBuilder
+from sillytavern_rpg_engine.services.turns import TurnService
 
 
 def _seed_snapshot(database, campaign_id, branch_id, state_version):
@@ -204,6 +206,82 @@ def test_restore_missing_snapshot_raises_not_found(database):
     campaigns.create_campaign("c1", "Test")
     with pytest.raises(NotFoundError, match="not found"):
         SnapshotRestoreService(database).restore("c1", "main", 7)
+
+
+def test_restore_falls_back_to_ancestor_branch_snapshot(database):
+    ids = iter(f"e-{i}" for i in range(30))
+    campaigns = CampaignService(
+        database,
+        id_factory=ids.__next__,
+        clock=lambda: "2026-08-14T00:00:00Z",
+    )
+    campaigns.create_campaign("c1", "Test")
+    attrs = EntityAttributeService(database, campaigns.mutation_engine)
+    attrs.apply_explicit("c1", "main", 0, CreateEntityOperation(
+        "erin", EntityKind.CHARACTER, "艾琳",
+    ))
+    attrs.apply_explicit("c1", "main", 1, DefineAttributeOperation(AttributeDefinition(
+        campaign_id="c1", key="alchemy", label="炼金", category="skill",
+        value_type=AttributeType.NUMBER, display=DisplayType.BAR,
+        audiences=frozenset({Audience.PLAYER_UI}), minimum=0, maximum=100,
+    )))
+    attrs.apply_explicit("c1", "main", 2, SetAttributeOperation(
+        "erin", "alchemy", 10, None,
+    ))
+    _seed_snapshot(database, "c1", "main", 2)
+    attrs.apply_explicit("c1", "main", 3, SetAttributeOperation(
+        "erin", "alchemy", 99, None,
+    ))
+    turns = TurnService(database, id_factory=lambda: "turn-fork")
+    turn = turns.record(
+        "c1", "main", intent="action", player_text="hi",
+        response_text="ok", history_hash="h",
+        state_before_version=2, state_after_version=2,
+    )
+    child = BranchService(database).fork(
+        "c1", "main", turn.id, new_branch_id="branch-swipe-1"
+    )
+    restored = SnapshotRestoreService(database).restore("c1", child, 2)
+    assert restored == 2
+    with database.connect() as connection:
+        value = connection.execute(
+            "SELECT value_json FROM attribute_values"
+            " WHERE entity_id = 'erin' AND attribute_key = 'alchemy'"
+        ).fetchone()["value_json"]
+        copied = connection.execute(
+            "SELECT 1 FROM state_snapshots WHERE campaign_id = 'c1'"
+            " AND branch_id = ? AND state_version = 2",
+            (child,),
+        ).fetchone()
+        head = connection.execute(
+            "SELECT state_version FROM branch_heads WHERE campaign_id = 'c1'"
+            " AND branch_id = ?",
+            (child,),
+        ).fetchone()
+    assert value == "10"
+    assert copied is not None
+    assert head["state_version"] == 2
+
+
+def test_restore_without_ancestor_snapshot_still_raises(database):
+    ids = iter(f"e-{i}" for i in range(30))
+    campaigns = CampaignService(
+        database,
+        id_factory=ids.__next__,
+        clock=lambda: "2026-08-14T00:00:00Z",
+    )
+    campaigns.create_campaign("c1", "Test")
+    turns = TurnService(database, id_factory=lambda: "turn-fork")
+    turn = turns.record(
+        "c1", "main", intent="action", player_text="hi",
+        response_text="ok", history_hash="h",
+        state_before_version=0, state_after_version=0,
+    )
+    child = BranchService(database).fork(
+        "c1", "main", turn.id, new_branch_id="branch-swipe-1"
+    )
+    with pytest.raises(NotFoundError, match="not found"):
+        SnapshotRestoreService(database).restore("c1", child, 7)
 
 
 def test_restore_prunes_stale_snapshots_and_allows_continue(database):

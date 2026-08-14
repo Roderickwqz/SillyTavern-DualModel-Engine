@@ -24,6 +24,10 @@ class Turn:
     state_before_version: int
     state_after_version: int
     created_at: str
+    lineage_hash_before: str | None = None
+    lineage_hash_after: str | None = None
+    response_hash: str | None = None
+    status: str = "active"
 
 
 def _to_turn(row) -> Turn:
@@ -40,6 +44,10 @@ def _to_turn(row) -> Turn:
         state_before_version=row["state_before_version"],
         state_after_version=row["state_after_version"],
         created_at=row["created_at"],
+        lineage_hash_before=row["lineage_hash_before"],
+        lineage_hash_after=row["lineage_hash_after"],
+        response_hash=row["response_hash"],
+        status=row["status"],
     )
 
 
@@ -69,6 +77,9 @@ class TurnService:
         state_after_version: int,
         turn_id: str | None = None,
         removed_instructions: tuple[str, ...] = (),
+        lineage_hash_before: str | None = None,
+        lineage_hash_after: str | None = None,
+        response_hash: str | None = None,
     ) -> Turn:
         if not player_text.strip():
             raise ValidationError("player_text must not be empty")
@@ -88,14 +99,16 @@ class TurnService:
                 "INSERT INTO turns(id, campaign_id, branch_id, parent_turn_id,"
                 " intent, player_text, response_text, history_hash,"
                 " removed_instructions_json,"
-                " state_before_version, state_after_version, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " state_before_version, state_after_version, created_at,"
+                " lineage_hash_before, lineage_hash_after, response_hash, status)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')",
                 (
                     turn_id, campaign_id, branch_id,
                     parent["id"] if parent else None,
                     intent, player_text, response_text, history_hash,
                     json.dumps(list(removed_instructions), ensure_ascii=False),
                     state_before_version, state_after_version, now,
+                    lineage_hash_before, lineage_hash_after, response_hash,
                 ),
             )
         return Turn(
@@ -106,6 +119,10 @@ class TurnService:
             removed_instructions=tuple(removed_instructions),
             state_before_version=state_before_version,
             state_after_version=state_after_version, created_at=now,
+            lineage_hash_before=lineage_hash_before,
+            lineage_hash_after=lineage_hash_after,
+            response_hash=response_hash,
+            status="active",
         )
 
     def latest(self, campaign_id: str, branch_id: str) -> Turn | None:
@@ -125,3 +142,46 @@ class TurnService:
         if row is None:
             raise NotFoundError(f"turn {turn_id} not found")
         return _to_turn(row)
+
+    def find_by_lineage_after(
+        self, campaign_id: str, lineage_hash_after: str
+    ) -> list[Turn]:
+        """Return active turns on a campaign whose lineage_hash_after equals
+        the given hash, newest first; [] when none."""
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM turns WHERE campaign_id = ? AND lineage_hash_after = ?"
+                " AND status = 'active' ORDER BY created_at DESC, id DESC",
+                (campaign_id, lineage_hash_after),
+            ).fetchall()
+        return [_to_turn(row) for row in rows]
+
+    def find_by_lineage_before(
+        self, campaign_id: str, lineage_hash_before: str
+    ) -> list[Turn]:
+        """Return active turns on a campaign whose lineage_hash_before equals
+        the given hash, newest first; [] when none."""
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM turns WHERE campaign_id = ? AND lineage_hash_before = ?"
+                " AND status = 'active' ORDER BY created_at DESC, id DESC",
+                (campaign_id, lineage_hash_before),
+            ).fetchall()
+        return [_to_turn(row) for row in rows]
+
+    def detach_after(
+        self, campaign_id: str, branch_id: str, turn_id: str
+    ) -> int:
+        """Mark active turns recorded on the branch after the given turn as
+        detached; return the number of turns updated. Later turns are the
+        ones that sort after the turn in the branch's canonical order
+        (created_at, id). Turns are never physically deleted."""
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE turns SET status = 'detached' WHERE campaign_id = ?"
+                " AND branch_id = ? AND status = 'active'"
+                " AND (created_at, id) >"
+                " (SELECT created_at, id FROM turns WHERE id = ?)",
+                (campaign_id, branch_id, turn_id),
+            )
+        return cursor.rowcount
