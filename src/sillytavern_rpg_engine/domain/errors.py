@@ -23,3 +23,7 @@ class ConfirmationRequiredError(DomainError):
 
 class AmbiguousEntityError(DomainError):
     """Raised when a name matches multiple entities."""
+
+
+class BranchResolutionError(DomainError):
+    """Raised when visible history cannot be mapped to exactly one parent turn."""
