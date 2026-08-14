@@ -3,6 +3,9 @@
  * Automatically registers a regex script to strip tracker JSON from Together mode output
  */
 
+// COMPAT: narrow cleaning to LangGraph tracker-shaped blocks only
+import { buildTrackerCleaningRegex } from '../../compat/trackerCleaning.js';
+
 /**
  * Registers an output transformation regex to remove tracker JSON from messages
  * This uses SillyTavern's built-in regex system to transform text BEFORE display
@@ -18,7 +21,7 @@ export async function ensureJsonCleaningRegex(st_extension_settings, saveSetting
         }
 
         // Check if the JSON cleaning regex already exists
-        const scriptName = 'RPG Companion - Remove Tracker JSON (Together Mode)';
+        const scriptName = 'RPG Companion Compat - Remove Tracker JSON (Together Mode)';
         const existingScripts = st_extension_settings?.regex || [];
 
         // Validate regex array
@@ -33,7 +36,7 @@ export async function ensureJsonCleaningRegex(st_extension_settings, saveSetting
 
         if (existingScript) {
             // Update existing script with new regex pattern if it's different
-            const newPattern = '/```(?:json|markdown)?[\\s\\S]*?```/gim';
+            const newPattern = buildTrackerCleaningRegex();
 
             // Always ensure these properties are set correctly
             let needsSave = false;
@@ -100,9 +103,8 @@ export async function ensureJsonCleaningRegex(st_extension_settings, saveSetting
         const regexScript = {
             id: uuidv4(),
             scriptName: scriptName,
-            // Match ```json...```, ```markdown...```, or ```...``` code blocks (handles spaces, newlines, any content)
-            // Using a more permissive pattern to catch all variations
-            findRegex: '/```(?:json|markdown)?[\\s\\S]*?```/gim',
+            // COMPAT: only remove fenced JSON that carries LangGraph tracker keys
+            findRegex: buildTrackerCleaningRegex(),
             replaceString: '',
             trimStrings: [],
             placement: [2], // 2 = AI Output
@@ -148,7 +150,7 @@ export function removeJsonCleaningRegex(st_extension_settings, saveSettingsDebou
             return;
         }
 
-        const scriptName = 'RPG Companion - Remove Tracker JSON (Together Mode)';
+        const scriptName = 'RPG Companion Compat - Remove Tracker JSON (Together Mode)';
         const initialLength = st_extension_settings.regex.length;
 
         st_extension_settings.regex = st_extension_settings.regex.filter(script =>
