@@ -27,3 +27,7 @@ include = ["sillytavern_rpg_engine*"]
 
 [tool.setuptools.package-data]
 sillytavern_rpg_engine = ["persistence/schema/*.sql"]
+
+[tool.pytest.ini_options]
+markers = ["slow: long-running simulation tests"]
+addopts = "-m 'not slow'"
