@@ -8,7 +8,11 @@ from uuid import uuid4
 
 from ..domain.errors import NotFoundError
 from ..persistence.database import Database
-from ..persistence.repositories import dump_json
+from ..persistence.repositories import (
+    BranchRepository,
+    CampaignRepository,
+    dump_json,
+)
 from .entities import normalize_key
 
 # Memory events are deleted first: surviving events reference restored
@@ -254,8 +258,12 @@ class SnapshotRestoreService:
         Also prunes stale auto-stored snapshots newer than state_version and
         resets the branch head pointer to the restored version, so the
         branch can keep applying mutations. Returns the restored
-        state_version."""
+        state_version. Raises NotFoundError when the campaign or branch
+        does not exist.
+        """
         with self.database.transaction() as connection:
+            CampaignRepository().require(connection, campaign_id)
+            BranchRepository().require(connection, campaign_id, branch_id)
             row = connection.execute(
                 "SELECT snapshot_json FROM state_snapshots"
                 " WHERE campaign_id = ? AND branch_id = ? AND state_version = ?",
@@ -273,7 +281,7 @@ class SnapshotRestoreService:
                 # A fresh child branch has no snapshots of its own; inherit
                 # the nearest ancestor's snapshot and copy it under the
                 # child so the child owns its state going forward.
-                snapshot_json, _ancestor = ancestor
+                snapshot_json = ancestor[0]
                 connection.execute(
                     "INSERT INTO state_snapshots(campaign_id, branch_id,"
                     " state_version, snapshot_json, created_at)"

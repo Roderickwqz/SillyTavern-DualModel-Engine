@@ -80,7 +80,11 @@ class TurnService:
         lineage_hash_before: str | None = None,
         lineage_hash_after: str | None = None,
         response_hash: str | None = None,
+        parent_turn_id: str | None = None,
     ) -> Turn:
+        """Append one turn row; when parent_turn_id is given it is stored
+        verbatim (lineage-resolver fork/restore paths), otherwise the
+        branch's newest active turn is linked as parent."""
         if not player_text.strip():
             raise ValidationError("player_text must not be empty")
         if state_after_version < state_before_version:
@@ -90,11 +94,16 @@ class TurnService:
         turn_id = turn_id or self.id_factory()
         now = self.clock()
         with self.database.transaction() as connection:
-            parent = connection.execute(
-                "SELECT id FROM turns WHERE campaign_id = ? AND branch_id = ?"
-                " ORDER BY created_at DESC, id DESC LIMIT 1",
-                (campaign_id, branch_id),
-            ).fetchone()
+            if parent_turn_id is None:
+                parent = connection.execute(
+                    "SELECT id FROM turns WHERE campaign_id = ? AND branch_id = ?"
+                    " AND status = 'active'"
+                    " ORDER BY created_at DESC, id DESC LIMIT 1",
+                    (campaign_id, branch_id),
+                ).fetchone()
+                stored_parent = parent["id"] if parent else None
+            else:
+                stored_parent = parent_turn_id
             connection.execute(
                 "INSERT INTO turns(id, campaign_id, branch_id, parent_turn_id,"
                 " intent, player_text, response_text, history_hash,"
@@ -104,7 +113,7 @@ class TurnService:
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')",
                 (
                     turn_id, campaign_id, branch_id,
-                    parent["id"] if parent else None,
+                    stored_parent,
                     intent, player_text, response_text, history_hash,
                     json.dumps(list(removed_instructions), ensure_ascii=False),
                     state_before_version, state_after_version, now,
@@ -113,7 +122,7 @@ class TurnService:
             )
         return Turn(
             id=turn_id, campaign_id=campaign_id, branch_id=branch_id,
-            parent_turn_id=parent["id"] if parent else None,
+            parent_turn_id=stored_parent,
             intent=intent, player_text=player_text, response_text=response_text,
             history_hash=history_hash,
             removed_instructions=tuple(removed_instructions),
@@ -181,7 +190,8 @@ class TurnService:
                 "UPDATE turns SET status = 'detached' WHERE campaign_id = ?"
                 " AND branch_id = ? AND status = 'active'"
                 " AND (created_at, id) >"
-                " (SELECT created_at, id FROM turns WHERE id = ?)",
-                (campaign_id, branch_id, turn_id),
+                " (SELECT created_at, id FROM turns WHERE id = ?"
+                " AND campaign_id = ? AND branch_id = ?)",
+                (campaign_id, branch_id, turn_id, campaign_id, branch_id),
             )
         return cursor.rowcount

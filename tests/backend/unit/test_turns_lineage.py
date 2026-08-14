@@ -1,3 +1,4 @@
+from sillytavern_rpg_engine.services.branches import BranchService
 from sillytavern_rpg_engine.services.campaigns import CampaignService
 from sillytavern_rpg_engine.services.turns import TurnService
 
@@ -97,3 +98,33 @@ def test_detach_after_marks_later_turns(database):
     assert turns.get(first.id).status == "active"
     assert turns.get(second.id).status == "active"
     assert turns.get(third.id).status == "detached"
+
+
+def test_record_uses_explicit_parent_override(database):
+    turns = _setup(database)
+    first = _record(turns, history_hash="h1")
+    BranchService(database).fork(
+        "c1", "main", first.id, new_branch_id="branch-swipe-1"
+    )
+    third = turns.record(
+        "c1", "branch-swipe-1", intent="action", player_text="分支",
+        response_text="世界继续。", history_hash="h3",
+        state_before_version=0, state_after_version=0,
+        parent_turn_id=first.id,
+    )
+    assert third.parent_turn_id == first.id
+    assert turns.get(third.id).parent_turn_id == first.id
+
+
+def test_record_internal_parent_lookup_skips_detached(database):
+    turns = _setup(database)
+    first = _record(turns, history_hash="h1")
+    second = _record(turns, history_hash="h2")
+    turns.detach_after("c1", "main", first.id)
+    assert turns.get(second.id).status == "detached"
+    third = turns.record(
+        "c1", "main", intent="action", player_text="续",
+        response_text="再续。", history_hash="h3",
+        state_before_version=0, state_after_version=0,
+    )
+    assert third.parent_turn_id == first.id

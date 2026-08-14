@@ -21,9 +21,8 @@ class BranchContext:
     """Resolution result: which branch and parent turn to continue from.
 
     branch_id: branch the next turn should be recorded on.
-    parent_turn_id: stored turn to link the next turn to; None when the
-        next turn starts a brand-new branch (swipe fork) or when the
-        history maps to nothing recorded yet.
+    parent_turn_id: stored turn to link the next turn to; None only for
+        fresh-start and swipe-fork contexts.
     restored: whether live state was rolled back to a stored snapshot.
     """
 
@@ -56,9 +55,13 @@ class LineageResolver:
         lineage_hash_after equals lineage_hash_before(messages), continue
         on that turn's branch without any restore. Otherwise fall back to
         the longest known prefix of the visible history (edit/delete/
-        swipe). Raises BranchResolutionError on ambiguity or when no
-        prefix matches any active turn.
+        swipe). A first-ever message on a fresh campaign (no recorded
+        history) resolves to branch "main" with no parent. Raises
+        BranchResolutionError on ambiguity or when no prefix matches any
+        active turn.
         """
+        if len(messages) == 1:
+            return BranchContext("main", None, restored=False)
         prefix_hash = lineage_hash_before(messages)
         rows = self.turns.find_by_lineage_after(campaign_id, prefix_hash)
         if len(rows) > 1:
@@ -78,11 +81,12 @@ class LineageResolver:
         Walk k from len(messages) - 1 down to 0, comparing the hash of
         messages[:k] against stored lineage_hash_before of active turns.
         The deepest (largest k) match is the parent. If the trailing
-        assistant message is a swipe (its response hash differs from the
-        stored one), fork a child branch and restore the parent's
-        before-state; otherwise detach later turns on the matched branch
-        and restore the matched head. Raises BranchResolutionError when no
-        prefix matches any active turn.
+        assistant message is a swipe (a stored response_hash exists and
+        differs from the visible reply), fork a child branch and restore
+        the parent's before-state; otherwise restore the matched head
+        first (so a failed restore leaves branch state consistent), then
+        detach later turns on the matched branch. Raises
+        BranchResolutionError when no prefix matches any active turn.
         """
         for k in range(len(messages) - 1, -1, -1):
             h = _history_hash(messages[:k])
@@ -95,7 +99,8 @@ class LineageResolver:
                 )
             parent = candidates[0]
             swiped = (
-                len(messages) >= 2
+                parent.response_hash is not None
+                and len(messages) >= 2
                 and messages[-2].role == "assistant"
                 and response_hash(messages[-2].content) != parent.response_hash
             )
@@ -108,10 +113,10 @@ class LineageResolver:
                     campaign_id, child, parent.state_before_version
                 )
                 return BranchContext(child, None, restored=True)
-            self.turns.detach_after(campaign_id, parent.branch_id, parent.id)
             self.snapshots.restore(
                 campaign_id, parent.branch_id, parent.state_after_version
             )
+            self.turns.detach_after(campaign_id, parent.branch_id, parent.id)
             return BranchContext(parent.branch_id, parent.id, restored=True)
         raise BranchResolutionError(
             f"cannot map visible history to any known parent for campaign"

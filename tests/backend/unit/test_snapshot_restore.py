@@ -208,6 +208,22 @@ def test_restore_missing_snapshot_raises_not_found(database):
         SnapshotRestoreService(database).restore("c1", "main", 7)
 
 
+def test_restore_missing_campaign_raises_not_found(database):
+    with pytest.raises(NotFoundError, match="campaign"):
+        SnapshotRestoreService(database).restore("nope", "main", 0)
+
+
+def test_restore_missing_branch_raises_not_found(database):
+    campaigns = CampaignService(
+        database,
+        id_factory=iter(range(100)).__next__,
+        clock=lambda: "2026-08-14T00:00:00Z",
+    )
+    campaigns.create_campaign("c1", "Test")
+    with pytest.raises(NotFoundError, match="branch"):
+        SnapshotRestoreService(database).restore("c1", "no-such-branch", 0)
+
+
 def test_restore_falls_back_to_ancestor_branch_snapshot(database):
     ids = iter(f"e-{i}" for i in range(30))
     campaigns = CampaignService(

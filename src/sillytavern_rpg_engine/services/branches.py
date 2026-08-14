@@ -72,7 +72,7 @@ class BranchService:
         the new branch id."""
         branch_id = new_branch_id or f"branch-{self._id_factory()}"
         now = self._clock()
-        with self.database.connect() as connection:
+        with self.database.transaction() as connection:
             self.branch_repository.require(connection, campaign_id, parent_branch_id)
             parent = connection.execute(
                 "SELECT id, state_after_version FROM turns WHERE id = ? AND campaign_id = ?",
