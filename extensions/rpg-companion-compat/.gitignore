@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# Node modules (if any)
+node_modules/
+
+# Environment variables
+.env
+
+# Claude
+CLAUDE.md
+yarn.lock

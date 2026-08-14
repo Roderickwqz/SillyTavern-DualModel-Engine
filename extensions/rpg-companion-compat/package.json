@@ -1,0 +1,19 @@
+{
+  "name": "rpg-complanion-sillytavern",
+  "version": "3.7.4",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "validate_locale": "node src/i18n/validator.js --watch",
+    "validate_locale_once": "node src/i18n/validator.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "chokidar": "^5.0.0",
+    "fs-extra": "^11.3.3",
+    "glob": "^13.0.6"
+  },
+  "dependencies": {}
+}
