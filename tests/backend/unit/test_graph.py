@@ -178,3 +178,53 @@ def test_short_query_text_completes_without_error(database):
     assert response["object"] == "chat.completion"
     assert "choices" in response
     assert response["choices"][0]["message"]["content"]
+
+
+def test_edit_history_detaches_and_continues(database):
+    """Editing away an assistant reply must detach later turns on the branch
+    and continue from the matched prefix (full echoed content incl. tracker
+    block, which normalize strips before lineage hashing)."""
+    CampaignService(
+        database, id_factory=lambda: "cid", clock=lambda: "2026-08-13T00:00:00Z",
+    ).create_campaign("c1", "测试")
+    # ACTION turns need two narrator calls each: narrate + extract.
+    narrator = ScriptedLLMClient([
+        "回复甲", json.dumps({"operations": []}),
+        "回复乙", json.dumps({"operations": []}),
+        "回复丙", json.dumps({"operations": []}),
+    ])
+    runner = TurnRunner(default_services(database, _settings(), narrator))
+
+    history = []
+    first = runner.run({
+        "campaign_id": "c1",
+        "messages": history + [{"role": "user", "content": "a"}],
+    })
+    history.extend([
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": _content(first)},
+    ])
+    second = runner.run({
+        "campaign_id": "c1",
+        "messages": history + [{"role": "user", "content": "b"}],
+    })
+    history.extend([
+        {"role": "user", "content": "b"},
+        {"role": "assistant", "content": _content(second)},
+    ])
+    # Edit: drop both assistant replies, keep user messages only, continue.
+    edited = [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]
+    result = runner.run({
+        "campaign_id": "c1",
+        "messages": edited + [{"role": "user", "content": "c"}],
+    })
+    assert _content(result)
+    with database.connect() as connection:
+        detached = connection.execute(
+            "SELECT COUNT(*) FROM turns WHERE status = 'detached'"
+        ).fetchone()[0]
+        active = connection.execute(
+            "SELECT COUNT(*) FROM turns WHERE status = 'active'"
+        ).fetchone()[0]
+    assert detached >= 1
+    assert active >= 1

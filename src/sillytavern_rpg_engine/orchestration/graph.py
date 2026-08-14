@@ -12,6 +12,8 @@ from ..domain.models import Audience
 from ..llm.client import LLMClient
 from ..persistence.database import Database
 from ..persistence.repositories import CampaignRepository
+from ..services.branches import BranchService
+from ..services.lineage import LineageResolver
 from ..services.memory_events import MemoryEventService
 from ..services.mutations import MutationEngine
 from ..services.proposals import ProposalService
@@ -27,7 +29,12 @@ from .gate import (
 )
 from .intent import Intent, route_intent
 from .narrative import ANSWER_SYSTEM_PROMPT, generate
-from .normalize import NormalizedRequest, normalize_request
+from .normalize import (
+    NormalizedRequest,
+    lineage_hash_after,
+    normalize_request,
+    response_hash,
+)
 from .presenter import TrackerPresenter
 from .scene import scan_scene
 
@@ -71,6 +78,9 @@ class TurnState(TypedDict, total=False):
     request: NormalizedRequest
     turn_id: str
     intent: str
+    branch_id: str
+    parent_turn_id: str | None
+    branch_restored: bool
     state_before_version: int
     scene_entity_ids: tuple[str, ...]
     context: dict[str, Any]
@@ -126,6 +136,24 @@ def _make_route_node() -> Any:
     return node_route
 
 
+def _make_resolve_lineage_node(database: Database, _version: Any) -> Any:
+    def node_resolve_lineage(state: TurnState) -> dict[str, Any]:
+        request = state["request"]
+        ctx = LineageResolver(database).resolve(
+            request.campaign_id, request.messages
+        )
+        return {
+            "branch_id": ctx.branch_id,
+            "parent_turn_id": ctx.parent_turn_id,
+            "branch_restored": ctx.restored,
+            # Re-read: snapshot restore may have rolled campaigns.state_version
+            # back; normalize's value is stale on every restored path.
+            "state_before_version": _version(request.campaign_id),
+        }
+
+    return node_resolve_lineage
+
+
 def _make_scene_node(database: Database) -> Any:
     def node_scene(state: TurnState) -> dict[str, Any]:
         request = state["request"]
@@ -143,7 +171,7 @@ def _make_retrieve_node(services: TurnServices) -> Any:
         request = state["request"]
         context = services.retrieval.assemble(RetrievalQuery(
             campaign_id=request.campaign_id,
-            branch_id=request.branch_id,
+            branch_id=state["branch_id"],
             audiences=frozenset({Audience.ENGINE, Audience.NARRATOR}),
             text=request.player_text,
             scene_entity_ids=state["scene_entity_ids"],
@@ -225,7 +253,7 @@ def _make_gate_explicit_node(services: TurnServices, database: Database) -> Any:
             ))
         return _store_gate(run_gate(
             database, services.mutation_engine, services.proposals,
-            request.campaign_id, request.branch_id,
+            request.campaign_id, state["branch_id"],
             Intent.EXPLICIT_CHANGE, extraction.operations,
         ))
 
@@ -237,7 +265,7 @@ def _make_gate_action_node(services: TurnServices, database: Database) -> Any:
         request = state["request"]
         return _store_gate(run_gate(
             database, services.mutation_engine, services.proposals,
-            request.campaign_id, request.branch_id,
+            request.campaign_id, state["branch_id"],
             Intent.ACTION, state.get("operations", ()),
         ))
 
@@ -274,6 +302,20 @@ def _make_critic_node(services: TurnServices) -> Any:
     return node_critic
 
 
+def _assemble_response_parts(state: TurnState) -> str:
+    """Join the visible response parts (narrative/gate/error) without the
+    tracker block; both the recorded response_text and the echoed chat
+    content are built from this so lineage hashes match on every turn."""
+    parts = []
+    if state.get("narrative"):
+        parts.append(state["narrative"])
+    if state.get("gate_message"):
+        parts.append(state["gate_message"])
+    if state.get("extraction_error"):
+        parts.append(f"(状态变更解析失败:{state['extraction_error']})")
+    return "\n\n".join(parts)
+
+
 def _make_commit_node(
     services: TurnServices, _version: Any,
 ) -> Any:
@@ -282,19 +324,19 @@ def _make_commit_node(
         intent = state["intent"]
         if intent == Intent.QUERY.value:
             return {}
-        response_text = state.get("narrative") or state.get("gate_message", "")
+        response_text = _assemble_response_parts(state)
         if intent == Intent.ACTION.value:
             audiences = frozenset(Audience)
             participants = state.get("scene_entity_ids", ())
             services.memory.record_transcript(
-                request.campaign_id, request.branch_id,
+                request.campaign_id, state["branch_id"],
                 type=MemoryEventType.SCENE,
                 content=f"玩家:{request.player_text}",
                 importance=3, audiences=audiences, participants=participants,
                 turn_id=state["turn_id"],
             )
             services.memory.record_transcript(
-                request.campaign_id, request.branch_id,
+                request.campaign_id, state["branch_id"],
                 type=MemoryEventType.SCENE,
                 content=f"叙事:{response_text}",
                 importance=3, audiences=audiences, participants=participants,
@@ -302,7 +344,7 @@ def _make_commit_node(
             )
         after_version = _version(request.campaign_id)
         services.turns.record(
-            request.campaign_id, request.branch_id,
+            request.campaign_id, state["branch_id"],
             intent=intent,
             player_text=request.player_text,
             response_text=response_text,
@@ -311,6 +353,16 @@ def _make_commit_node(
             state_after_version=after_version,
             turn_id=state["turn_id"],
             removed_instructions=request.removed_instructions,
+            parent_turn_id=state.get("parent_turn_id"),
+            lineage_hash_before=request.lineage_hash_before,
+            lineage_hash_after=lineage_hash_after(
+                request.messages, response_text
+            ),
+            response_hash=response_hash(response_text),
+        )
+        BranchService(services.database).update_head(
+            request.campaign_id, state["branch_id"], after_version,
+            state["turn_id"],
         )
         return {}
 
@@ -321,16 +373,9 @@ def _make_respond_node(services: TurnServices, database: Database) -> Any:
     def node_respond(state: TurnState) -> dict[str, Any]:
         request = state["request"]
         tracker = TrackerPresenter(database).render(
-            request.campaign_id, request.branch_id
+            request.campaign_id, state["branch_id"]
         )
-        parts = []
-        if state.get("narrative"):
-            parts.append(state["narrative"])
-        if state.get("gate_message"):
-            parts.append(state["gate_message"])
-        if state.get("extraction_error"):
-            parts.append(f"(状态变更解析失败:{state['extraction_error']})")
-        content = "\n\n".join(parts) + "\n\n" + tracker
+        content = _assemble_response_parts(state) + "\n\n" + tracker
         return {"response": {
             "id": f"chatcmpl-{state['turn_id']}",
             "object": "chat.completion",
@@ -359,6 +404,10 @@ def build_graph(services: TurnServices):
 
     builder = StateGraph(TurnState)
     builder.add_node("normalize", _make_normalize_node(services, _version))
+    builder.add_node(
+        "resolve_lineage",
+        _make_resolve_lineage_node(database, _version),
+    )
     builder.add_node("route", _make_route_node())
     builder.add_node("scene", _make_scene_node(database))
     builder.add_node("retrieve", _make_retrieve_node(services))
@@ -375,7 +424,8 @@ def build_graph(services: TurnServices):
     builder.add_node("commit", _make_commit_node(services, _version))
     builder.add_node("respond", _make_respond_node(services, database))
     builder.add_edge(START, "normalize")
-    builder.add_edge("normalize", "route")
+    builder.add_edge("normalize", "resolve_lineage")
+    builder.add_edge("resolve_lineage", "route")
     builder.add_edge("route", "scene")
     builder.add_edge("scene", "retrieve")
     builder.add_conditional_edges("retrieve", _route_after_retrieve, {

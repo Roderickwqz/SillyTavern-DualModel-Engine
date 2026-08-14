@@ -55,6 +55,21 @@ def test_chat_completion_roundtrip(database):
     assert "你好,冒险者。" in content and "```json" in content
 
 
+def test_unmappable_history_returns_409_branch_resolution(database):
+    _campaign(database)
+    client = _client(database, ScriptedLLMClient([]))
+    response = client.post("/v1/chat/completions", json={
+        "campaign_id": "c1",
+        "messages": [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "X"},
+            {"role": "user", "content": "b"},
+        ],
+    })
+    assert response.status_code == 409
+    assert response.json()["error"]["type"] == "branch_resolution_error"
+
+
 def test_malformed_json_body_returns_400(database):
     _campaign(database)
     client = _client(database, ScriptedLLMClient([]))

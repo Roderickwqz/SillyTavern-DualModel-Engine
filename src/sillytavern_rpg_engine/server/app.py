@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from ..config import Settings
 from ..domain.errors import (
     AmbiguousEntityError,
+    BranchResolutionError,
     DomainError,
     NotFoundError,
     StaleStateError,
@@ -24,6 +25,7 @@ _STATUS = {
     NotFoundError: (404, "not_found"),
     StaleStateError: (409, "stale_state"),
     AmbiguousEntityError: (409, "ambiguous_entity"),
+    BranchResolutionError: (409, "branch_resolution_error"),
 }
 
 
