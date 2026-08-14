@@ -79,7 +79,11 @@ def _history_hash(messages: tuple[ChatMessage, ...]) -> str:
 
 
 def lineage_hash_before(messages: tuple[ChatMessage, ...]) -> str:
-    """Hash the history preceding the trailing user message, tracker-free."""
+    """Hash the history preceding the trailing user message.
+
+    Input must already be tracker-free: callers pass normalized messages,
+    and normalize_request applies strip_tracker_blocks upstream.
+    """
     if not messages or messages[-1].role != "user":
         raise ValidationError("lineage requires trailing user message")
     return _history_hash(messages[:-1])
@@ -88,7 +92,12 @@ def lineage_hash_before(messages: tuple[ChatMessage, ...]) -> str:
 def lineage_hash_after(
     prefix: tuple[ChatMessage, ...], assistant_text: str,
 ) -> str:
-    """Hash the history plus the cleaned assistant reply."""
+    """Hash a turn's full history plus the cleaned assistant reply.
+
+    Contract: prefix must be the turn's message sequence INCLUDING its
+    trailing user message; the cleaned assistant reply is appended after
+    it. The result equals the next request's lineage_hash_before.
+    """
     cleaned = strip_tracker_blocks(assistant_text)
     return _history_hash(prefix + (ChatMessage("assistant", cleaned),))
 

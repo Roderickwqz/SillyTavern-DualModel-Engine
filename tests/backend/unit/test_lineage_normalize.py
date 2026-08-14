@@ -15,7 +15,7 @@ def test_lineage_hashes_exclude_tracker_blocks():
     )
     before = lineage_hash_before(msgs)
     after = lineage_hash_after(
-        msgs[:-1],
+        msgs,
         "回复\n```json\n{\"userStats\":{}}\n```",
     )
     assert len(before) == 64
