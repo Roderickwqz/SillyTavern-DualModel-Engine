@@ -56,6 +56,8 @@ import {
 import { parseResponse, parseUserStats } from './src/systems/generation/parser.js';
 import { updateRPGData, testExternalAPIConnection } from './src/systems/generation/apiClient.js';
 import { onGenerationStarted } from './src/systems/generation/injector.js';
+// COMPAT: LangGraph authoritative Tracker mode
+import { initCompatMode } from './src/compat/bootstrap.js';
 
 // Rendering modules
 import { getSafeThumbnailUrl } from './src/utils/avatars.js';
@@ -1321,6 +1323,9 @@ jQuery(async () => {
         } catch (error) {
             console.error('[RPG Companion] Settings load failed, continuing with defaults:', error);
         }
+
+        // COMPAT: lock the fork into Together mode with read-only authoritative UI
+        initCompatMode();
 
         // Check if migration to v3 JSON format is needed
         try {

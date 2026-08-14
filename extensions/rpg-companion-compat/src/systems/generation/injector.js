@@ -581,6 +581,12 @@ export async function onGenerationStarted(type, data, dryRun) {
         return;
     }
 
+    // COMPAT: separate/external generation paths are disabled; the authoritative
+    // Tracker always arrives inside the Together main response from the backend
+    if (extensionSettings.compatMode && extensionSettings.generationMode !== 'together') {
+        return;
+    }
+
     const context = getContext();
     const chat = context.chat;
     // Detect if a guided generation is active (GuidedGenerations and similar extensions

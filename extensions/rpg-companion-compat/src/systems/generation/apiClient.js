@@ -51,6 +51,10 @@ let originalPresetName = null;
  * @throws {Error} If the API call fails or configuration is invalid
  */
 export async function generateWithExternalAPI(messages) {
+    // COMPAT: authoritative Tracker arrives in the Together main response
+    if (extensionSettings.compatMode) {
+        return '';
+    }
     const { baseUrl, model, maxTokens, temperature } = extensionSettings.externalApiSettings || {};
     // Retrieve API key from secure storage (not shared extension settings)
     const apiKey = localStorage.getItem('rpg_companion_external_api_key');
@@ -220,6 +224,10 @@ export async function switchToPreset(presetName) {
  * @param {Function} renderInventory - UI function to render inventory
  */
 export async function updateRPGData(renderUserStats, renderInfoBox, renderThoughts, renderInventory, generationId = null) {
+    // COMPAT: authoritative Tracker arrives in the Together main response
+    if (extensionSettings.compatMode) {
+        return;
+    }
     if (isGenerating) {
         // console.log('[RPG Companion] Already generating, skipping...');
         return;

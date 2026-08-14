@@ -44,6 +44,8 @@ import { parseAndStoreSpotifyUrl, convertToEmbedUrl } from '../features/musicPla
 import { updateRPGData } from '../generation/apiClient.js';
 import { removeLocks } from '../generation/lockManager.js';
 import { onGenerationStarted, initHistoryInjectionListeners } from '../generation/injector.js';
+// COMPAT: render authoritative tracker into read-only compat panels
+import { applyCompatTracker, collectCompatContainers } from '../../compat/bootstrap.js';
 
 // Rendering
 import { renderUserStats } from '../rendering/userStats.js';
@@ -471,6 +473,9 @@ export async function onMessageReceived(data) {
             const rawSwipeId = Number(lastMessage.swipe_id ?? 0);
             const responseText = lastMessage.mes;
             const parsedData = parseResponse(responseText, { suppressNoDataError: true });
+
+            // COMPAT: render the backend-authoritative Tracker read-only
+            applyCompatTracker(parsedData, collectCompatContainers());
 
             // Note: Don't show parsing error here - this event fires when loading chat history too
             // Error notification is handled in apiClient.js for fresh generations only
