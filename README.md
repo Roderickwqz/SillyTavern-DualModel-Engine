@@ -103,3 +103,17 @@ Endpoints: `GET /v1/models`, `POST /v1/chat/completions` (non-streaming),
 
 Chat commands: `确认提案 <id>` / `reject <id>` manage pending proposals;
 `查询…` is read-only; explicit changes (`把X调整为Y`) apply immediately.
+
+## RPG Companion Compat (Phase 5)
+
+The AGPL-compatible frontend for the LangGraph engine is a vendored fork of
+[RPG Companion for SillyTavern](https://github.com/SpicyMarinara/rpg-companion-sillytavern)
+at `extensions/rpg-companion-compat/` (upstream pin, fork modifications, and
+license notices in `UPSTREAM.md` / `THIRD_PARTY_NOTICES.md`). It renders the
+backend-authoritative Tracker JSON read-only in Together mode.
+
+**Never run the RPG Companion Compat extension together with the DualModel
+Engine extension** — they are mutually exclusive state authorities. Disable
+DualModel Engine, then install the compat extension as described in
+[`extensions/rpg-companion-compat/README.md`](extensions/rpg-companion-compat/README.md),
+and point Chat Completion at the FastAPI backend (`http://127.0.0.1:8000/v1`).
