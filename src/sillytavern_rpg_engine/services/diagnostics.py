@@ -2,11 +2,12 @@
 
 from typing import Any
 
+from ..config import Settings
 from ..persistence.database import Database
 from ..persistence.migrations import MigrationRunner
 
 
-def build_diagnostics(database: Database, *, degraded: bool, settings) -> dict[str, Any]:
+def build_diagnostics(database: Database, *, degraded: bool, settings: Settings) -> dict[str, Any]:
     """Report database integrity, schema migration state, content counts,
     and configured models; ``degraded`` forces an overall degraded status."""
     migration = MigrationRunner(database).status()

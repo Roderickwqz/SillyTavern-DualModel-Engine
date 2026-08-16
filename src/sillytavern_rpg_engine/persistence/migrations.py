@@ -56,10 +56,20 @@ class MigrationRunner:
         scripts = self._load_scripts()
         latest = max(scripts) if scripts else 0
         with self.database.connect() as connection:
-            rows = connection.execute(
-                "SELECT version FROM schema_migrations ORDER BY version"
-            ).fetchall()
-        applied = [row[0] for row in rows]
+            has_migrations_table = connection.execute(
+                "SELECT COUNT(*) FROM sqlite_master"
+                " WHERE type = 'table' AND name = 'schema_migrations'"
+            ).fetchone()[0]
+            applied = (
+                [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT version FROM schema_migrations ORDER BY version"
+                    )
+                ]
+                if has_migrations_table
+                else []
+            )
         pending = sorted(set(scripts) - set(applied))
         return MigrationStatus(applied=applied, pending=pending, latest=latest)
 
