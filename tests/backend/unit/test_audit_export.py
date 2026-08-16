@@ -58,7 +58,7 @@ def test_campaign_export_contains_schema_and_no_credentials(database, tmp_path):
     output = tmp_path / "campaign.json"
     CampaignExporter(database).export("c1", output)
     payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["export_schema_version"] == 1
+    assert payload["export_schema_version"] == 2
     assert payload["campaign"]["id"] == "c1"
     serialized = json.dumps(payload).casefold()
     assert "api_key" not in serialized

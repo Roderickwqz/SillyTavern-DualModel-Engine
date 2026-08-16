@@ -23,6 +23,16 @@ _EXPECTED_ROOT_KEYS = frozenset(
         "dice_rolls",
         "entity_conditions",
         "combat_encounters",
+        "attribute_definitions",
+        "attribute_values",
+        "entity_aliases",
+        "facts",
+        "relationships",
+        "memory_events",
+        "memory_summaries",
+        "trait_events",
+        "turns",
+        "branch_heads",
     }
 )
 _FORBIDDEN_KEYS = frozenset({"api_key", "authorization", "token", "secret"})
@@ -111,8 +121,18 @@ class CampaignExporter:
             dice_rolls = self._dice_rolls(connection, campaign_id)
             conditions = self._entity_conditions(connection, campaign_id)
             encounters = self._combat_encounters(connection, campaign_id)
+            definitions = self._attribute_definitions(connection, campaign_id)
+            values = self._attribute_values(connection, campaign_id)
+            aliases = self._entity_aliases(connection, campaign_id)
+            facts = self._facts(connection, campaign_id)
+            relationships = self._relationships(connection, campaign_id)
+            memory_events = self._memory_events(connection, campaign_id)
+            summaries = self._memory_summaries(connection, campaign_id)
+            trait_events = self._trait_events(connection, campaign_id)
+            turns = self._turns(connection, campaign_id)
+            heads = self._branch_heads(connection, campaign_id)
         return {
-            "export_schema_version": 1,
+            "export_schema_version": 2,
             "exported_at": now,
             "campaign": snapshot["campaign"],
             "branches": branches,
@@ -123,6 +143,16 @@ class CampaignExporter:
             "dice_rolls": dice_rolls,
             "entity_conditions": conditions,
             "combat_encounters": encounters,
+            "attribute_definitions": definitions,
+            "attribute_values": values,
+            "entity_aliases": aliases,
+            "facts": facts,
+            "relationships": relationships,
+            "memory_events": memory_events,
+            "memory_summaries": summaries,
+            "trait_events": trait_events,
+            "turns": turns,
+            "branch_heads": heads,
         }
 
     _build_payload = build_payload
@@ -277,11 +307,195 @@ class CampaignExporter:
         return result
 
     @staticmethod
+    def _attribute_definitions(
+        connection, campaign_id: str
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT campaign_id, key, label, category, value_type, display,"
+            " audiences_json, minimum, maximum, enum_values_json, unit,"
+            " created_state_version FROM attribute_definitions"
+            " WHERE campaign_id = ? ORDER BY key",
+            (campaign_id,),
+        ).fetchall()
+        return [
+            {
+                **dict(row),
+                "audiences": json.loads(row["audiences_json"]),
+                "enum_values": json.loads(row["enum_values_json"]),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _attribute_values(
+        connection, campaign_id: str
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT campaign_id, entity_id, attribute_key, value_json,"
+            " state_version, updated_turn_id FROM attribute_values"
+            " WHERE campaign_id = ? ORDER BY entity_id, attribute_key",
+            (campaign_id,),
+        ).fetchall()
+        return [
+            {
+                **dict(row),
+                "value": json.loads(row["value_json"]),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _entity_aliases(
+        connection, campaign_id: str
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT campaign_id, entity_id, alias, normalized_alias"
+            " FROM entity_aliases WHERE campaign_id = ?"
+            " ORDER BY entity_id, alias",
+            (campaign_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _facts(connection, campaign_id: str) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT id, campaign_id, branch_id, entity_id, fact_type,"
+            " fact_key, content, importance, audiences_json, valid_from,"
+            " valid_until, superseded_by, turn_id, source, created_at"
+            " FROM facts WHERE campaign_id = ? ORDER BY id",
+            (campaign_id,),
+        ).fetchall()
+        return [
+            {
+                **dict(row),
+                "audiences": json.loads(row["audiences_json"]),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _relationships(
+        connection, campaign_id: str
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT campaign_id, from_entity_id, to_entity_id, dimension,"
+            " value_json, audiences_json, state_version, updated_turn_id"
+            " FROM relationships WHERE campaign_id = ?"
+            " ORDER BY from_entity_id, to_entity_id, dimension",
+            (campaign_id,),
+        ).fetchall()
+        return [
+            {
+                **dict(row),
+                "value": json.loads(row["value_json"]),
+                "audiences": json.loads(row["audiences_json"]),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _memory_events(
+        connection, campaign_id: str
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT id, campaign_id, branch_id, turn_id, event_type, content,"
+            " importance, audiences_json, location_entity_id, source,"
+            " state_version, created_at FROM memory_events"
+            " WHERE campaign_id = ? ORDER BY state_version, id",
+            (campaign_id,),
+        ).fetchall()
+        return [
+            {
+                **dict(row),
+                "audiences": json.loads(row["audiences_json"]),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _memory_summaries(
+        connection, campaign_id: str
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT campaign_id, branch_id, scope, scope_key, content,"
+            " audiences_json, source_event_ids_json, state_version, created_at"
+            " FROM memory_summaries WHERE campaign_id = ?"
+            " ORDER BY branch_id, scope, scope_key",
+            (campaign_id,),
+        ).fetchall()
+        return [
+            {
+                **dict(row),
+                "audiences": json.loads(row["audiences_json"]),
+                "source_event_ids": json.loads(row["source_event_ids_json"]),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _trait_events(
+        connection, campaign_id: str
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT id, campaign_id, branch_id, entity_id, trait_key, tier,"
+            " before_value, delta, after_value, cause, turn_id, source,"
+            " state_version, created_at FROM trait_events"
+            " WHERE campaign_id = ? ORDER BY state_version, id",
+            (campaign_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _turns(connection, campaign_id: str) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT id, campaign_id, branch_id, parent_turn_id, intent,"
+            " player_text, response_text, history_hash,"
+            " removed_instructions_json, state_before_version,"
+            " state_after_version, created_at, lineage_hash_before,"
+            " lineage_hash_after, response_hash, status FROM turns"
+            " WHERE campaign_id = ? ORDER BY state_before_version, id",
+            (campaign_id,),
+        ).fetchall()
+        return [
+            {
+                **dict(row),
+                "removed_instructions": json.loads(row["removed_instructions_json"]),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _branch_heads(
+        connection, campaign_id: str
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT campaign_id, branch_id, state_version, latest_turn_id,"
+            " updated_at FROM branch_heads WHERE campaign_id = ?"
+            " ORDER BY branch_id",
+            (campaign_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
     def _check_campaign_matches(
         campaign_id: str, payload: dict[str, Any], errors: list[str]
     ) -> None:
         """Reject sections that reference a different campaign."""
-        for section in ("entities", "pending_proposals", "audit_events"):
+        for section in (
+            "entities",
+            "pending_proposals",
+            "audit_events",
+            "attribute_definitions",
+            "attribute_values",
+            "entity_aliases",
+            "facts",
+            "relationships",
+            "memory_events",
+            "memory_summaries",
+            "trait_events",
+            "turns",
+            "branch_heads",
+        ):
             items = payload.get(section)
             if not isinstance(items, list):
                 continue
