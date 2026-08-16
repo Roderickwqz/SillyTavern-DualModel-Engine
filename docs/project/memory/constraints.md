@@ -9,7 +9,7 @@ python .harness/scripts/memory.py add --text "<instruction>"
 python .harness/scripts/memory.py relevant --path <repo-relative-file>
 ```
 
-## C001 - Overview directory is fixed
+## C001 — Overview directory is fixed
 
 - Type: constraint
 - Scope: `docs/project/overview/`
@@ -33,7 +33,7 @@ Do not:
 - Put module docs in `overview/`; use `docs/project/modules/`.
 - Put memory rules in `overview/`; use `docs/project/memory/`.
 
-## C002 - Ideas are on-request only
+## C002 — Ideas are on-request only
 
 - Type: constraint
 - Scope: `docs/ideas/`

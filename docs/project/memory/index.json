@@ -13,7 +13,7 @@
         "overview",
         "harness"
       ],
-      "summary": "docs/project/overview/ may contain only instructions.md, project.md, and goal.md; no other files or subdirectories.",
+      "summary": "`docs/project/overview/` may contain only `instructions.md`, `project.md`, `goal.md`. No other files/subdirs.",
       "status": "active",
       "added": "2026-06-02"
     },
@@ -30,9 +30,29 @@
         "ideas",
         "harness"
       ],
-      "summary": "Do not read docs/ideas/ unless the user explicitly requests a specific idea file.",
+      "summary": "Do not read/cite `docs/ideas/` unless user explicitly asks for a specific idea file.",
       "status": "active",
-      "added": "2026-06-03"
+      "added": ""
+    },
+    {
+      "id": "P001",
+      "file": "docs/project/memory/pitfalls.md",
+      "title": "Exclude ENGINE-only attributes from Narrator context",
+      "type": "pitfall",
+      "scope": [
+        "src/sillytavern_rpg_engine/orchestration/graph.py",
+        "src/sillytavern_rpg_engine/orchestration/narrative.py"
+      ],
+      "tags": [
+        "audience-filtering",
+        "hidden-attributes",
+        "narrator-context",
+        "engine-only",
+        "phase-7"
+      ],
+      "summary": "Re-filter retrieved attributes before assembling the Narrator prompt so attributes visible only to ENGINE never enter Narrator context.",
+      "status": "active",
+      "added": "2026-08-16"
     }
   ]
 }
