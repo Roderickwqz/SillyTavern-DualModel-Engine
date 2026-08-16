@@ -19,7 +19,7 @@ export default defineConfig({
     projects: [
         {
             name: 'extension-smoke',
-            testMatch: /extension-smoke\.spec\.js/,
+            testMatch: /(extension-smoke|rpg-compat-smoke)\.spec\.js/,
             use: { baseURL: process.env.SILLYTAVERN_URL ?? 'http://127.0.0.1:8000' },
         },
         {

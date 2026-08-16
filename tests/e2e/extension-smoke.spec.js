@@ -1,12 +1,10 @@
-import { expect, test } from '@playwright/test';
+// DEPRECATED. Superseded by tests/e2e/rpg-compat-manual-checklist.md (full release gate)
+// and tests/e2e/rpg-compat-smoke.spec.js (optional automated smoke against a real
+// SillyTavern + LangGraph backend). Kept for reference only; always skipped.
+import { test } from '@playwright/test';
 
-test.skip(!process.env.SILLYTAVERN_URL, 'Set SILLYTAVERN_URL to a running local SillyTavern with the extension installed');
+test.skip(true, 'Deprecated: superseded by tests/e2e/rpg-compat-manual-checklist.md');
 
-test('loads the extension and exposes diagnostics without DualModel console errors', async ({ page }) => {
-    const errors = [];
-    page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
-    await page.goto('/');
-    await expect(page.locator('#dualmodel-settings')).toBeVisible();
-    await expect(page.locator('[data-dme-action="probe-tools"]')).toBeEnabled();
-    expect(errors.filter(error => error.includes('DualModel'))).toEqual([]);
+test('loads the extension and exposes diagnostics without DualModel console errors', async () => {
+    // Never runs: module-level skip above points to tests/e2e/rpg-compat-manual-checklist.md.
 });
