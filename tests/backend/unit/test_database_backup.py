@@ -1,5 +1,4 @@
 import sqlite3
-from pathlib import Path
 
 from sillytavern_rpg_engine.persistence.database import Database
 from sillytavern_rpg_engine.persistence.migrations import MigrationRunner
