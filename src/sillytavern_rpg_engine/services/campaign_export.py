@@ -25,12 +25,15 @@ _EXPECTED_ROOT_KEYS = frozenset(
         "combat_encounters",
         "attribute_definitions",
         "attribute_values",
+        "attribute_aliases",
         "entity_aliases",
         "facts",
         "relationships",
         "memory_events",
+        "memory_event_participants",
         "memory_summaries",
         "trait_events",
+        "development_arcs",
         "turns",
         "branch_heads",
     }
@@ -123,12 +126,19 @@ class CampaignExporter:
             encounters = self._combat_encounters(connection, campaign_id)
             definitions = self._attribute_definitions(connection, campaign_id)
             values = self._attribute_values(connection, campaign_id)
+            attribute_aliases = self._attribute_aliases(
+                connection, campaign_id
+            )
             aliases = self._entity_aliases(connection, campaign_id)
             facts = self._facts(connection, campaign_id)
             relationships = self._relationships(connection, campaign_id)
             memory_events = self._memory_events(connection, campaign_id)
+            participants = self._memory_event_participants(
+                connection, campaign_id
+            )
             summaries = self._memory_summaries(connection, campaign_id)
             trait_events = self._trait_events(connection, campaign_id)
+            arcs = self._development_arcs(connection, campaign_id)
             turns = self._turns(connection, campaign_id)
             heads = self._branch_heads(connection, campaign_id)
         return {
@@ -145,12 +155,15 @@ class CampaignExporter:
             "combat_encounters": encounters,
             "attribute_definitions": definitions,
             "attribute_values": values,
+            "attribute_aliases": attribute_aliases,
             "entity_aliases": aliases,
             "facts": facts,
             "relationships": relationships,
             "memory_events": memory_events,
+            "memory_event_participants": participants,
             "memory_summaries": summaries,
             "trait_events": trait_events,
+            "development_arcs": arcs,
             "turns": turns,
             "branch_heads": heads,
         }
@@ -327,6 +340,19 @@ class CampaignExporter:
         ]
 
     @staticmethod
+    def _attribute_aliases(
+        connection, campaign_id: str
+    ) -> list[dict[str, Any]]:
+        """Export attribute alias rows with schema column names."""
+        rows = connection.execute(
+            "SELECT campaign_id, attribute_key, alias, normalized_alias"
+            " FROM attribute_aliases WHERE campaign_id = ?"
+            " ORDER BY attribute_key, alias",
+            (campaign_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
     def _attribute_values(
         connection, campaign_id: str
     ) -> list[dict[str, Any]]:
@@ -413,6 +439,19 @@ class CampaignExporter:
         ]
 
     @staticmethod
+    def _memory_event_participants(
+        connection, campaign_id: str
+    ) -> list[dict[str, Any]]:
+        """Export participant rows of one campaign's memory events."""
+        rows = connection.execute(
+            "SELECT campaign_id, event_id, entity_id"
+            " FROM memory_event_participants WHERE campaign_id = ?"
+            " ORDER BY event_id, entity_id",
+            (campaign_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
     def _memory_summaries(
         connection, campaign_id: str
     ) -> list[dict[str, Any]]:
@@ -444,6 +483,26 @@ class CampaignExporter:
             (campaign_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    @staticmethod
+    def _development_arcs(
+        connection, campaign_id: str
+    ) -> list[dict[str, Any]]:
+        """Export development arcs with json columns decoded."""
+        rows = connection.execute(
+            "SELECT id, campaign_id, branch_id, entity_id, dimension, label,"
+            " summary, source_event_ids_json, start_turn_id, end_turn_id,"
+            " opened_state_version, closed_state_version, created_at"
+            " FROM development_arcs WHERE campaign_id = ? ORDER BY id",
+            (campaign_id,),
+        ).fetchall()
+        return [
+            {
+                **dict(row),
+                "source_event_ids": json.loads(row["source_event_ids_json"]),
+            }
+            for row in rows
+        ]
 
     @staticmethod
     def _turns(connection, campaign_id: str) -> list[dict[str, Any]]:
@@ -487,12 +546,15 @@ class CampaignExporter:
             "audit_events",
             "attribute_definitions",
             "attribute_values",
+            "attribute_aliases",
             "entity_aliases",
             "facts",
             "relationships",
             "memory_events",
+            "memory_event_participants",
             "memory_summaries",
             "trait_events",
+            "development_arcs",
             "turns",
             "branch_heads",
         ):
