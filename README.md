@@ -99,7 +99,8 @@ Environment variables:
 | `RPG_MAX_HISTORY_MESSAGES` | `40` | Prompt history cap |
 
 Endpoints: `GET /v1/models`, `POST /v1/chat/completions` (non-streaming),
-`GET /health` (`?deep=1` pings upstreams), `GET /admin/campaigns/{id}/export`.
+`GET /health` (`?deep=1` pings upstreams), `GET /admin/diagnostics`,
+`GET /admin/campaigns`, `GET /admin/campaigns/{id}/export`.
 
 Chat commands: `确认提案 <id>` / `reject <id>` manage pending proposals;
 `查询…` is read-only; explicit changes (`把X调整为Y`) apply immediately.
@@ -171,3 +172,24 @@ Known limitation: snapshot restore re-inserts combatants with the columns
 captured by `SnapshotBuilder` (~11 of 21). Tactical columns that are not
 captured — e.g. `debuffs_json`, `readied_action_json`, `recharge_json` — reset
 to defaults when a branch is restored mid-combat.
+
+## Operations (Phase 7)
+
+### Daily
+- `python -m sillytavern_rpg_engine serve --database ./campaign.db`
+- `python -m sillytavern_rpg_engine flush-audit --database ./campaign.db --output ./audit.jsonl`
+
+### Backup
+- `python -m sillytavern_rpg_engine backup --database ./campaign.db --dest-dir ./backups --keep 7`
+
+### Export / Import
+- `python -m sillytavern_rpg_engine export --database ./campaign.db --campaign ID --output ./ID.json`
+- `python -m sillytavern_rpg_engine import --database ./campaign.db --input ./ID.json`
+- `python -m sillytavern_rpg_engine verify-export --input ./ID.json`
+
+### Migration failure
+Server starts degraded (chat 503); use `GET /admin/database/backup` or CLI `backup` before fixing the schema.
+
+### E2E
+- Automated: `npm run test:e2e -- tests/e2e/backend-api.spec.js`
+- Manual: `tests/e2e/rpg-compat-manual-checklist.md`
