@@ -149,3 +149,46 @@ def test_export_backup_import_roundtrip_preserves_state(tmp_path):
         ).fetchone()
         assert event is not None, "recovery_import audit event missing"
         assert json.loads(event["payload_json"])["export_schema_version"] == 2
+
+
+def test_import_reexport_verify_import_preserves_state(tmp_path):
+    source_db = Database(tmp_path / "source.db")
+    MigrationRunner(source_db).apply()
+    _seed_authoritative_state(
+        source_db, load_settings({"RPG_NARRATOR_MODEL": "narrator-model"})
+    )
+
+    export_path = tmp_path / "c1.json"
+    CampaignExporter(source_db).export("c1", export_path)
+
+    imported_db = Database(tmp_path / "imported.db")
+    MigrationRunner(imported_db).apply()
+    assert CampaignImporter(imported_db).import_file(export_path) == "c1"
+
+    reexport_path = tmp_path / "c1-reexport.json"
+    CampaignExporter(imported_db).export("c1", reexport_path)
+    assert (
+        CampaignExporter(imported_db).verify_export(reexport_path)["ok"] is True
+    ), "re-export of imported DB must verify clean"
+
+    third_db = Database(tmp_path / "third.db")
+    MigrationRunner(third_db).apply()
+    assert CampaignImporter(third_db).import_file(reexport_path) == "c1"
+
+    src_projection = ProjectionService(source_db).for_audience(
+        "c1", "main", Audience.PLAYER_UI
+    )
+    third_projection = ProjectionService(third_db).for_audience(
+        "c1", "main", Audience.PLAYER_UI
+    )
+    assert third_projection == src_projection
+    with third_db.connect() as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE campaign_id = 'c1'"
+            " AND event_type = 'recovery_import'"
+        ).fetchone()[0]
+        assert count == 2, "one recovery_import per import hop expected"
+
+    payload = json.loads(reexport_path.read_text(encoding="utf-8"))
+    versions = CampaignExporter._state_versions(payload)
+    assert all(a + 1 == b for a, b in zip(versions, versions[1:])), versions

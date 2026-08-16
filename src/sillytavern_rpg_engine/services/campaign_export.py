@@ -577,7 +577,9 @@ class CampaignExporter:
         return [
             event["state_version"]
             for event in events
-            if isinstance(event, dict) and isinstance(event.get("state_version"), int)
+            if isinstance(event, dict)
+            and isinstance(event.get("state_version"), int)
+            and event.get("event_type") != "recovery_import"
         ]
 
     @staticmethod
