@@ -12,7 +12,9 @@ from .llm.openai import OpenAIChatClient
 from .persistence.database import Database
 from .persistence.migrations import MigrationRunner
 from .server.app import create_app
+from .services.audit_export import JsonlAuditExporter
 from .services.campaign_export import CampaignExporter
+from .services.campaign_import import CampaignImporter
 from .services.database_backup import DatabaseBackupService
 from .services.memory_events import MemoryIndexService
 
@@ -139,6 +141,54 @@ def _run_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_migrate_status(args: argparse.Namespace) -> int:
+    database = Database(args.database)
+    try:
+        status = MigrationRunner(database).status()
+    except sqlite3.Error as exc:
+        print(f"migrate-status failed: {exc}", file=sys.stderr)
+        return 1
+    applied = ", ".join(str(version) for version in status.applied) or "(none)"
+    print(f"applied: {applied}")
+    print(f"pending: {len(status.pending)}")
+    print(f"latest: {status.latest}")
+    return 0
+
+
+def _run_flush_audit(args: argparse.Namespace) -> int:
+    database = Database(args.database)
+    try:
+        count = JsonlAuditExporter(database).flush(args.output)
+    except (sqlite3.Error, FileNotFoundError) as exc:
+        print(f"flush-audit failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"flushed {count} audit events to {args.output}")
+    return 0
+
+
+def _run_import(args: argparse.Namespace) -> int:
+    database = Database(args.database)
+    try:
+        MigrationRunner(database).apply()
+        campaign_id = CampaignImporter(database).import_file(
+            args.input, new_campaign_id=args.campaign, replace=args.replace
+        )
+    except (DomainError, sqlite3.Error, FileNotFoundError, ValueError) as exc:
+        print(f"import failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"imported: {campaign_id}")
+    return 0
+
+
+def _run_verify_export(args: argparse.Namespace) -> int:
+    result = CampaignExporter(Database(args.input)).verify_export(args.input)
+    if result["ok"]:
+        print(f"verify-export: ok (campaign {result['campaign_id']})")
+        return 0
+    print(f"verify-export failed: {'; '.join(result['errors'])}", file=sys.stderr)
+    return 1
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sillytavern_rpg_engine",
@@ -186,6 +236,46 @@ def _build_parser() -> argparse.ArgumentParser:
         "--keep", type=int, default=7, help="number of backups to retain"
     )
     backup.set_defaults(handler=_run_backup)
+
+    migrate_status = subparsers.add_parser(
+        "migrate-status", help="show applied and pending schema migrations"
+    )
+    _add_database_argument(migrate_status)
+    migrate_status.set_defaults(handler=_run_migrate_status)
+
+    flush_audit = subparsers.add_parser(
+        "flush-audit", help="append pending audit events to a JSONL file"
+    )
+    _add_database_argument(flush_audit)
+    flush_audit.add_argument(
+        "--output", type=Path, required=True, help="destination JSONL file"
+    )
+    flush_audit.set_defaults(handler=_run_flush_audit)
+
+    import_cmd = subparsers.add_parser(
+        "import", help="restore one campaign from a v2 export JSON file"
+    )
+    _add_database_argument(import_cmd)
+    import_cmd.add_argument(
+        "--input", type=Path, required=True, help="source export JSON file"
+    )
+    import_cmd.add_argument(
+        "--campaign", default=None, help="override the campaign id"
+    )
+    import_cmd.add_argument(
+        "--replace",
+        action="store_true",
+        help="replace an existing campaign with the same id",
+    )
+    import_cmd.set_defaults(handler=_run_import)
+
+    verify_export = subparsers.add_parser(
+        "verify-export", help="validate an exported campaign JSON file"
+    )
+    verify_export.add_argument(
+        "--input", type=Path, required=True, help="export JSON file to verify"
+    )
+    verify_export.set_defaults(handler=_run_verify_export)
 
     serve = subparsers.add_parser(
         "serve", help="run the OpenAI-compatible API server"

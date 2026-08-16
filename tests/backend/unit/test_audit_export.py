@@ -2,6 +2,9 @@ import json
 
 import pytest
 
+from sillytavern_rpg_engine import cli
+from sillytavern_rpg_engine.persistence.database import Database
+from sillytavern_rpg_engine.persistence.migrations import MigrationRunner
 from sillytavern_rpg_engine.services.audit_export import JsonlAuditExporter
 from sillytavern_rpg_engine.services.campaigns import CampaignService
 from sillytavern_rpg_engine.services.campaign_export import CampaignExporter
@@ -135,3 +138,32 @@ def test_verify_export_flags_tampered_payload(database, tmp_path):
     assert any("state versions" in error for error in result["errors"])
     output.write_text("{not json", encoding="utf-8")
     assert exporter.verify_export(output)["ok"] is False
+
+
+def test_cli_migrate_status_reports_ok(database, tmp_path, capsys):
+    db = Database(tmp_path / "t.db")
+    MigrationRunner(db).apply()
+    assert cli.main(["migrate-status", "--database", str(tmp_path / "t.db")]) == 0
+    assert "pending" in capsys.readouterr().out
+
+
+def test_cli_flush_audit_writes_jsonl(database, tmp_path, capsys):
+    create_campaign(database, "cli-1")
+    output = tmp_path / "audit.jsonl"
+    assert cli.main(["flush-audit", "--database", str(database.path), "--output", str(output)]) == 0
+    assert output.is_file()
+    assert '"cli-1"' in output.read_text(encoding="utf-8")
+
+
+def test_cli_import_and_verify_export_roundtrip(database, tmp_path, capsys):
+    create_campaign(database, "cli-2")
+    exported = tmp_path / "c1.json"
+    CampaignExporter(database).export("c1", exported)
+    assert cli.main(["verify-export", "--input", str(exported)]) == 0
+    fresh = tmp_path / "fresh.db"
+    assert cli.main(["import", "--database", str(fresh), "--input", str(exported)]) == 0
+    imported = Database(fresh)
+    with imported.connect() as connection:
+        assert connection.execute(
+            "SELECT id FROM campaigns WHERE id = 'c1'"
+        ).fetchone()["id"] == "c1"
