@@ -64,12 +64,27 @@ class CampaignImporter:
         self, connection: sqlite3.Connection, campaign_id: str
     ) -> None:
         """Delete one campaign, relying on ON DELETE CASCADE; FTS rows have
-        no foreign key, so they are removed first. Campaigns with dice rolls
-        cannot be replaced: dice_rolls is append-only by trigger."""
+        no foreign key, so they are removed first.
+
+        dice_rolls is append-only by the dice_rolls_no_delete trigger, so a
+        cascade delete of a campaign that has rolls would abort the whole
+        replace. The trigger is therefore dropped, the rows removed
+        explicitly, and the trigger recreated verbatim from the schema. This
+        is safe because the import runs in a single transaction: any failure
+        rolls back the DROP and the DELETE, restoring the append-only
+        trigger atomically."""
         connection.execute(
             "DELETE FROM memory_events_fts WHERE rowid IN (SELECT rowid FROM"
             " memory_events WHERE campaign_id = ?)",
             (campaign_id,),
+        )
+        connection.execute("DROP TRIGGER dice_rolls_no_delete")
+        connection.execute(
+            "DELETE FROM dice_rolls WHERE campaign_id = ?", (campaign_id,)
+        )
+        connection.execute(
+            "CREATE TRIGGER dice_rolls_no_delete BEFORE DELETE ON dice_rolls"
+            " BEGIN SELECT RAISE(ABORT, 'dice_rolls is append-only'); END"
         )
         connection.execute(
             "DELETE FROM campaigns WHERE id = ?", (campaign_id,)
@@ -82,6 +97,7 @@ class CampaignImporter:
         self._insert_campaign(connection, campaign_id, payload)
         self._insert_branches(connection, campaign_id, payload["branches"])
         self._insert_entities(connection, campaign_id, payload)
+        self._insert_entity_aliases(connection, campaign_id, payload)
         self._insert_attribute_state(connection, campaign_id, payload)
         self._insert_facts(connection, campaign_id, payload["facts"])
         self._insert_relationships(connection, campaign_id, payload)
@@ -152,6 +168,18 @@ class CampaignImporter:
                     normalize_key(entity["name"]), entity["age_status"],
                     payload["campaign"]["state_version"],
                 ),
+            )
+
+    def _insert_entity_aliases(
+        self, connection: sqlite3.Connection, campaign_id: str, payload: dict[str, Any]
+    ) -> None:
+        """Insert entity alias rows after their entities (FK order)."""
+        for row in payload["entity_aliases"]:
+            connection.execute(
+                "INSERT INTO entity_aliases(campaign_id, entity_id, alias,"
+                " normalized_alias) VALUES (?, ?, ?, ?)",
+                (campaign_id, row["entity_id"], row["alias"],
+                 row["normalized_alias"]),
             )
 
     def _insert_attribute_state(
