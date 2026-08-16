@@ -2,6 +2,7 @@
 local campaign databases."""
 
 import argparse
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -12,6 +13,7 @@ from .llm.openai import OpenAIChatClient
 from .persistence.database import Database
 from .persistence.migrations import MigrationRunner
 from .server.app import create_app
+from .server.test_factory import create_scripted_app, is_scripted_mode, scripted_settings
 from .services.audit_export import JsonlAuditExporter
 from .services.campaign_export import CampaignExporter
 from .services.campaign_import import CampaignImporter
@@ -88,8 +90,15 @@ def _run_rebuild_memory_index(args: argparse.Namespace) -> int:
 
 
 def _run_serve(args: argparse.Namespace) -> int:
+    """Run the OpenAI-compatible API server.
+
+    With ``RPG_ENGINE_TEST_MODE=scripted`` the app is built from the scripted
+    test factory (queued narration + tracker responses, no live model
+    credentials) instead of the OpenAI clients.
+    """
+    scripted = is_scripted_mode()
     try:
-        settings = load_settings()
+        settings = scripted_settings(str(args.database)) if scripted else load_settings()
     except DomainError as exc:
         print(f"serve failed: {exc}", file=sys.stderr)
         return 1
@@ -105,9 +114,16 @@ def _run_serve(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         degraded = True
-    narrator = OpenAIChatClient(settings.narrator)
-    critic = OpenAIChatClient(settings.critic) if settings.critic else None
-    app = create_app(settings, database, narrator, critic, degraded=degraded)
+    if scripted:
+        app = create_scripted_app(
+            str(args.database),
+            responses=["（测试叙述）", json.dumps({"operations": []})],
+            degraded=degraded,
+        )
+    else:
+        narrator = OpenAIChatClient(settings.narrator)
+        critic = OpenAIChatClient(settings.critic) if settings.critic else None
+        app = create_app(settings, database, narrator, critic, degraded=degraded)
     import uvicorn
 
     uvicorn.run(
