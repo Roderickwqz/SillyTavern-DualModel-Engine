@@ -40,6 +40,19 @@ fail/pass decision.
 - (c) Expected result: panel state equals the noted values; no drift, no missing
   entities/skills after restart.
 
+## §17.4 #4 — Hidden attributes stay out of the player panel
+
+- (a) Preconditions: an entity with an attribute whose audience excludes `PLAYER_UI`
+  (engine-internal only, e.g. a secret/derived value).
+- (b) Steps: open the chat and the panel for that entity; send a turn that reads or
+  mutates the visible attributes.
+- (c) Expected result: the hidden attribute never renders in the player panel or the
+  Tracker JSON.
+- (d) Known gap (pre-existing, phase 4 behavior): such engine-only attributes DO reach
+  the Narrator's prompt context (`graph.py` narrate retrieval requests
+  `{ENGINE, NARRATOR}`). The panel side is enforced; the Narrator-prompt half of §17.4 #4
+  is a tracked follow-up, not covered by this checklist.
+
 ## §17.4 #6 — Swipe branches do not cross-pollute
 
 - (a) Preconditions: a chat where two different swipes produce different states
