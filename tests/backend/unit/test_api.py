@@ -231,6 +231,7 @@ def test_health_sqlite_failure_returns_complete_body(database, monkeypatch):
         "status": "degraded",
         "integrity": "disk I/O error",
         "schema_version": None,
+        "pending_migrations": [],
         "models": {"narrator": "configured", "critic": "disabled"},
     }
 

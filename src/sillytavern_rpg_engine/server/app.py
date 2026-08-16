@@ -156,12 +156,14 @@ def create_app(
                 version = connection.execute(
                     "SELECT MAX(version) FROM schema_migrations"
                 ).fetchone()[0]
+            pending = MigrationRunner(database).status().pending
         except sqlite3.Error as exc:
             return JSONResponse(
                 {
                     "status": "degraded",
                     "integrity": str(exc),
                     "schema_version": None,
+                    "pending_migrations": [],
                     "models": models,
                 },
                 status_code=503,
@@ -170,7 +172,6 @@ def create_app(
             models["narrator"] = "up" if narrator.ping() else "down"
             if critic is not None:
                 models["critic"] = "up" if critic.ping() else "down"
-        pending = MigrationRunner(database).status().pending
         return {
             "status": "degraded" if (degraded or integrity != "ok") else "ok",
             "integrity": integrity,
