@@ -1,9 +1,19 @@
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib.resources import files
 import re
 import sqlite3
 
 from .database import Database
+
+
+@dataclass(frozen=True)
+class MigrationStatus:
+    """Snapshot of which migration versions are applied and which remain."""
+
+    applied: list[int]
+    pending: list[int]
+    latest: int
 
 
 class MigrationRunner:
@@ -40,6 +50,18 @@ class MigrationRunner:
                     " VALUES (?, ?)",
                     (version, self.clock()),
                 )
+
+    def status(self) -> MigrationStatus:
+        """Report applied and pending migration versions against the schema."""
+        scripts = self._load_scripts()
+        latest = max(scripts) if scripts else 0
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            ).fetchall()
+        applied = [row[0] for row in rows]
+        pending = sorted(set(scripts) - set(applied))
+        return MigrationStatus(applied=applied, pending=pending, latest=latest)
 
     def _load_scripts(self) -> dict[int, str]:
         schema_dir = files("sillytavern_rpg_engine.persistence").joinpath("schema")
