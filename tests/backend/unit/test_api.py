@@ -252,3 +252,39 @@ def test_degraded_mode_serves_diagnostics_only(database):
     assert chat.json()["error"]["type"] == "degraded_mode"
     assert client.get("/health").json()["status"] == "degraded"
     assert client.get("/admin/campaigns/c1/export").status_code == 200
+
+
+def test_health_reports_pending_migrations_none(database):
+    _campaign(database)
+    client = _client(database, ScriptedLLMClient([]))
+    body = client.get("/health").json()
+    assert body["schema_version"] >= 8
+    assert body.get("pending_migrations") == []
+    assert body.get("degraded") is False
+
+
+def test_admin_diagnostics_lists_campaigns(database):
+    _campaign(database)
+    client = TestClient(create_app(
+        Settings(
+            database_path=database.path, host="127.0.0.1", port=8000,
+            max_history_messages=40,
+            narrator=ModelConfig("http://x", "", "n", 0.8, 30, 256),
+            critic=None,
+        ),
+        database, ScriptedLLMClient([]),
+    ))
+    response = client.get("/admin/diagnostics")
+    assert response.status_code == 200
+    assert response.json()["campaigns"]["count"] >= 1
+
+
+def test_admin_campaigns_lists_metadata(database):
+    _campaign(database)
+    client = _client(database, ScriptedLLMClient([]))
+    body = client.get("/admin/campaigns").json()
+    assert isinstance(body["campaigns"], list)
+    assert body["campaigns"][0]["id"] == "c1"
+    assert set(body["campaigns"][0]) >= {
+        "id", "name", "state_version", "last_active_branch_id",
+    }

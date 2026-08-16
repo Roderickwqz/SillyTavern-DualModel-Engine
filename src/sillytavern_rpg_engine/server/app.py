@@ -18,7 +18,9 @@ from ..domain.errors import (
 from ..llm.client import LLMClient, LLMError
 from ..orchestration.graph import TurnRunner, default_services
 from ..persistence.database import Database
+from ..persistence.migrations import MigrationRunner
 from ..services.campaign_export import CampaignExporter
+from ..services.diagnostics import build_diagnostics
 
 _STATUS = {
     ValidationError: (400, "invalid_request_error"),
@@ -31,6 +33,51 @@ _STATUS = {
 
 def _error_body(exc: Exception, type_: str) -> dict[str, Any]:
     return {"error": {"message": str(exc), "type": type_, "code": None}}
+
+
+def _branch_diagnostics(database: Database, campaign_id: str) -> dict[str, Any]:
+    """List each branch with its head pointer and the campaign-wide count of
+    detached turns. Branches with no head row yet (fresh campaigns) report
+    ``state_version`` 0 and a null ``latest_turn_id``."""
+    with database.connect() as connection:
+        if connection.execute(
+            "SELECT 1 FROM campaigns WHERE id = ?", (campaign_id,)
+        ).fetchone() is None:
+            raise NotFoundError(f"campaign {campaign_id} not found")
+        branches = connection.execute(
+            "SELECT id, parent_branch_id, status FROM branches"
+            " WHERE campaign_id = ? ORDER BY id",
+            (campaign_id,),
+        ).fetchall()
+        heads = {
+            row["branch_id"]: row
+            for row in connection.execute(
+                "SELECT branch_id, state_version, latest_turn_id"
+                " FROM branch_heads WHERE campaign_id = ?",
+                (campaign_id,),
+            ).fetchall()
+        }
+        detached = connection.execute(
+            "SELECT COUNT(*) FROM turns"
+            " WHERE campaign_id = ? AND status = 'detached'",
+            (campaign_id,),
+        ).fetchone()[0]
+    return {
+        "branches": [
+            {
+                "id": row["id"],
+                "parent_branch_id": row["parent_branch_id"],
+                "status": row["status"],
+                "head": {
+                    "state_version": head["state_version"] if head else 0,
+                    "latest_turn_id": head["latest_turn_id"] if head else None,
+                },
+            }
+            for row in branches
+            for head in [heads.get(row["id"])]
+        ],
+        "detached_turns": detached,
+    }
 
 
 def create_app(
@@ -123,12 +170,29 @@ def create_app(
             models["narrator"] = "up" if narrator.ping() else "down"
             if critic is not None:
                 models["critic"] = "up" if critic.ping() else "down"
+        pending = MigrationRunner(database).status().pending
         return {
             "status": "degraded" if (degraded or integrity != "ok") else "ok",
             "integrity": integrity,
             "schema_version": version,
+            "pending_migrations": pending,
+            "degraded": degraded or integrity != "ok",
             "models": models,
         }
+
+    @app.get("/admin/diagnostics")
+    def admin_diagnostics() -> dict[str, Any]:
+        return build_diagnostics(database, degraded=degraded, settings=settings)
+
+    @app.get("/admin/campaigns")
+    def admin_campaigns() -> dict[str, Any]:
+        """List campaign metadata ordered by id."""
+        with database.connect() as connection:
+            rows = connection.execute(
+                "SELECT id, name, state_version, last_active_branch_id"
+                " FROM campaigns ORDER BY id"
+            ).fetchall()
+        return {"campaigns": [dict(row) for row in rows]}
 
     @app.get("/admin/campaigns/{campaign_id}/export")
     def admin_export(campaign_id: str) -> dict[str, Any]:
@@ -136,48 +200,6 @@ def create_app(
 
     @app.get("/admin/campaigns/{campaign_id}/branches")
     def admin_branches(campaign_id: str) -> dict[str, Any]:
-        """List branch diagnostics: each branch with its head pointer and the
-        campaign-wide count of detached turns. Branches with no head row yet
-        (fresh campaigns) report ``state_version`` 0 and a null
-        ``latest_turn_id``."""
-        with database.connect() as connection:
-            if connection.execute(
-                "SELECT 1 FROM campaigns WHERE id = ?", (campaign_id,)
-            ).fetchone() is None:
-                raise NotFoundError(f"campaign {campaign_id} not found")
-            branches = connection.execute(
-                "SELECT id, parent_branch_id, status FROM branches"
-                " WHERE campaign_id = ? ORDER BY id",
-                (campaign_id,),
-            ).fetchall()
-            heads = {
-                row["branch_id"]: row
-                for row in connection.execute(
-                    "SELECT branch_id, state_version, latest_turn_id"
-                    " FROM branch_heads WHERE campaign_id = ?",
-                    (campaign_id,),
-                ).fetchall()
-            }
-            detached = connection.execute(
-                "SELECT COUNT(*) FROM turns"
-                " WHERE campaign_id = ? AND status = 'detached'",
-                (campaign_id,),
-            ).fetchone()[0]
-        return {
-            "branches": [
-                {
-                    "id": row["id"],
-                    "parent_branch_id": row["parent_branch_id"],
-                    "status": row["status"],
-                    "head": {
-                        "state_version": head["state_version"] if head else 0,
-                        "latest_turn_id": head["latest_turn_id"] if head else None,
-                    },
-                }
-                for row in branches
-                for head in [heads.get(row["id"])]
-            ],
-            "detached_turns": detached,
-        }
+        return _branch_diagnostics(database, campaign_id)
 
     return app
