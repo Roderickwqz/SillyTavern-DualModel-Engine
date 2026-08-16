@@ -13,6 +13,7 @@ from .persistence.database import Database
 from .persistence.migrations import MigrationRunner
 from .server.app import create_app
 from .services.campaign_export import CampaignExporter
+from .services.database_backup import DatabaseBackupService
 from .services.memory_events import MemoryIndexService
 
 
@@ -125,6 +126,19 @@ def _run_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_backup(args: argparse.Namespace) -> int:
+    database = Database(args.database)
+    try:
+        target = DatabaseBackupService(database).backup(
+            args.dest_dir, keep=args.keep
+        )
+    except (sqlite3.Error, OSError) as exc:
+        print(f"backup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"backup: {target}")
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sillytavern_rpg_engine",
@@ -160,6 +174,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output", type=Path, required=True, help="destination JSON file"
     )
     export.set_defaults(handler=_run_export)
+
+    backup = subparsers.add_parser(
+        "backup", help="copy the database to a timestamped file with rotation"
+    )
+    _add_database_argument(backup)
+    backup.add_argument(
+        "--dest-dir", type=Path, required=True, help="directory for backups"
+    )
+    backup.add_argument(
+        "--keep", type=int, default=7, help="number of backups to retain"
+    )
+    backup.set_defaults(handler=_run_backup)
 
     serve = subparsers.add_parser(
         "serve", help="run the OpenAI-compatible API server"
