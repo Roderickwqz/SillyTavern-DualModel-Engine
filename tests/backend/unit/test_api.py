@@ -289,3 +289,25 @@ def test_admin_campaigns_lists_metadata(database):
     assert set(body["campaigns"][0]) >= {
         "id", "name", "state_version", "last_active_branch_id",
     }
+
+
+def test_admin_database_backup_returns_sqlite_copy(database):
+    _campaign(database)
+    client = TestClient(create_app(
+        Settings(
+            database_path=database.path, host="127.0.0.1", port=8000,
+            max_history_messages=40,
+            narrator=ModelConfig("http://x", "", "n", 0.8, 30, 256),
+            critic=None,
+        ),
+        database, ScriptedLLMClient([]), degraded=True,
+    ))
+    chat = client.post("/v1/chat/completions", json={
+        "campaign_id": "c1",
+        "messages": [{"role": "user", "content": "x"}],
+    })
+    assert chat.status_code == 503
+    response = client.get("/admin/database/backup")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/octet-stream")
+    assert response.content.startswith(b"SQLite format 3\x00")

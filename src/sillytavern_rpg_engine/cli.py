@@ -100,7 +100,8 @@ def _run_serve(args: argparse.Namespace) -> int:
     except sqlite3.Error as exc:
         print(
             f"serve: migration failed ({exc}); starting in read-only"
-            " diagnostic mode",
+            " diagnostic mode (download a copy via"
+            " GET /admin/database/backup)",
             file=sys.stderr,
         )
         degraded = True

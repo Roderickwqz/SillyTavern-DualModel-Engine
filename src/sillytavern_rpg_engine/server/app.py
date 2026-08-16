@@ -1,10 +1,11 @@
 """FastAPI app: OpenAI-compatible endpoints over the turn pipeline."""
 
 import sqlite3
+import tempfile
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from ..config import Settings
 from ..domain.errors import (
@@ -20,6 +21,7 @@ from ..orchestration.graph import TurnRunner, default_services
 from ..persistence.database import Database
 from ..persistence.migrations import MigrationRunner
 from ..services.campaign_export import CampaignExporter
+from ..services.database_backup import DatabaseBackupService
 from ..services.diagnostics import build_diagnostics
 
 _STATUS = {
@@ -184,6 +186,16 @@ def create_app(
     @app.get("/admin/diagnostics")
     def admin_diagnostics() -> dict[str, Any]:
         return build_diagnostics(database, degraded=degraded, settings=settings)
+
+    @app.get("/admin/database/backup")
+    def admin_database_backup() -> FileResponse:
+        """Download a checkpointed SQLite copy of the database; the escape
+        hatch when migrations failed and the engine runs degraded."""
+        dest_dir = tempfile.mkdtemp(prefix="rpg-backup-")
+        backup = DatabaseBackupService(database).backup(dest_dir)
+        return FileResponse(
+            backup, media_type="application/octet-stream", filename=backup.name
+        )
 
     @app.get("/admin/campaigns")
     def admin_campaigns() -> dict[str, Any]:
