@@ -13,6 +13,7 @@ from ..persistence.repositories import (
     CampaignRepository,
     dump_json,
 )
+from .combat_serialization import COMBATANT_INSERT_SQL, combatant_insert_values
 from .entities import normalize_key
 
 # Memory events are deleted first: surviving events reference restored
@@ -197,19 +198,11 @@ def _insert_from_snapshot(
         )
         for combatant in combat["combatants"]:
             connection.execute(
-                "INSERT INTO combatants(id, encounter_id, entity_id, initiative,"
-                " action_used, bonus_used, reaction_used, movement_total,"
-                " movement_used, hidden, dodging, disengaged,"
-                " concentrating_spell) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-                " ?, ?, ?)",
-                (
+                COMBATANT_INSERT_SQL,
+                combatant_insert_values(
                     f"{combat['encounter_id']}:{combatant['entity_id']}",
-                    combat["encounter_id"], combatant["entity_id"],
-                    combatant["initiative"], int(combatant["action_used"]),
-                    int(combatant["bonus_used"]), int(combatant["reaction_used"]),
-                    combatant["movement_total"], combatant["movement_used"],
-                    int(combatant["hidden"]), int(combatant["dodging"]),
-                    int(combatant["disengaged"]), combatant["concentrating_spell"],
+                    combat["encounter_id"],
+                    combatant,
                 ),
             )
 

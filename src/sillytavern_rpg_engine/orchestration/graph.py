@@ -172,7 +172,7 @@ def _make_retrieve_node(services: TurnServices) -> Any:
         context = services.retrieval.assemble(RetrievalQuery(
             campaign_id=request.campaign_id,
             branch_id=state["branch_id"],
-            audiences=frozenset({Audience.ENGINE, Audience.NARRATOR}),
+            audiences=frozenset({Audience.NARRATOR}),
             text=request.player_text,
             scene_entity_ids=state["scene_entity_ids"],
         ))

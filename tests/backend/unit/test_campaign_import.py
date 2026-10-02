@@ -4,6 +4,9 @@ import sqlite3
 import pytest
 
 from sillytavern_rpg_engine.domain.dice import SequenceDiceRoller
+from sillytavern_rpg_engine.domain.dnd import DND2024_RULES_VERSION
+from sillytavern_rpg_engine.domain.models import CampaignRules, RulesMode
+from sillytavern_rpg_engine.services.combat import CombatService, CombatantEntry, add_debuff
 from sillytavern_rpg_engine.domain.errors import ValidationError
 from sillytavern_rpg_engine.services.campaign_export import CampaignExporter
 from sillytavern_rpg_engine.services.campaign_import import CampaignImporter
@@ -145,3 +148,78 @@ def test_import_restores_entity_aliases(tmp_path, database):
     entity = EntityService(fresh).resolve("c1", "小艾")
     assert entity.id == "erin"
     assert entity.name == "艾琳"
+
+
+def test_import_preserves_last_active_branch_id(tmp_path, database):
+    _seed(database)
+    with database.connect() as connection:
+        connection.execute(
+            "INSERT INTO branches(id, campaign_id, parent_branch_id, status,"
+            " created_at) VALUES (?, ?, ?, ?, ?)",
+            ("branch-side", "c1", "main", "active", "2026-08-16T00:00:00Z"),
+        )
+        connection.execute(
+            "INSERT INTO branch_heads(campaign_id, branch_id, state_version,"
+            " latest_turn_id, updated_at) VALUES (?, ?, ?, ?, ?)",
+            ("c1", "branch-side", 0, None, "2026-08-16T00:00:00Z"),
+        )
+        connection.execute(
+            "UPDATE campaigns SET last_active_branch_id = 'branch-side' WHERE id = 'c1'"
+        )
+    export_path = tmp_path / "c1.json"
+    CampaignExporter(database).export("c1", export_path)
+    payload = json.loads(export_path.read_text(encoding="utf-8"))
+    assert payload["campaign"]["last_active_branch_id"] == "branch-side"
+    from sillytavern_rpg_engine.persistence.database import Database
+    from sillytavern_rpg_engine.persistence.migrations import MigrationRunner
+    fresh = Database(tmp_path / "fresh.db")
+    MigrationRunner(fresh).apply()
+    CampaignImporter(fresh).import_file(export_path)
+    with fresh.connect() as connection:
+        owner = connection.execute(
+            "SELECT last_active_branch_id FROM campaigns WHERE id = 'c1'"
+        ).fetchone()["last_active_branch_id"]
+    assert owner == "branch-side"
+
+
+def test_export_import_preserves_mid_combat_state(tmp_path, database):
+    ids = iter(f"c-{n}" for n in range(1, 1000))
+    dice, version = _seed_rolling_campaign(database)
+    combat = CombatService(
+        database, id_factory=lambda: next(ids), clock=lambda: "2026-08-12T00:00:00Z",
+    )
+    started = combat.start(
+        "c1", expected_version=version,
+        roller=SequenceDiceRoller([15]),
+        entries=(CombatantEntry("pc1"),),
+    )
+    encounter_id = started.snapshot["combat"]["encounter_id"]
+    with database.connect() as connection:
+        add_debuff(
+            connection, f"{encounter_id}:pc1", "poisoned",
+            {"source": "trap", "clear": "start", "turns": 2},
+        )
+        connection.execute(
+            "UPDATE combatants SET attacks_this_turn = 1, mastery_uses_json = ?"
+            " WHERE id = ?",
+            (json.dumps({"grip": 1}), f"{encounter_id}:pc1"),
+        )
+
+    export_path = tmp_path / "c1.json"
+    CampaignExporter(database).export("c1", export_path)
+    from sillytavern_rpg_engine.persistence.database import Database
+    from sillytavern_rpg_engine.persistence.migrations import MigrationRunner
+    fresh = Database(tmp_path / "fresh.db")
+    MigrationRunner(fresh).apply()
+    CampaignImporter(fresh).import_file(export_path)
+    with fresh.connect() as connection:
+        row = connection.execute(
+            "SELECT debuffs_json, attacks_this_turn, mastery_uses_json"
+            " FROM combatants WHERE id = ?",
+            (f"{encounter_id}:pc1",),
+        ).fetchone()
+    assert json.loads(row["debuffs_json"]) == {
+        "poisoned": {"source": "trap", "clear": "start", "turns": 2},
+    }
+    assert row["attacks_this_turn"] == 1
+    assert json.loads(row["mastery_uses_json"]) == {"grip": 1}

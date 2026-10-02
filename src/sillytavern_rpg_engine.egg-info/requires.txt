@@ -1,0 +1,7 @@
+fastapi>=0.115
+httpx>=0.27
+langgraph<2,>=1.0
+uvicorn>=0.30
+
+[dev]
+pytest<9,>=8.3

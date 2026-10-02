@@ -201,6 +201,85 @@ def test_restore_rebuilds_active_combat(database):
     ]
 
 
+def test_restore_preserves_mid_combat_combatant_fields(database):
+    import json
+
+    from sillytavern_rpg_engine.services.combat import add_debuff
+
+    ids = iter(f"e-{i}" for i in range(1000))
+    clock = lambda: "2026-08-12T00:00:00Z"
+    campaigns = CampaignService(database, id_factory=lambda: next(ids), clock=clock)
+    dnd = DndRulesService(database, id_factory=lambda: next(ids), clock=clock)
+    combat = CombatService(database, id_factory=lambda: next(ids), clock=clock)
+    entities = EntityAttributeService(database, dnd.mutation_engine)
+    campaigns.create_campaign("c1", "Dungeon")
+    dnd.seed_pack("c1", 0)
+    version = 1
+    for entity_id, name, dex, speed in (
+        ("pc1", "Aria", 14, 30),
+        ("orc", "Orc", 12, 30),
+    ):
+        entities.apply_explicit("c1", "main", version, CreateEntityOperation(
+            entity_id=entity_id, kind=EntityKind.CHARACTER, name=name,
+        ))
+        version += 1
+        for key, value in (("ability_dex", dex), ("speed", speed)):
+            entities.apply_explicit(
+                "c1", "main", version, SetAttributeOperation(entity_id, key, value)
+            )
+            version += 1
+    campaigns.set_rules(
+        "c1", version,
+        CampaignRules(
+            mode=RulesMode.DND_2024,
+            enabled=True,
+            version=DND2024_RULES_VERSION,
+        ),
+    )
+    started = combat.start(
+        "c1", expected_version=version + 1,
+        roller=SequenceDiceRoller([11, 16]),
+        entries=(CombatantEntry("pc1"), CombatantEntry("orc")),
+    )
+    encounter_id = started.snapshot["combat"]["encounter_id"]
+    with database.connect() as connection:
+        add_debuff(
+            connection, f"{encounter_id}:pc1", "frightened",
+            {"source": "orc", "clear": "end"},
+        )
+        connection.execute(
+            "UPDATE combatants SET readied_action_json = ?, attacks_this_turn = 2,"
+            " interaction_used = 1, mastery_uses_json = ? WHERE id = ?",
+            (
+                json.dumps({"action": "strike"}),
+                json.dumps({"grip": 1}),
+                f"{encounter_id}:pc1",
+            ),
+        )
+    _seed_snapshot(database, "c1", "main", started.state_version)
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE combatants SET initiative = 1 WHERE id = ?",
+            (f"{encounter_id}:pc1",),
+        )
+    SnapshotRestoreService(database).restore("c1", "main", started.state_version)
+    with database.connect() as connection:
+        row = connection.execute(
+            "SELECT debuffs_json, readied_action_json, attacks_this_turn,"
+            " interaction_used, mastery_uses_json, initiative FROM combatants"
+            " WHERE id = ?",
+            (f"{encounter_id}:pc1",),
+        ).fetchone()
+    assert json.loads(row["debuffs_json"]) == {
+        "frightened": {"source": "orc", "clear": "end"},
+    }
+    assert json.loads(row["readied_action_json"]) == {"action": "strike"}
+    assert row["attacks_this_turn"] == 2
+    assert row["interaction_used"] == 1
+    assert json.loads(row["mastery_uses_json"]) == {"grip": 1}
+    assert row["initiative"] == 13
+
+
 def test_restore_missing_snapshot_raises_not_found(database):
     campaigns = CampaignService(
         database,

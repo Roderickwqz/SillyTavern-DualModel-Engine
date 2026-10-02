@@ -15,6 +15,7 @@ from ..persistence.repositories import (
     dump_json,
 )
 from .campaign_export import CampaignExporter
+from .combat_serialization import COMBATANT_INSERT_SQL, combatant_insert_values
 from .entities import normalize_key
 
 
@@ -122,11 +123,12 @@ class CampaignImporter:
             "INSERT INTO campaigns(id, name, state_version, rules_mode,"
             " rules_enabled, rules_version, custom_preset_id, created_at,"
             " updated_at, last_active_branch_id) VALUES (?, ?, ?, ?, ?, ?, ?,"
-            " ?, ?, 'main')",
+            " ?, ?, ?)",
             (
                 campaign_id, campaign["name"], campaign["state_version"],
                 rules["mode"], int(rules["enabled"]), rules["version"],
                 rules["custom_preset_id"], now, now,
+                campaign.get("last_active_branch_id", "main"),
             ),
         )
 
@@ -397,11 +399,11 @@ class CampaignImporter:
             )
             for combatant in row["combatants"]:
                 connection.execute(
-                    "INSERT INTO combatants(id, encounter_id, entity_id,"
-                    " initiative) VALUES (?, ?, ?, ?)",
-                    (
-                        f"{row['id']}:{combatant['entity_id']}", row["id"],
-                        combatant["entity_id"], combatant["initiative"],
+                    COMBATANT_INSERT_SQL,
+                    combatant_insert_values(
+                        f"{row['id']}:{combatant['entity_id']}",
+                        row["id"],
+                        combatant,
                     ),
                 )
 

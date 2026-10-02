@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from ..persistence.database import Database
 from ..persistence.repositories import dump_json
+from .combat_serialization import COMBATANT_SELECT_SQL, combatant_row_to_dict
 from .snapshots import SnapshotBuilder
 
 _EXPECTED_ROOT_KEYS = frozenset(
@@ -307,14 +308,16 @@ class CampaignExporter:
         result = []
         for encounter in encounters:
             combatants = connection.execute(
-                "SELECT entity_id, initiative FROM combatants"
+                f"SELECT {COMBATANT_SELECT_SQL} FROM combatants"
                 " WHERE encounter_id = ? ORDER BY initiative DESC, entity_id",
                 (encounter["id"],),
             ).fetchall()
             result.append(
                 {
                     **dict(encounter),
-                    "combatants": [dict(row) for row in combatants],
+                    "combatants": [
+                        combatant_row_to_dict(row) for row in combatants
+                    ],
                 }
             )
         return result

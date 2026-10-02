@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from ..domain.errors import NotFoundError
+from .combat_serialization import COMBATANT_SELECT_SQL, combatant_row_to_dict
 
 
 class SnapshotBuilder:
@@ -37,7 +38,8 @@ class SnapshotBuilder:
     def _campaign(self, connection, campaign_id: str) -> dict[str, Any]:
         row = connection.execute(
             "SELECT id, name, state_version, rules_mode, rules_enabled,"
-            " rules_version, custom_preset_id FROM campaigns WHERE id = ?",
+            " rules_version, custom_preset_id, last_active_branch_id"
+            " FROM campaigns WHERE id = ?",
             (campaign_id,),
         ).fetchone()
         if row is None:
@@ -52,6 +54,7 @@ class SnapshotBuilder:
                 "version": row["rules_version"],
                 "custom_preset_id": row["custom_preset_id"],
             },
+            "last_active_branch_id": row["last_active_branch_id"] or "main",
         }
 
     def _entities(self, connection, campaign_id: str) -> list[dict[str, Any]]:
@@ -203,9 +206,7 @@ class SnapshotBuilder:
         if encounter is None:
             return None
         rows = connection.execute(
-            "SELECT entity_id, initiative, action_used, bonus_used,"
-            " reaction_used, movement_total, movement_used, hidden, dodging,"
-            " disengaged, concentrating_spell FROM combatants"
+            f"SELECT {COMBATANT_SELECT_SQL} FROM combatants"
             " WHERE encounter_id = ? ORDER BY initiative DESC, entity_id",
             (encounter["id"],),
         ).fetchall()
@@ -215,20 +216,5 @@ class SnapshotBuilder:
             "round": encounter["round_number"],
             "order": order,
             "active_entity_id": order[encounter["active_index"]] if order else None,
-            "combatants": [
-                {
-                    "entity_id": row["entity_id"],
-                    "initiative": row["initiative"],
-                    "action_used": bool(row["action_used"]),
-                    "bonus_used": bool(row["bonus_used"]),
-                    "reaction_used": bool(row["reaction_used"]),
-                    "movement_total": row["movement_total"],
-                    "movement_used": row["movement_used"],
-                    "hidden": bool(row["hidden"]),
-                    "dodging": bool(row["dodging"]),
-                    "disengaged": bool(row["disengaged"]),
-                    "concentrating_spell": row["concentrating_spell"],
-                }
-                for row in rows
-            ],
+            "combatants": [combatant_row_to_dict(row) for row in rows],
         }

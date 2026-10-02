@@ -137,6 +137,57 @@ def test_assemble_filters_audience_and_pins_commitments(database):
     )
 
 
+def test_narrator_context_excludes_engine_only_attributes(database):
+    """Narrator retrieval must not surface ENGINE-only attribute values."""
+    ids = iter(f"ret-{i}" for i in range(20))
+    campaigns = CampaignService(database, id_factory=ids.__next__,
+                                clock=lambda: "2026-08-10T00:00:00Z")
+    campaigns.create_campaign("c1", "Campaign")
+    state = EntityAttributeService(database, campaigns.mutation_engine)
+    state.apply_explicit("c1", "main", 0, CreateEntityOperation(
+        "erin", EntityKind.CHARACTER, "艾琳",
+    ))
+    state.apply_explicit("c1", "main", 1, DefineAttributeOperation(AttributeDefinition(
+        "c1", "secret_rank", "密级", "meta", AttributeType.NUMBER,
+        DisplayType.TEXT, frozenset({Audience.ENGINE}), 0, 10,
+    )))
+    state.apply_explicit("c1", "main", 2, DefineAttributeOperation(AttributeDefinition(
+        "c1", "alchemy", "炼金", "skill", AttributeType.NUMBER,
+        DisplayType.BAR, frozenset({Audience.NARRATOR, Audience.PLAYER_UI}),
+        0, 100,
+    )))
+    state.apply_explicit("c1", "main", 3, SetAttributeOperation(
+        "erin", "secret_rank", 9, None,
+    ))
+    state.apply_explicit("c1", "main", 4, SetAttributeOperation(
+        "erin", "alchemy", 42, None,
+    ))
+
+    narrator = RetrievalService(database).assemble(RetrievalQuery(
+        campaign_id="c1", branch_id="main",
+        audiences=frozenset({Audience.NARRATOR}),
+        scene_entity_ids=("erin",),
+    ))
+    attrs = {
+        item["key"]: item["value"]
+        for item in narrator["current_state"]["entities"][0]["attributes"]
+    }
+    assert "alchemy" in attrs
+    assert attrs["alchemy"] == 42
+    assert "secret_rank" not in attrs
+
+    leaked = RetrievalService(database).assemble(RetrievalQuery(
+        campaign_id="c1", branch_id="main",
+        audiences=frozenset({Audience.ENGINE, Audience.NARRATOR}),
+        scene_entity_ids=("erin",),
+    ))
+    leaked_attrs = {
+        item["key"]: item["value"]
+        for item in leaked["current_state"]["entities"][0]["attributes"]
+    }
+    assert leaked_attrs["secret_rank"] == 9
+
+
 def test_assemble_skips_fts_for_short_text(database):
     """Short player text (<3 chars) must not call memory_events.search."""
     build_world(database)
